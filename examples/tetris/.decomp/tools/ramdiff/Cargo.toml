@@ -1,0 +1,12 @@
+[package]
+name = "ramdiff"
+version = "0.1.0"
+edition = "2021"
+description = "Plays a decomp-dj segment chain on two libretro cores and reports where their RAM first differs"
+
+[dependencies]
+anyhow = "1"
+decomp-dj = { path = "../../../../../player" }
+
+[profile.release]
+debug = 1

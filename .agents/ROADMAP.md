@@ -109,6 +109,15 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   with the N64 connector.
 
 ## Project and CLI
+- **One config shape for config.toml and local.toml, local on top.** Today the split is
+  fixed: config.toml holds the project (ROM hash, core identity and options, ports, hash
+  regions) and local.toml holds this machine's paths and GUI settings, with only `[cache]`
+  able to appear in both. Instead, let both files hold any setting, with local.toml
+  overriding config.toml key by key, the way `[cache]` already works. One author can commit
+  a repo with everything set up (core paths into the repo, comparison cores and their
+  options); another can commit only the baseline and segments of a popular game, so others
+  bring their own ports in their local.toml. Comparison cores (`[[compare]]`, merged by
+  `name`) would follow the same rule. Worth doing before comparison cores land.
 
 - **Versioning projects.** A project should say which version of the format and the
   tools it needs, and the tools should handle the difference both ways. Today
@@ -216,6 +225,13 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   report. A core without the function falls back to the default check (RAM while
   stepping, below). Open: how much of the baseline to hand over each frame without
   slowing stepping down, and whether the check runs every frame or only at ticks.
+- **Open question: frame parity vs block parity.** A comparison core's `dj_check_parity`
+  gives a verdict per frame: after frame N, it matches the baseline or it doesn't. The
+  coverage map's parity colours want a verdict per block or instruction: this code ran and
+  behaved the same. Settle whether parity is one, the other or both, and if blocks are
+  judged from frame verdicts, the rule (for example, every block run only on matching frames
+  has parity, and every block run on a failing frame is a suspect). Decided so far: loading,
+  syncing and ticking a comparison core come first, then parity.
 - **Open question: how parity is checked.** Nothing is decided yet. The options are:
   - **RAM while stepping.** Run both cores frame by frame and compare RAM (or the
     watched regions) after each frame. It's cheap, and it works with any core. A

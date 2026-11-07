@@ -110,6 +110,44 @@ pub struct LocalConfig {
     /// `[mcp]`: what `dj mcp` allows, and whether the GUI works with agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<McpLocal>,
+    /// `[keyboard]`: the GUI's key bindings for recording inputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyboard: Option<KeyboardLocal>,
+    /// `[record]`: the options in the GUI's Record dropdown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<RecordLocal>,
+}
+
+/// `[keyboard]` in .local/local.toml: which key plays each button of the controller being
+/// recorded (docs/gui.md). Keys are named as the GUI names them ("W", "Space", "ArrowUp").
+/// Once written, the table is the whole set: a button not listed has no key.
+#[derive(Serialize, Deserialize, Default, Clone, Debug)]
+pub struct KeyboardLocal {
+    /// Joypad button (B, Y, SELECT, START, UP, ...) to key.
+    #[serde(default)]
+    pub buttons: BTreeMap<String, String>,
+    /// Frame by frame: commits the held buttons to the frame and steps on (default Space).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// Frame by frame: steps back one frame (default Backspace).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rewind: Option<String>,
+}
+
+/// `[record]` in .local/local.toml: the Record dropdown's options.
+#[derive(Serialize, Deserialize, Default, Clone, Debug)]
+pub struct RecordLocal {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_by_frame: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rewind_clears: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overwrite: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extend: Option<bool>,
+    /// The controller the bindings drive, 0-based (0 = player 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u32>,
 }
 
 pub struct Collection {

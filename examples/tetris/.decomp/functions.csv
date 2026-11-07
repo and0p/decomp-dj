@@ -1,0 +1,246 @@
+name,area,cpu_addr,prg_offset,size,bytes_run,status
+initRam,system,$8000,0x0000,5,5,full
+nmi,system,$8005,0x0005,69,69,full
+irq,system,$804A,0x004A,1,1,full
+render,play rendering,$804B,0x004B,15,5,partial
+initRamContinued,system,$805A,0x005A,259,226,partial
+gameMode_playAndEndingHighScore_jmp,ending,$815D,0x015D,4,4,full
+branchOnGameMode,gameplay,$8161,0x0161,19,5,partial
+gameModeState_updatePlayer1,gameplay,$8174,0x0174,18,18,full
+gameModeState_updatePlayer2,gameplay,$8186,0x0186,21,9,partial
+gameMode_playAndEndingHighScore,ending,$819B,0x019B,23,5,partial
+branchOnPlayStatePlayer1,gameplay,$81B2,0x01B2,29,5,partial
+playState_playerControlsActiveTetrimino,gameplay,$81CF,0x01CF,10,10,full
+branchOnPlayStatePlayer2,gameplay,$81D9,0x01D9,29,0,never
+playState_player2ControlsActiveTetrimino,gameplay,$81F6,0x01F6,10,0,never
+gameMode_legalScreen,menus and demo,$8200,0x0200,79,75,partial
+gameMode_titleScreen,menus and demo,$824F,0x024F,98,94,partial
+render_mode_legal_and_title_screens,menus and demo,$82B1,0x02B1,32,19,partial
+gameMode_gameTypeMenu,menus and demo,$82D1,0x02D1,58,54,partial
+L830B,menus and demo,$830B,0x030B,204,192,partial
+gameMode_levelMenu,menus and demo,$83D7,0x03D7,95,81,partial
+gameMode_levelMenu_processPlayer1Navigation,menus and demo,$8436,0x0436,120,112,partial
+gameMode_levelMenu_handleLevelHeightNavigation,menus and demo,$84AE,0x04AE,260,240,partial
+render_mode_menu_screens,menus and demo,$85DA,0x05DA,22,22,full
+gameModeState_initGameBackground,gameplay,$85F0,0x05F0,163,159,partial
+gameModeState_initGameBackground_finish,gameplay,$8693,0x0693,29,29,full
+gameModeState_initGameState,gameplay,$86DC,0x06DC,154,154,full
+makePlayer1Active,gameplay,$8776,0x0776,28,28,full
+makePlayer2Active,gameplay,$8792,0x0792,28,0,never
+savePlayer1State,gameplay,$87AE,0x07AE,26,18,partial
+savePlayer2State,gameplay,$87C8,0x07C8,20,0,never
+initPlayfieldIfTypeB,gameplay,$87DC,0x07DC,7,7,full
+initPlayfieldForTypeB,gameplay,$87E3,0x07E3,4,4,full
+typeBRows,gameplay,$87E7,0x07E7,21,21,full
+typeBGarbageInRow,gameplay,$87FC,0x07FC,40,40,full
+typeBGuaranteeBlank,gameplay,$8824,0x0824,38,38,full
+initCopyPlayfieldToPlayer2,gameplay,$884A,0x084A,2,2,full
+copyPlayfieldToPlayer2,gameplay,$884C,0x084C,17,17,full
+typeBBlankInitPlayer1,gameplay,$885D,0x085D,16,16,full
+typeBBlankInitPlayer2,gameplay,$886D,0x086D,8,8,full
+endTypeBInit,gameplay,$8875,0x0875,1,1,full
+gameModeState_updateCountersAndNonPlayerState,gameplay,$8884,0x0884,39,31,partial
+rotate_tetrimino,gameplay,$88AB,0x08AB,67,63,partial
+drop_tetrimino,gameplay,$8914,0x0914,122,122,full
+shift_tetrimino,gameplay,$89AE,0x09AE,92,92,full
+stageSpriteForCurrentPiece,gameplay,$8A0A,0x0A0A,146,127,partial
+stageSpriteForNextPiece,gameplay,$8BCE,0x0BCE,23,22,partial
+loadSpriteIntoOamStaging,gameplay,$8C27,0x0C27,69,69,full
+isPositionValid,gameplay,$948B,0x148B,99,99,full
+render_mode_play_and_demo,play rendering,$94EE,0x14EE,444,322,partial
+twoDigsToPPU,play rendering,$9712,0x1712,19,19,full
+copyPlayfieldRowToVRAM,play rendering,$9725,0x1725,90,60,partial
+updateLineClearingAnimation,play rendering,$977F,0x177F,127,104,partial
+updatePaletteForLevel,play rendering,$9808,0x1808,68,68,full
+noop_disabledVramRowIncr,play rendering,$9874,0x1874,26,1,partial
+playState_spawnNextTetrimino,gameplay,$988E,0x188E,93,54,partial
+chooseNextTetrimino,gameplay,$98EB,0x18EB,24,24,full
+pickRandomTetrimino,gameplay,$9903,0x1903,39,39,full
+L992A,system,$992A,0x192A,14,14,full
+useNewSpawnID,gameplay,$9938,0x1938,3,3,full
+incrementPieceStat,gameplay,$9969,0x1969,57,32,partial
+playState_lockTetrimino,gameplay,$99A2,0x19A2,111,111,full
+playState_updateGameOverCurtain,gameplay,$9A11,0x1A11,90,79,partial
+playState_checkForCompletedRows,gameplay,$9A6B,0x1A6B,152,152,full
+playState_receiveGarbage,gameplay,$9B03,0x1B03,80,9,partial
+playState_updateLinesAndStatistics,gameplay,$9B58,0x1B58,80,37,partial
+incrementLines,gameplay,$9BA8,0x1BA8,40,32,partial
+L9BD0,system,$9BD0,0x1BD0,46,46,full
+addHoldDownPoints,gameplay,$9BFE,0x1BFE,47,47,full
+addLineClearPoints,gameplay,$9C2D,0x1C2D,120,96,partial
+updatePlayfield,gameplay,$9CAF,0x1CAF,16,16,full
+gameModeState_handleGameOver,gameplay,$9CBF,0x1CBF,88,73,partial
+updateMusicSpeed,audio,$9D17,0x1D17,58,43,partial
+pollControllerButtons,system,$9D51,0x1D51,151,82,partial
+demoButtonsTable_indexIncr,menus and demo,$9DE8,0x1DE8,14,14,full
+gameMode_startDemo,menus and demo,$9DF6,0x1DF6,17,17,full
+setMusicTrack,audio,$9E07,0x1E07,15,15,full
+gameModeState_checkForResetKeyCombo,gameplay,$9E16,0x1E16,17,9,partial
+gameModeState_vblankThenRunState2,gameplay,$9E27,0x1E27,8,8,full
+playState_unassignOrientationId,gameplay,$9E2F,0x1E2F,8,0,never
+playState_incrementPlayState,gameplay,$9E37,0x1E37,2,0,never
+playState_noop,gameplay,$9E39,0x1E39,1,1,full
+endingAnimation,ending,$9E3A,0x1E3A,15,0,never
+endingAnimationB,ending,$9E49,0x1E49,281,0,never
+add100Points,ending,$9F62,0x1F62,51,0,never
+render_mode_ending_animation,ending,$9F95,0x1F95,93,0,never
+showHighScores,high scores,$9FF2,0x1FF2,9,6,partial
+showHighScores_real,high scores,$9FFB,0x1FFB,138,136,partial
+showHighScores_ret,high scores,$A085,0x2085,1,1,full
+handleHighScoreIfNecessary,high scores,$A0EE,0x20EE,70,56,partial
+adjustHighScores,high scores,$A134,0x2134,94,0,never
+copyHighScoreNameToNextIndex,high scores,$A192,0x2192,47,0,never
+copyHighScoreScoreToNextIndex,high scores,$A1C1,0x21C1,31,0,never
+copyHighScoreLevelToNextIndex,high scores,$A1E0,0x21E0,17,0,never
+highScoreEntryScreen,high scores,$A201,0x2201,314,0,never
+render_mode_congratulations_screen,ending,$A344,0x2344,59,0,never
+gameModeState_startButtonHandling,gameplay,$A37F,0x237F,115,105,partial
+playState_bTypeGoalCheck,gameplay,$A3F2,0x23F2,57,8,partial
+playState_bTypeGoalCheck_ret,gameplay,$A42B,0x242B,3,3,full
+sleep_for_14_vblanks,gameplay,$A44D,0x244D,12,0,never
+sleep_for_a_vblanks,gameplay,$A459,0x2459,10,10,full
+ending_initTypeBVars,ending,$A463,0x2463,78,0,never
+ending_typeBConcertPatchToPpuForHeight,ending,$A4B1,0x24B1,86,0,never
+patchToPpu,ending,$A507,0x2507,32,0,never
+render_ending,ending,$A527,0x2527,7,0,never
+ending_typeB,ending,$A52E,0x252E,13,0,never
+ending_typeBConcert,ending,$A53B,0x253B,234,0,never
+ending_typeBCathedral,ending,$A625,0x2625,107,0,never
+ending_typeBCathedralSetSprite,ending,$A690,0x2690,30,0,never
+ending_computeTypeBCathedralYTableIndex,ending,$A6AE,0x26AE,14,0,never
+LA6BC,ending,$A6BC,0x26BC,125,0,never
+render_endingUnskippable,ending,$A7FD,0x27FD,13,0,never
+endingAnimationA,ending,$A926,0x2926,72,0,never
+selectEndingScreen,ending,$A96E,0x296E,55,0,never
+ending_selected,ending,$A9A5,0x29A5,12,0,never
+ending_typeA,ending,$A9B1,0x29B1,95,0,never
+LAA10,system,$AA10,0x2A10,1,0,never
+updateAudioWaitForNmiAndResetOamStaging,audio,$AA2F,0x2A2F,22,22,full
+updateAudioAndWaitForNmi,audio,$AA45,0x2A45,13,13,full
+updateAudioWaitForNmiAndDisablePpuRendering,audio,$AA52,0x2A52,7,7,full
+_updatePpuMask,system,$AA59,0x2A59,6,6,full
+updateAudioWaitForNmiAndEnablePpuRendering,audio,$AA5F,0x2A5F,12,12,full
+waitForVBlankAndEnableNmi,system,$AA6B,0x2A6B,13,13,full
+disableNmi,system,$AA78,0x2A78,4,4,full
+_updatePpuCtrl,system,$AA7C,0x2A7C,6,6,full
+LAA82,system,$AA82,0x2A82,8,8,full
+copyCurrentScrollAndCtrlToPPU,system,$AA8A,0x2A8A,14,14,full
+bulkCopyToPpu,system,$AA98,0x2A98,90,89,partial
+copyToPpu,system,$AAF2,0x2AF2,47,18,partial
+copyAddrAtReturnAddressToTmp_incrReturnAddrBy2,system,$AB21,0x2B21,38,38,full
+generateNextPseudorandomNumber,system,$AB47,0x2B47,23,23,full
+copyOamStagingToOam,system,$AB5E,0x2B5E,11,11,full
+pollController_actualRead,system,$AB69,0x2B69,34,34,full
+addExpansionPortInputAsControllerInput,system,$AB8B,0x2B8B,18,13,partial
+pollController,system,$AB9D,0x2B9D,32,32,full
+diffOldAndNewButtons,system,$ABBD,0x2BBD,17,17,full
+unreferenced_func1,system,$ABCE,0x2BCE,78,0,never
+memset_ppu_page_and_more,system,$AC1C,0x2C1C,78,76,partial
+memset_page,system,$AC6A,0x2C6A,24,24,full
+switch_s_plus_2a,system,$AC82,0x2C82,33,22,partial
+setMMC1Control,system,$ACA3,0x2CA3,20,20,full
+changeCHRBank0,system,$ACB7,0x2CB7,20,20,full
+changeCHRBank1,system,$ACCB,0x2CCB,20,20,full
+changePRGBank,system,$ACDF,0x2CDF,20,20,full
+updateAudio_jmp,audio,$E000,0x6000,3,3,full
+updateAudio2,audio,$E003,0x6003,3,3,full
+LE006,system,$E006,0x6006,3,3,full
+copyToSq1Channel,audio,$E04B,0x604B,4,4,full
+copyToTriChannel,audio,$E04F,0x604F,4,0,never
+copyToNoiseChannel,audio,$E053,0x6053,4,4,full
+copyToSq2Channel,audio,$E057,0x6057,2,0,never
+copyToApuChannel,audio,$E059,0x6059,25,25,full
+computeSoundEffMethod,audio,$E072,0x6072,44,36,partial
+unreferenced_soundRng,audio,$E09E,0x609E,23,0,never
+advanceAudioSlotFrame,audio,$E0B5,0x60B5,19,19,full
+updateSoundEffectSlot2,audio,$E194,0x6194,8,8,full
+updateSoundEffectSlot3,audio,$E19C,0x619C,8,8,full
+updateSoundEffectSlot4_unused,audio,$E1A4,0x61A4,8,0,never
+updateSoundEffectSlot1,audio,$E1AC,0x61AC,13,13,full
+updateSoundEffectSlot0,audio,$E1B9,0x61B9,6,6,full
+updateSoundEffectSlotShared,audio,$E1BF,0x61BF,24,24,full
+updateSoundEffectSlotShared_rts,audio,$E1D7,0x61D7,1,1,full
+LE1D8,system,$E1D8,0x61D8,13,13,full
+initAudioAndMarkInited,audio,$E1E5,0x61E5,10,10,full
+updateAudio_pause,audio,$E1EF,0x61EF,39,39,full
+updateAudio,audio,$E216,0x6216,46,46,full
+soundEffectSlot2_makesNoSound,audio,$E244,0x6244,3,3,full
+muteAudioAndClearTriControl,audio,$E247,0x6247,12,12,full
+LE253,system,$E253,0x6253,30,30,full
+muteAudio,audio,$E271,0x6271,22,22,full
+initSoundEffectShared,audio,$E287,0x6287,69,50,partial
+soundEffectSlot0_endingRocketInit,ending,$E2CC,0x62CC,7,0,never
+setNoiseLo,audio,$E2D3,0x62D3,4,4,full
+loadNoiseLo,audio,$E2D7,0x62D7,6,6,full
+soundEffectSlot0_makesNoSound,audio,$E2DD,0x62DD,7,0,never
+advanceSoundEffectSlot0WithoutUpdate,audio,$E2E4,0x62E4,5,0,never
+stopSoundEffectSlot0,audio,$E2E9,0x62E9,10,10,full
+updateSoundEffectSlot0WithoutUpdate_ret,audio,$E2F3,0x62F3,1,1,full
+unreferenced_code2,audio,$E2F4,0x62F4,4,0,never
+soundEffectSlot0_gameOverCurtainInit,audio,$E2F8,0x62F8,7,7,full
+updateSoundEffectSlot0_apu,audio,$E2FF,0x62FF,8,8,full
+updateSoundEffectNoiseAudio,audio,$E307,0x6307,19,19,full
+getSoundEffectNoiseNibble,audio,$E31A,0x631A,33,33,full
+LE33B,system,$E33B,0x633B,20,20,full
+soundEffectSlot1_chirpChirpPlaying,audio,$E34F,0x634F,48,0,never
+soundEffectSlot1_chirpChirpInit,audio,$E37F,0x637F,5,0,never
+soundEffectSlot1_lockTetriminoInit,audio,$E384,0x6384,12,12,full
+soundEffectSlot1_shiftTetriminoInit,audio,$E390,0x6390,12,12,full
+soundEffectSlot1Playing_advance,audio,$E39C,0x639C,5,5,full
+soundEffectSlot1Playing_stop,audio,$E3A1,0x63A1,16,16,full
+soundEffectSlot1Playing_ret,audio,$E3B1,0x63B1,1,1,full
+soundEffectSlot1_menuOptionSelectPlaying_ret,audio,$E3B2,0x63B2,1,1,full
+soundEffectSlot1_menuOptionSelectPlaying,audio,$E3B3,0x63B3,23,23,full
+soundEffectSlot1_menuOptionSelectInit,audio,$E3CA,0x63CA,6,6,full
+soundEffectSlot1_rotateTetrimino_ret,audio,$E3D0,0x63D0,1,1,full
+soundEffectSlot1_rotateTetriminoInit,audio,$E3D1,0x63D1,12,12,full
+soundEffectSlot1_rotateTetriminoPlaying,audio,$E3DD,0x63DD,38,38,full
+soundEffectSlot1_tetrisAchievedInit,audio,$E403,0x6403,11,11,full
+soundEffectSlot1_tetrisAchievedPlaying,audio,$E40E,0x640E,9,9,full
+LE417,system,$E417,0x6417,3,3,full
+soundEffectSlot1_lineCompletedInit,audio,$E41A,0x641A,11,11,full
+soundEffectSlot1_lineCompletedPlaying,audio,$E425,0x6425,9,9,full
+soundEffectSlot1_lineClearingInit,audio,$E42E,0x642E,13,13,full
+soundEffectSlot1_lineClearingPlaying,audio,$E43B,0x643B,56,49,partial
+soundEffectSlot1_menuScreenSelectInit,audio,$E473,0x6473,14,14,full
+soundEffectSlot1_menuScreenSelectPlaying,audio,$E481,0x6481,43,43,full
+LE4AC,system,$E4AC,0x64AC,4,4,full
+soundEffectSlot1_levelUpPlaying,audio,$E4D1,0x64D1,27,27,full
+soundEffectSlot1_levelUpInit,audio,$E4EC,0x64EC,7,7,full
+soundEffectSlot2_lowBuzz,audio,$E513,0x6513,33,0,never
+soundEffectSlot3_donk,audio,$E534,0x6534,7,0,never
+soundEffectSlot3Playing_advance,audio,$E53B,0x653B,5,0,never
+soundEffectSlot3Playing_stop,audio,$E540,0x6540,16,0,never
+soundEffectSlot3Playing_ret,audio,$E550,0x6550,1,0,never
+updateSoundEffectSlot3_apu,audio,$E551,0x6551,29,0,never
+soundEffectSlot3_fallingAlien,audio,$E56E,0x656E,14,0,never
+updateMusic_noSoundJmp,audio,$E580,0x6580,3,3,full
+updateMusic,audio,$E583,0x6583,40,40,full
+updateMusicFrame_setChanLo,audio,$E5D0,0x65D0,42,42,full
+musicLoOffset_8AndC,audio,$E5FA,0x65FA,29,0,never
+musicLoOffset_4,audio,$E617,0x6617,17,0,never
+musicLoOffset_minus2_6,audio,$E628,0x6628,15,0,never
+updateMusicFrame_setChanLoOffset,audio,$E637,0x6637,58,25,partial
+musicLoOffset_setLoAndSaveFrameCounter,audio,$E671,0x6671,6,6,full
+musicLoOffset_setLo,audio,$E677,0x6677,18,16,partial
+copyFFFFToDeref,audio,$E6D0,0x66D0,7,7,full
+loadMusicTrack,audio,$E6D7,0x66D7,58,58,full
+derefNextAddr,system,$E711,0x6711,25,25,full
+storeDeref1AndContinue,audio,$E72A,0x672A,11,11,full
+initSq12IfTrashedBySoundEffect,audio,$E735,0x6735,48,31,partial
+initSq12IfTrashedBySoundEffect_ret,audio,$E765,0x6765,1,1,full
+updateMusicFrame_setChanVol,audio,$E766,0x6766,115,115,full
+updateMusicFrame_progLoadNextScript,audio,$E7D9,0x67D9,34,0,never
+updateMusicFrame_progEnd,audio,$E7FB,0x67FB,3,0,never
+updateMusicFrame_ret,audio,$E7FE,0x67FE,1,1,full
+updateMusicFrame_progNextRoutine,audio,$E7FF,0x67FF,25,25,full
+updateMusicFrame_progLoadRoutine,audio,$E818,0x6818,37,37,full
+updateMusicFrame_progNextRoutine_jmp,audio,$E83D,0x683D,3,3,full
+updateMusicFrame,audio,$E840,0x6840,10,10,full
+updateMusicFrame_incSlotFromOffset,audio,$E84A,0x684A,3,3,full
+updateMusicFrame_incSlot,audio,$E84D,0x684D,13,13,full
+updateMusicFrame_updateChannel,audio,$E85A,0x685A,401,361,partial
+playNoise,audio,$E9EB,0x69EB,24,24,full
+playDmc,audio,$EA03,0x6A03,62,12,partial
+musicGetNextInstructionByte,audio,$EA41,0x6A41,9,9,full
+reset,system,$FF00,0x7F00,48,48,full

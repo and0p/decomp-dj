@@ -8,7 +8,7 @@ When one ships, its user-facing description moves into `docs/` and the entry her
 - Only one core has a connector (Mesen, NES).
 - Block and function rollup is 6502-only. Other CPUs get raw executed-byte counts until their disassembler is added.
 - Determinism has been checked on Linux x86_64 and macOS arm64; Windows still needs a run.
-- The GUI is a first prototype: button inputs only (no analog, lightgun or pointer rows yet), no keyboard play or recording, one core at a time. Tested on Linux and macOS; Windows not tried yet.
+- The GUI is a first prototype: button inputs only (no analog, lightgun or pointer rows yet), keyboard-only recording for one controller at a time, one core at a time. Tested on Linux and macOS; Windows not tried yet.
 - `exclude` in `[cache]` is recorded but not applied to snapshots yet.
 
 ## GUI
@@ -36,32 +36,14 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   soon as a segment records an ending that differs from its saved file (the **!**), so the
   author can undo before the children below it replay. By default playback carries
   straight on, since a child always starts from where its parent really ends.
-- **Recording live inputs.** Play the game from the keyboard and record what is held into
-  the piano roll.
-  - **Bindings.** A bindings dialog (Input > Keyboard mapping…) maps keys to each port's
-    buttons, saved per machine in `.local/local.toml` with a sensible default for a joypad.
-    Gamepads come later: device discovery, hot-plugging, analog dead zones and per-OS
-    differences make them a larger job.
+- **Recording follow-ups** (recording itself is in docs/gui.md#recording).
+  - **Gamepads.** Device discovery, hot-plugging, analog dead zones and per-OS differences
+    make them a larger job than the keyboard.
   - **Per-console default bindings.** The first version has one default layout (WASD for the
     d-pad, J = B, K = A, U = Select, I = Start) for one controller. Each console (NES, SNES,
     N64, ...) should get its own default that covers its buttons, picked from the core or
     the project's system.
-  - **Record button.** A ● Record toggle in the transport that is unmistakable while on:
-    red, and tinting part of the window (the transport bar and the roll's ruler, or a red
-    frame around the picture) so nobody records by accident.
-  - **Keys while recording.** Game bindings win over the GUI's shortcuts. Only a short list
-    stays live: Escape (or the Record button) stops recording, Space and Backspace drive
-    frame-by-frame recording below, and Ctrl/Cmd shortcuts such as undo and save.
-  - **Real time.** With Play on, each frame records whatever is held, at the selected speed.
-  - **Frame by frame.** Paused, the held keys form a chord. Space commits the chord to the
-    current frame and moves to the next: it **overwrites** all input on that frame, so
-    buttons not held are released there, even if the frame had them before. Holding Space
-    keeps committing, one frame per tick at the selected playback speed. Backspace moves
-    back one frame without changing anything (held, it keeps moving back);
-    Shift+Backspace moves back and clears the input on each frame it leaves.
-  - **Undo.** One recording pass (from Record on to off, or one held Space) is one undo
-    step, and recording drops later hashes like any other edit (return to the edit applies).
-  - **A 0.1× speed** for precise inputs in near real time, alongside 0.25× and the rest.
+  - **Two players in real time.** Bindings for a second controller at once.
 - **Audio playback (GUI).** Play the core's audio while a segment plays, with a volume
   slider and a mute button in the playback toolbar. When more than one core is running
   (side-by-side comparison), an A|B toggle picks which core you hear.

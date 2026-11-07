@@ -184,11 +184,14 @@ pub struct RollState {
     gesture: Option<Gesture>,
     scrubbing: bool,
     jump_to: Option<u64>,
+    /// Record mode is on: the ruler is tinted red and the roll's own keys (Delete,
+    /// Backspace, Escape, Alt+Up/Down) are left to recording.
+    pub recording: bool,
 }
 
 impl Default for RollState {
     fn default() -> Self {
-        RollState { px_per_frame: 4.0, scroll_x: 0.0, scroll_y: 0.0, follow: true, all_buttons: false, labels: true, markers_open: false, open: HashMap::new(), gen: 0, model: None, drag: None, last_len: 4, sel: BTreeSet::new(), gesture: None, scrubbing: false, jump_to: None }
+        RollState { px_per_frame: 4.0, scroll_x: 0.0, scroll_y: 0.0, follow: true, all_buttons: false, labels: true, markers_open: false, open: HashMap::new(), gen: 0, model: None, drag: None, last_len: 4, sel: BTreeSet::new(), gesture: None, scrubbing: false, jump_to: None, recording: false }
     }
 }
 
@@ -971,7 +974,7 @@ impl RollState {
         }
         // Delete removes the selected presses; Escape clears the selection; Alt+Up/Down
         // moves them to the next button row.
-        if !self.sel.is_empty() && !ui.ctx().egui_wants_keyboard_input() {
+        if !self.sel.is_empty() && !self.recording && !ui.ctx().egui_wants_keyboard_input() {
             let (del, esc, up, down_k) = ui.input_mut(|i| {
                 (
                     i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace),
@@ -1212,6 +1215,9 @@ impl RollState {
                 let t = format!("{} ⏵", short_label(&n.title));
                 grid.text(Pos2::new(end_x + 6.0, my), Align2::LEFT_CENTER, t, title_font, Color32::from_gray(150));
             }
+        }
+        if self.recording {
+            grid.rect_filled(Rect::from_min_max(Pos2::new(tl_left, rect.top()), Pos2::new(rect.right(), rect.top() + RULER_H)), 0.0, Color32::from_rgba_unmultiplied(210, 40, 40, 70));
         }
         grid.line_segment([Pos2::new(tl_left, rect.top() + RULER_H), Pos2::new(rect.right(), rect.top() + RULER_H)], Stroke::new(1.0, Color32::from_gray(50)));
         grid.line_segment([Pos2::new(tl_left, rows_top), Pos2::new(rect.right(), rows_top)], Stroke::new(1.0, Color32::from_gray(50)));

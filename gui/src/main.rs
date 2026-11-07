@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 mod agent;
 mod cov;
+mod record;
 mod roll;
 
 /// A save state is kept every this many frames, so seeking never replays more than this.
@@ -215,6 +216,23 @@ struct App {
     /// Write what is shown to .local/mcp/gui.json for agents.
     share_view: bool,
     shared: Option<(String, u64)>,
+    /// Record mode (docs/gui.md#recording): frames played (real time) or committed (frame
+    /// by frame) take the buttons held on the keyboard. Separate from playing or paused.
+    recording: bool,
+    /// The Record dropdown's options (`[record]` in .local/local.toml).
+    rec_cfg: record::Settings,
+    /// Keys for the controller being recorded (`[keyboard]` in .local/local.toml).
+    bindings: record::Bindings,
+    /// The current recording pass has made its undo step. A pass runs from Record on to
+    /// off, or over one held commit or rewind.
+    rec_pass: bool,
+    /// Live coverage was restarted for the current pass.
+    rec_live: bool,
+    /// Commit (true) or rewind held in frame-by-frame mode: seconds held, and the clock
+    /// that paces repeats.
+    rec_hold: Option<(bool, f64, f64)>,
+    /// Input > Keyboard mapping…
+    mapping: Option<record::MappingDialog>,
 }
 
 /// What playback does when it reaches the end of a segment.
@@ -277,7 +295,11 @@ enum Job {
 
 /// Time spent on a job per screen refresh.
 /// Playback speeds: (factor, label); 0.0 is as fast as the core goes.
-const SPEEDS: [(f64, &str); 7] = [(0.25, "0.25×"), (0.5, "0.5×"), (1.0, "1×"), (2.0, "2×"), (4.0, "4×"), (8.0, "8×"), (0.0, "MAX")];
+const SPEEDS: [(f64, &str); 8] = [(0.1, "0.1×"), (0.25, "0.25×"), (0.5, "0.5×"), (1.0, "1×"), (2.0, "2×"), (4.0, "4×"), (8.0, "8×"), (0.0, "MAX")];
+/// Record mode's colour.
+const REC_RED: Color32 = Color32::from_rgb(210, 45, 45);
+/// Holding commit or rewind repeats after this long, in seconds.
+const REC_HOLD_DELAY: f64 = 0.3;
 const JOB_SLICE: std::time::Duration = std::time::Duration::from_millis(25);
 
 /// One step of undo history: the affected segments as they were before the change
@@ -340,7 +362,7 @@ impl Default for App {
             saved_end: HashMap::new(),
             roll: roll::RollState::default(),
             message: None,
-            speed: 2,
+            speed: 3,
             end_mode: EndMode::Next,
             sticky_tip: None,
             route: vec![],
@@ -372,6 +394,13 @@ impl Default for App {
             follow: None,
             share_view: false,
             shared: None,
+            recording: false,
+            rec_cfg: record::Settings::default(),
+            bindings: record::Bindings::default(),
+            rec_pass: false,
+            rec_live: false,
+            rec_hold: None,
+            mapping: None,
         }
     }
 }
@@ -701,6 +730,10 @@ impl App {
                 let first = col.tree_order().first().map(|(id, _)| id.to_string());
                 let n = col.replays.len();
                 self.max_memory_mb = col.load_local().ok().and_then(|l| l.max_memory_mb).unwrap_or(512);
+                let local = col.load_local().unwrap_or_default();
+                self.bindings = record::Bindings::from_local(local.keyboard.as_ref());
+                self.rec_cfg = record::Settings::from_local(local.record.as_ref());
+                self.set_recording(false);
                 self.hydrating = None;
                 self.saved_end = col.replays.iter().map(|(id, r)| (id.clone(), ending_sig(r))).collect();
                 self.gui_mark = Some(decomp_dj::cache::GuiMark::new(&col.root));
@@ -1138,7 +1171,8 @@ impl App {
                 None => self.texture = Some(egui_ctx().load_texture("preview", img, egui::TextureOptions::NEAREST)),
             }
         }
-        if reached_end {
+        // Recording past the end grows the segment a frame at a time: its end isn't reached.
+        if reached_end && !(self.recording && self.rec_cfg.extend) {
             self.auto_record();
         }
         if recorded {
@@ -1281,7 +1315,13 @@ impl App {
 
     fn toggle_play(&mut self) {
         if let Some(pb) = &self.pb {
-            if !self.playing && pb.ran >= pb.frames {
+            if !self.playing && pb.ran >= pb.frames && self.recording {
+                // Starting over from frame 0 would record over the segment from its start.
+                if !self.rec_extending() {
+                    self.info("Recording is at the end of the segment: turn on Extend segment (Record menu) to record past it, or move the playhead back");
+                    return;
+                }
+            } else if !self.playing && pb.ran >= pb.frames {
                 self.seek(0);
             }
             self.playing = !self.playing;
@@ -1315,12 +1355,17 @@ impl App {
         // Playback is running: the next edit starts a new "since playback last ran".
         self.edit_from = None;
         let speed = SPEEDS[self.speed].0;
+        // Real-time recording: what is held now goes into every frame this tick plays.
+        let chord = if self.recording && !self.rec_cfg.frame_by_frame { self.held_chord() } else { None };
         let res = if speed == 0.0 {
             // As fast as the core goes, drawing once per screen refresh.
             let t0 = std::time::Instant::now();
             let mut r = Ok(());
-            while !self.at_end() && r.is_ok() {
+            while (!self.at_end() || self.rec_extending()) && r.is_ok() {
                 let last = t0.elapsed() >= std::time::Duration::from_millis(14);
+                if !self.record_live(chord.as_deref()) {
+                    break;
+                }
                 r = self.run_one(last);
                 if last {
                     break;
@@ -1340,6 +1385,9 @@ impl App {
             }
             let mut r = Ok(());
             for i in 0..n {
+                if !self.record_live(chord.as_deref()) {
+                    break;
+                }
                 r = self.run_one(i + 1 == n);
                 if r.is_err() {
                     break;
@@ -1350,6 +1398,13 @@ impl App {
         if let Err(e) = res {
             self.playing = false;
             self.error(e);
+            return;
+        }
+        if self.at_end() && self.recording {
+            // Recording stays on at the end of the segment; playback pauses there.
+            if !self.rec_extending() {
+                self.playing = false;
+            }
             return;
         }
         if self.at_end() {
@@ -1556,6 +1611,333 @@ impl App {
 
     // ---- editing ----
 
+    // ---- recording (docs/gui.md#recording) ----
+
+    /// Why Record can't be turned on now, if it can't.
+    fn record_blocked(&self) -> Option<&'static str> {
+        let Some(id) = &self.selected else { return Some("Select a segment to record into") };
+        if self.agent_owned(id) {
+            return Some("This draft is open in an agent session and is read-only: right-click it and Take over to record into it");
+        }
+        if self.pb.is_none() || self.hydrating.is_some() {
+            return Some("Busy: wait for the segment to load or the clean to finish");
+        }
+        None
+    }
+
+    fn set_recording(&mut self, on: bool) {
+        let on = on && self.record_blocked().is_none();
+        if on != self.recording && on {
+            let how = if self.rec_cfg.frame_by_frame { "commit a frame with the commit key, step back with rewind" } else { "play to record what you hold" };
+            self.info(format!("Recording into player {}: {how}. Escape stops.", self.rec_cfg.port + 1));
+        }
+        self.recording = on;
+        self.roll.recording = on;
+        self.rec_pass = false;
+        self.rec_live = false;
+        self.rec_hold = None;
+    }
+
+    /// Real-time recording past the last frame makes the segment longer.
+    fn rec_extending(&self) -> bool {
+        self.recording && self.rec_cfg.extend && !self.rec_cfg.frame_by_frame
+    }
+
+    fn save_record_settings(&mut self) {
+        if let Some(col) = &self.col {
+            let mut local = col.load_local().unwrap_or_default();
+            local.record = Some(self.rec_cfg.to_local());
+            if let Err(e) = col.save_local(&local) {
+                self.error(e);
+            }
+        }
+    }
+
+    /// The buttons held on the keyboard now, on the controller being recorded. None while
+    /// the keyboard belongs to a text field or a dialog: nothing is recorded then.
+    fn held_chord(&self) -> Option<Vec<InputKey>> {
+        let ctx = egui_ctx();
+        if ctx.egui_wants_keyboard_input() || self.mapping.is_some() {
+            return None;
+        }
+        let held = ctx.input(|i| i.keys_down.clone());
+        Some(self.bindings.chord(&held, self.rec_cfg.port))
+    }
+
+    /// Joypad controllers to record into: the project's, and always players 1 and 2.
+    fn record_ports(&self) -> Vec<u32> {
+        let mut ports: BTreeSet<u32> = [0, 1].into_iter().collect();
+        if let Some(col) = &self.col {
+            for p in &col.config.ports {
+                if p.port > 0 && decomp_dj::format::device_from_name(&p.device).is_ok_and(|d| d & 0xff == decomp_dj::format::DEVICE_JOYPAD) {
+                    ports.insert(p.port - 1);
+                }
+            }
+        }
+        ports.insert(self.rec_cfg.port);
+        ports.into_iter().collect()
+    }
+
+    /// Writes frame `f` of the current segment before it runs: the buttons in `chord`, or
+    /// nothing held when `chord` is None. At the end, with Extend segment on, the segment
+    /// grows by this frame. Returns false when the frame can't be written.
+    fn record_frame(&mut self, f: u64, chord: Option<&[InputKey]>) -> bool {
+        let Some(pb) = &self.pb else { return false };
+        let (id, frames) = (pb.id.clone(), pb.frames);
+        if self.agent_owned(&id) {
+            self.set_recording(false);
+            return false;
+        }
+        let Some(col) = &self.col else { return false };
+        let mut r = col.replays[&id].clone();
+        let grow = f >= frames;
+        if grow {
+            if !self.rec_cfg.extend || f > frames {
+                return false;
+            }
+            if let Err(e) = r.set_frames(f + 1) {
+                self.error(e);
+                return false;
+            }
+        }
+        let changed = match chord {
+            Some(c) => record::write_frame(&mut r, f, c, self.rec_cfg.overwrite),
+            None => record::clear_frame(&mut r, f),
+        };
+        match changed {
+            Ok(false) if !grow => return true,
+            Ok(_) => {}
+            Err(e) => {
+                self.error(e);
+                return false;
+            }
+        }
+        // One undo step per pass, taken before its first change.
+        if !self.rec_pass {
+            if !self.remember("Record inputs", &[&id]) {
+                self.set_recording(false);
+                return false;
+            }
+            self.rec_pass = true;
+        }
+        self.col.as_mut().unwrap().replays.insert(id.clone(), r);
+        if grow {
+            if let Some(pb) = &mut self.pb {
+                pb.frames = f + 1;
+            }
+        }
+        self.record_invalidate(&id, f);
+        true
+    }
+
+    /// `invalidate_from` for a frame about to run: the same bookkeeping, but nothing is run
+    /// again (frames before `from` are unchanged) and playback isn't paused.
+    fn record_invalidate(&mut self, id: &str, from: u64) {
+        let Some(col) = &mut self.col else { return };
+        let r = col.replays.get_mut(id).unwrap();
+        r.remove_all("end-hash");
+        let keep: Vec<(u64, String)> = r.checkpoints().unwrap_or_default().into_iter().filter(|(f, _)| *f <= from).collect();
+        r.remove_all("checkpoint");
+        for (f, h) in &keep {
+            r.add("checkpoint", &format!("{f} {h}"));
+        }
+        self.edited.insert(id.to_string());
+        let e = self.dirty_from.entry(id.to_string()).or_insert(from);
+        *e = (*e).min(from);
+        self.roll.invalidate();
+        let Some(pb) = &mut self.pb else { return };
+        if let (Some(rec), Some(s)) = (pb.rec.take(), &mut self.session) {
+            let _ = s.keep_snapshots(rec);
+        }
+        pb.snapshots.retain(|k, _| *k <= from);
+        pb.checkpoints = keep.into_iter().collect();
+        pb.checkpoint_miss = pb.checkpoint_miss.filter(|m| *m <= from);
+        pb.end_hash = None;
+        pb.stale_from = Some(pb.stale_from.map_or(from, |s| s.min(from))).filter(|s| *s < pb.frames);
+        if !self.rec_live {
+            self.rec_live = true;
+            self.coverage_restart_live();
+        }
+    }
+
+    /// Real time: writes the held buttons into the frame about to play. False: stop here.
+    fn record_live(&mut self, chord: Option<&[InputKey]>) -> bool {
+        let Some(chord) = chord else { return true };
+        if !self.recording || self.rec_cfg.frame_by_frame {
+            return true;
+        }
+        let Some(f) = self.pb.as_ref().map(|p| p.ran) else { return true };
+        self.record_frame(f, Some(chord))
+    }
+
+    /// Frame by frame: commit writes the held buttons to the next frame and runs it;
+    /// rewind steps back one frame (clearing the frame it leaves when asked). Holding
+    /// either repeats at the playback speed after a short delay.
+    fn record_keys(&mut self, ctx: &egui::Context, dt: f64) {
+        if !self.recording {
+            return;
+        }
+        if self.record_blocked().is_some() {
+            self.set_recording(false);
+            return;
+        }
+        if ctx.egui_wants_keyboard_input() || self.mapping.is_some() {
+            self.rec_hold = None;
+            return;
+        }
+        // A focused button would take Space or Enter as a click.
+        if let Some(id) = ctx.memory(|m| m.focused()) {
+            ctx.memory_mut(|m| m.surrender_focus(id));
+        }
+        if !self.rec_cfg.frame_by_frame {
+            return;
+        }
+        let (commit, rewind, shift) = ctx.input(|i| (self.bindings.commit.is_some_and(|k| i.key_down(k)), self.bindings.rewind.is_some_and(|k| i.key_down(k)), i.modifiers.shift));
+        let which = if commit { Some(true) } else if rewind { Some(false) } else { None };
+        let Some(c) = which else {
+            // A held commit or rewind is one pass, and one undo step.
+            if self.rec_hold.take().is_some() {
+                self.rec_pass = false;
+                self.rec_live = false;
+            }
+            return;
+        };
+        let steps = match &mut self.rec_hold {
+            Some((was, held, clock)) if *was == c => {
+                *held += dt;
+                if *held < REC_HOLD_DELAY {
+                    0
+                } else {
+                    let speed = SPEEDS[self.speed].0;
+                    if speed == 0.0 {
+                        1
+                    } else {
+                        let rate = self.fps * speed;
+                        *clock += dt;
+                        let n = (*clock * rate).floor();
+                        *clock -= n / rate;
+                        (n as u64).min(4)
+                    }
+                }
+            }
+            _ => {
+                if self.rec_hold.is_some() {
+                    self.rec_pass = false;
+                }
+                self.rec_hold = Some((c, 0.0, 0.0));
+                1
+            }
+        };
+        ctx.request_repaint();
+        let chord = if c { self.held_chord().unwrap_or_default() } else { vec![] };
+        for _ in 0..steps {
+            let ok = if c { self.commit_frame(&chord) } else { self.rewind_frame(shift) };
+            if !ok {
+                break;
+            }
+        }
+    }
+
+    fn commit_frame(&mut self, chord: &[InputKey]) -> bool {
+        if self.job.is_some() {
+            return false;
+        }
+        self.playing = false;
+        let Some(f) = self.pb.as_ref().map(|p| p.ran) else { return false };
+        if !self.record_frame(f, Some(chord)) {
+            if self.recording && self.pb.as_ref().is_some_and(|p| f >= p.frames) {
+                self.info("At the end of the segment: turn on Extend segment (Record menu) to record past it");
+            }
+            return false;
+        }
+        if let Err(e) = self.run_one(true) {
+            self.error(e);
+            return false;
+        }
+        self.roll.follow_to(f);
+        true
+    }
+
+    fn rewind_frame(&mut self, shift: bool) -> bool {
+        if self.job.is_some() {
+            return false;
+        }
+        self.playing = false;
+        let Some(s) = self.pb.as_ref().and_then(|p| p.shown()) else { return false };
+        if s == 0 {
+            return false;
+        }
+        if self.rec_cfg.rewind_clears != shift {
+            self.record_frame(s, None);
+        }
+        self.seek(s - 1);
+        self.roll.follow_to(s - 1);
+        true
+    }
+
+    /// The ● Rec button and its options, in the transport.
+    fn record_button(&mut self, ui: &mut egui::Ui, icon: egui::Vec2) {
+        let blocked = self.record_blocked();
+        let mut changed = false;
+        let mut open_mapping = false;
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let cr = ui.visuals().widgets.inactive.corner_radius;
+            let left = egui::CornerRadius { nw: cr.nw, sw: cr.sw, ne: 0, se: 0 };
+            let right = egui::CornerRadius { nw: 0, sw: 0, ne: cr.ne, se: cr.se };
+            let text = if self.recording { RichText::new("● Rec").color(Color32::WHITE).strong() } else { RichText::new("● Rec").color(REC_RED) };
+            let mut b = egui::Button::new(text).min_size(egui::vec2(48.0, icon.y)).corner_radius(left);
+            if self.recording {
+                b = b.fill(REC_RED);
+            }
+            let tip = if self.recording {
+                "Recording: click or press Escape to stop".to_string()
+            } else {
+                format!("Record inputs from the keyboard into player {} ({})", self.rec_cfg.port + 1, if self.rec_cfg.frame_by_frame { "frame by frame" } else { "real time" })
+            };
+            let r = ui.add_enabled(self.recording || blocked.is_none(), b).on_hover_text(tip).on_disabled_hover_text(blocked.unwrap_or(""));
+            if r.clicked() {
+                self.set_recording(!self.recording);
+            }
+            ui.add_space(1.0);
+            let arrow = egui::Button::new("").min_size(egui::vec2(16.0, icon.y)).corner_radius(right);
+            let ports = self.record_ports();
+            let r = egui::containers::menu::MenuButton::from_button(arrow)
+                .ui(ui, |ui| {
+                    let cfg = &mut self.rec_cfg;
+                    changed |= ui.checkbox(&mut cfg.frame_by_frame, "Frame by frame").keep_open().on_hover_text("Off: real time, Space plays and pauses and every played frame records what you hold. On: the commit key (Space) writes what you hold to the next frame and steps to it; rewind (Backspace) steps back").changed();
+                    changed |= ui.checkbox(&mut cfg.rewind_clears, "Rewind clears inputs").keep_open().on_hover_text("Rewind also clears the input on each frame it leaves. Shift+rewind does the opposite").changed();
+                    changed |= ui.checkbox(&mut cfg.overwrite, "Overwrite all inputs").keep_open().on_hover_text("Each recorded frame clears every controller's input first, so only what you hold is left. Off: held buttons are only added (to record player 2 over player 1, say)").changed();
+                    changed |= ui.checkbox(&mut cfg.extend, "Extend segment").keep_open().on_hover_text("Recording past the last frame makes the segment longer. Off: playback pauses at the end and recording stays on").changed();
+                    ui.separator();
+                    ui.menu_button(format!("Controller: player {}", cfg.port + 1), |ui| {
+                        for p in &ports {
+                            if ui.radio(cfg.port == *p, format!("Player {}", p + 1)).clicked() {
+                                cfg.port = *p;
+                                changed = true;
+                            }
+                        }
+                    });
+                    if ui.button("Keyboard mapping…").clicked() {
+                        open_mapping = true;
+                    }
+                })
+                .0;
+            let r = r.on_hover_text("Recording options");
+            let c = icon_color(ui, &r);
+            let m = r.rect.center();
+            ui.painter().add(egui::Shape::convex_polygon(vec![egui::pos2(m.x - 3.5, m.y - 2.0), egui::pos2(m.x + 3.5, m.y - 2.0), egui::pos2(m.x, m.y + 2.5)], c, egui::Stroke::NONE));
+        });
+        if changed {
+            self.rec_hold = None;
+            self.rec_pass = false;
+            self.save_record_settings();
+        }
+        if open_mapping {
+            self.mapping = Some(record::MappingDialog::new(&self.bindings));
+        }
+    }
+
     fn apply_edit(&mut self, label: &str, edits: Vec<(InputKey, Vec<(u64, u64)>)>, from: u64) {
         let Some(id) = self.selected.clone() else { return };
         if !self.remember(label, &[&id]) {
@@ -1706,6 +2088,7 @@ impl App {
     }
 
     fn undo(&mut self) {
+        self.rec_pass = false;
         if let Some(step) = self.undo.pop() {
             let label = step.label.clone();
             let back = self.restore(step);
@@ -1715,6 +2098,7 @@ impl App {
     }
 
     fn redo(&mut self) {
+        self.rec_pass = false;
         if let Some(step) = self.redo.pop() {
             let label = step.label.clone();
             let back = self.restore(step);
@@ -2567,7 +2951,9 @@ impl App {
             }));
             bar.push(ui.menu_button("MCP", |ui| self.agent_menu(ui)));
             bar.push(ui.menu_button("Input", |ui| {
-                ui.add_enabled(false, egui::Button::new("Keyboard mapping…")).on_disabled_hover_text("Coming later: play the game from the keyboard and record into the roll");
+                if ui.button("Keyboard mapping…").on_hover_text("Keys for recording inputs from the keyboard").clicked() {
+                    self.mapping = Some(record::MappingDialog::new(&self.bindings));
+                }
             }));
             bar.push(ui.menu_button("View", |ui| {
                 if ui.button("Zoom in").clicked() {
@@ -3796,6 +4182,8 @@ impl App {
                     .on_hover_text("Behavior at the end of the segment");
             });
             ui.separator();
+            self.record_button(ui, icon);
+            ui.separator();
 
             // Speed.
             ui.add_enabled_ui(has, |ui| {
@@ -3894,7 +4282,13 @@ impl App {
         let bar_h = 2.0 * ui.spacing().interact_size.y + 3.0 * ui.spacing().item_spacing.y + 8.0;
         let avail = egui::Rect::from_min_max(full.min, egui::pos2(full.max.x, (full.max.y - bar_h).max(full.min.y)));
         ui.scope_builder(egui::UiBuilder::new().max_rect(avail), |ui| self.picture(ui, avail));
-        ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_max(egui::pos2(full.min.x, avail.max.y + 4.0), full.max)), |ui| self.transport(ui));
+        let bar = egui::Rect::from_min_max(egui::pos2(full.min.x, avail.max.y + 4.0), full.max);
+        if self.recording {
+            // Unmistakable while on: a red frame around the picture and a tinted transport.
+            ui.painter().rect_stroke(avail.shrink(1.0), 0.0, egui::Stroke::new(2.0, REC_RED), egui::StrokeKind::Inside);
+            ui.painter().rect_filled(bar.expand2(egui::vec2(0.0, 2.0)), 4.0, REC_RED.gamma_multiply(0.18));
+        }
+        ui.scope_builder(egui::UiBuilder::new().max_rect(bar), |ui| self.transport(ui));
         ui.allocate_rect(full, egui::Sense::hover());
     }
 
@@ -3984,17 +4378,24 @@ impl App {
             return;
         }
         use egui::{Key, Modifiers};
+        // While recording, the game's keys win: only Escape (stop recording), Space as
+        // play/pause in real time, and Ctrl/Cmd shortcuts stay.
+        let plain = !self.recording;
+        if self.recording && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            self.set_recording(false);
+        }
+        let rec_space = self.recording && !self.rec_cfg.frame_by_frame && !self.bindings.is_button(Key::Space) && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Space));
         let (space, right, left, home, end, save) = ctx.input_mut(|i| {
             (
-                i.consume_key(Modifiers::NONE, Key::Space),
-                i.consume_key(Modifiers::NONE, Key::ArrowRight),
-                i.consume_key(Modifiers::NONE, Key::ArrowLeft),
-                i.consume_key(Modifiers::NONE, Key::Home),
-                i.consume_key(Modifiers::NONE, Key::End),
+                rec_space || (plain && i.consume_key(Modifiers::NONE, Key::Space)),
+                plain && i.consume_key(Modifiers::NONE, Key::ArrowRight),
+                plain && i.consume_key(Modifiers::NONE, Key::ArrowLeft),
+                plain && i.consume_key(Modifiers::NONE, Key::Home),
+                plain && i.consume_key(Modifiers::NONE, Key::End),
                 i.consume_key(Modifiers::COMMAND, Key::S),
             )
         });
-        let add_event = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::E));
+        let add_event = plain && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::E));
         // Redo first: Cmd+Z alone would also match Cmd+Shift+Z.
         let (undo, redo, mut cut, mut copy, mut paste) = ctx.input_mut(|i| {
             let redo = i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || i.consume_key(Modifiers::COMMAND, Key::Y);
@@ -4032,7 +4433,7 @@ impl App {
         if paste {
             self.paste();
         }
-        let rename = ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter) || i.consume_key(Modifiers::NONE, Key::F2));
+        let rename = plain && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter) || i.consume_key(Modifiers::NONE, Key::F2));
         if rename && self.node_dialog.is_none() && self.frame_dialog.is_none() && self.renaming.is_none() {
             if let (Some(id), Some(col)) = (&self.selected, &self.col) {
                 let title = col.replays[id].title().to_string();
@@ -4106,6 +4507,7 @@ impl eframe::App for App {
         if self.job.is_some() || self.hydrating.as_ref().is_some_and(|h| !h.paused) {
             ctx.request_repaint();
         }
+        self.record_keys(&ctx, dt);
         self.tick(dt);
         if self.playing {
             ctx.request_repaint();
@@ -4141,6 +4543,23 @@ impl eframe::App for App {
         });
         egui::CentralPanel::default().show(ui, |ui| self.preview(ui));
         self.dialogs(&ctx);
+        if let Some(d) = &mut self.mapping {
+            match d.show(&ctx) {
+                Some(record::MappingResult::Save(b)) => {
+                    self.bindings = b;
+                    self.mapping = None;
+                    if let Some(col) = &self.col {
+                        let mut local = col.load_local().unwrap_or_default();
+                        local.keyboard = Some(self.bindings.to_local());
+                        if let Err(e) = col.save_local(&local) {
+                            self.error(e);
+                        }
+                    }
+                }
+                Some(record::MappingResult::Cancel) => self.mapping = None,
+                None => {}
+            }
+        }
 
         match action {
             Some(roll::Action::Seek(f)) => {

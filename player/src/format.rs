@@ -320,6 +320,14 @@ impl Replay {
     /// Replaces every input line for `key` with the given held spans
     /// (`start..end`, end exclusive), keeping all other lines. Used by editors.
     pub fn set_binary_spans(&mut self, key: InputKey, spans: &[(u64, u64)]) -> Result<()> {
+        self.set_binary_spans_many(&[(key, spans.to_vec())])
+    }
+
+    /// `set_binary_spans` for several inputs at once, re-parsing the file only once.
+    pub fn set_binary_spans_many(&mut self, edits: &[(InputKey, Vec<(u64, u64)>)]) -> Result<()> {
+        if edits.is_empty() {
+            return Ok(());
+        }
         let frames = self.frames()?;
         let mut kept: Vec<(u64, String)> = vec![];
         let mut comments: Vec<String> = vec![];
@@ -334,25 +342,28 @@ impl Replay {
             }
             let (f, cmd) = parse_body_line(t)?;
             if let Command::Input { key: k, .. } = cmd {
-                if k == key {
+                if edits.iter().any(|(key, _)| *key == k) {
                     continue;
                 }
             }
             kept.push((f, b.clone()));
         }
-        let mut merged: Vec<(u64, u64)> = vec![];
-        let mut sorted: Vec<(u64, u64)> = spans.iter().copied().filter(|(a, b)| b > a && *a < frames).collect();
-        sorted.sort();
-        for (a, b) in sorted {
-            match merged.last_mut() {
-                Some(last) if a <= last.1 => last.1 = last.1.max(b),
-                _ => merged.push((a, b)),
+        for (key, spans) in edits {
+            let key = *key;
+            let mut merged: Vec<(u64, u64)> = vec![];
+            let mut sorted: Vec<(u64, u64)> = spans.iter().copied().filter(|(a, b)| b > a && *a < frames).collect();
+            sorted.sort();
+            for (a, b) in sorted {
+                match merged.last_mut() {
+                    Some(last) if a <= last.1 => last.1 = last.1.max(b),
+                    _ => merged.push((a, b)),
+                }
             }
-        }
-        for (a, b) in merged {
-            kept.push((a, format!("{a} {}", input_text(key, 1))));
-            if b < frames {
-                kept.push((b, format!("{b} {}", input_text(key, 0))));
+            for (a, b) in merged {
+                kept.push((a, format!("{a} {}", input_text(key, 1))));
+                if b < frames {
+                    kept.push((b, format!("{b} {}", input_text(key, 0))));
+                }
             }
         }
         kept.sort_by_key(|(f, _)| *f);

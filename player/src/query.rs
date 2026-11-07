@@ -35,7 +35,7 @@ impl Project {
         let conn = cache::Cache::open_readonly(&col)?;
         let setup: String = conn
             .query_row("SELECT setup FROM contents ORDER BY played_at DESC LIMIT 1", [], |r| r.get(0))
-            .context("the local database is empty; run `dj hydrate` first")?;
+            .context("the local database is empty; run `dj clean` first")?;
         let rom_path = match rom {
             Some(r) => Some(r.to_path_buf()),
             None => col.load_local()?.rom,
@@ -205,7 +205,7 @@ impl Project {
                 at: self.addr(region, h.offset).text,
                 depth: h.depth,
                 status: h.status.label().to_string(),
-                counts: h.status != Status::Dirty,
+                counts: h.status != Status::Dirty && !self.col.is_draft(&h.id),
                 nearest_snapshot: self.nearest_snapshot(&keys, &h.id, h.frame)?,
             });
         }

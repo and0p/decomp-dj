@@ -91,7 +91,7 @@ impl Server {
                         if r.get("draft-note").is_none() {
                             r.set("draft-note", "kept: the agent disconnected with its session open");
                         }
-                        let _ = std::fs::write(&f.path, r.to_text());
+                        let _ = decomp_dj::collection::write_atomic(&f.path, &r.to_text());
                     }
                 }
             }
@@ -114,6 +114,42 @@ impl Server {
 
     fn sessions_file(&self) -> PathBuf {
         self.dir.join(".local").join("mcp").join(format!("sessions-{}.json", std::process::id()))
+    }
+
+    /// Closes, keeping their drafts, the sessions whose draft the person took over in the GUI
+    /// (a file named after the draft in .local/mcp/takeover/). Runs before every tool call,
+    /// so nothing of the agent's touches a draft after it was taken over. Returns whether any
+    /// session closed.
+    fn honor_takeovers(&mut self) -> bool {
+        let dir = self.dir.join(".local").join("mcp").join("takeover");
+        let Ok(rd) = std::fs::read_dir(&dir) else { return false };
+        let mut closed = false;
+        for e in rd.flatten() {
+            let draft = e.file_name().to_string_lossy().into_owned();
+            let ours: Vec<String> = self.sessions.iter().filter(|(_, s)| s.draft == draft).map(|(k, _)| k.clone()).collect();
+            if ours.is_empty() {
+                // Another server's session, or one already closed: leave the request to it,
+                // unless it is old.
+                let old = e.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| t.elapsed().ok()).is_some_and(|d| d.as_secs() > 600);
+                if old {
+                    let _ = std::fs::remove_file(e.path());
+                }
+                continue;
+            }
+            for k in ours {
+                self.sessions.remove(&k);
+            }
+            if let Ok(d) = self.resolve_draft(&draft) {
+                if d.r.get("draft-scratch").is_some() {
+                    let mut r = d.r;
+                    r.remove_all("draft-scratch");
+                    let _ = decomp_dj::collection::write_atomic(&d.path, &r.to_text());
+                }
+            }
+            let _ = std::fs::remove_file(e.path());
+            closed = true;
+        }
+        closed
     }
 
     /// Writes the open sessions to .local/mcp/sessions-<pid>.json, for the GUI to follow.
@@ -155,8 +191,9 @@ impl Server {
         if def.allow > self.allow {
             return error_result(&format!("{name} is not allowed: this server runs with --allow {:?} (set [mcp] allow in .local/local.toml)", self.allow).to_lowercase());
         }
+        let took = self.honor_takeovers();
         let res = self.dispatch(name, &Args(args));
-        if def.allow >= Allow::Draft {
+        if def.allow >= Allow::Draft || took {
             self.publish_sessions();
         }
         match res {
@@ -425,7 +462,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "segments",
-            description: "The segment tree: id, title, parent, depth, frames, status (clean, dirty, unverified), whether it pokes memory, child count. filter matches titles and id prefixes.",
+            description: "The segment tree: id, title, parent, depth, frames, status (clean or dirty), whether it pokes memory, child count. filter matches titles and id prefixes.",
             schema: props(json!({"filter": {"type": "string"}}), &[]),
             allow: Query,
         },
@@ -451,7 +488,7 @@ fn play_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "close_session",
-            description: "Stop a session's worker. Its draft is deleted unless keep=true or it was made with draft_from_text or branch.",
+            description: "Stop a session's worker. Its draft is deleted unless keep=true or it was made with draft_from_text or branch. A kept draft is played once more with recording on, so the person's dj-gui knows its coverage and hashes without playing it.",
             schema: props(json!({"session": session.clone(), "keep": {"type": "boolean"}}), &[]),
             allow: Draft,
         },

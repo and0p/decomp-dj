@@ -25,7 +25,6 @@ pub struct Hydrator {
     pub targets: Vec<String>,
     /// Index of the segment being worked on.
     pub i: usize,
-    pub clean: bool,
     pub force: bool,
     /// Verify: only the segments that aren't clean, recording hashes in memory where it is
     /// safe (`try_record`) instead of writing files. The caller saves.
@@ -44,23 +43,29 @@ struct Current {
 
 impl Hydrator {
     /// `scope`: None for the whole tree, or a segment and whether to include its children.
-    pub fn new(col: &Collection, scope: Option<(&str, bool)>, clean: bool, force: bool) -> Result<Hydrator> {
+    pub fn new(col: &Collection, scope: Option<(&str, bool)>, force: bool) -> Result<Hydrator> {
         let order: Vec<String> = col.tree_order().into_iter().filter(|(id, _)| !col.is_draft(id) || scope.is_some_and(|(s, _)| s == *id)).map(|(id, _)| id.to_string()).collect();
         let targets = match scope {
             None => order,
             Some((root, children)) => order.into_iter().filter(|id| id == root || (children && col.chain(id).map(|c| c.contains(&root)).unwrap_or(false))).collect(),
         };
-        Ok(Hydrator { targets, i: 0, clean, force, verify: false, end_now: HashMap::new(), current: None, run: None, events: vec![], frames_played: 0 })
+        Ok(Hydrator { targets, i: 0, force, verify: false, end_now: HashMap::new(), current: None, run: None, events: vec![], frames_played: 0 })
     }
 
-    /// Verify all (or a subtree): plays, top down, every segment that isn't clean, and records
-    /// hashes in the collection in memory where `try_record` finds it safe. Segments below one
-    /// that stays unclean are skipped, since their start can't be trusted.
-    pub fn verify(col: &Collection, scope: Option<(&str, bool)>) -> Result<Hydrator> {
-        let mut h = Hydrator::new(col, scope, false, false)?;
-        h.targets.retain(|id| !col.is_draft(id) && col.tree_status(id) != Status::Clean);
+    /// Clean all (or a subtree): plays, top down, every segment that isn't clean or whose
+    /// current content isn't in the local database yet, and records hashes in the collection
+    /// in memory where `try_record` finds it safe. Segments below one that stays unclean are
+    /// skipped, since their start can't be trusted. `force` replays everything, stored or not.
+    pub fn verify(col: &Collection, scope: Option<(&str, bool)>, drafts: bool, force: bool) -> Result<Hydrator> {
+        let mut h = Hydrator::new(col, scope, force)?;
+        h.targets.retain(|id| drafts || !col.is_draft(id));
         h.verify = true;
         Ok(h)
+    }
+
+    /// The targets that aren't clean (what a clean would record hashes for).
+    pub fn unclean(&self, col: &Collection) -> usize {
+        self.targets.iter().filter(|id| col.tree_status(id) != Status::Clean).count()
     }
 
     pub fn done(&self) -> bool {
@@ -106,13 +111,8 @@ impl Hydrator {
             } else {
                 let id = self.targets[self.i].clone();
                 if self.verify {
-                    // Earlier records may have cleaned it (it was only dirty because of its
-                    // parent), or its parent may have stayed unclean.
-                    let skip = if col.tree_status(&id) == Status::Clean {
-                        Some(("stored", "ok"))
-                    } else {
-                        col.replays[&id].parent().filter(|p| col.tree_status(p) != Status::Clean).map(|_| ("skipped", "blocked"))
-                    };
+                    // Its parent may have stayed unclean: its start can't be trusted.
+                    let skip = col.replays[&id].parent().filter(|p| col.tree_status(p) != Status::Clean).map(|_| ("skipped", "blocked"));
                     if let Some((action, verdict)) = skip {
                         let ev = HydrateEvent { id: id.clone(), action, verdict, frames: 0 };
                         self.events.push(ev.clone());
@@ -145,7 +145,12 @@ impl Hydrator {
                     },
                 };
                 let key = s.content_key(col, &id, &start)?;
-                let known = if self.force { None } else { s.cache.as_ref().unwrap().content(&key)? };
+                let mut known = if self.force { None } else { s.cache.as_ref().unwrap().content(&key)? };
+                // Cleaning a segment whose stored pass ends differently: play it, since a
+                // changed ending needs the checkpoint hashes the database doesn't keep.
+                if self.verify && known.as_ref().is_some_and(|row| col.replays[&id].get("end-hash").is_some_and(|e| e != row.end_hash)) {
+                    known = None;
+                }
                 if let Some(row) = known {
                     let ev = self.conclude(s, col, &id, &start, start_frame, &row.end_hash, None, "stored", row.frames)?;
                     out.push(ev);
@@ -180,8 +185,6 @@ impl Hydrator {
         let mut verdict = judge_hashes(col, id, start, end, cps);
         if self.verify {
             verdict = try_record(col, id, start, start_frame, end, cps);
-        } else if self.clean && verdict == "dirty" {
-            verdict = try_clean(col, id, start, start_frame, end, cps)?;
         }
         let key = s.content_key(col, id, start)?;
         if let (Some(c), Some(run)) = (&s.cache, self.run) {
@@ -220,49 +223,80 @@ pub fn judge_hashes(col: &Collection, id: &str, start: &str, end: &str, checkpoi
     }
 }
 
-/// "Hydrate and clean": a dirty segment that still ends with its recorded hashes gets
-/// its new start hash written, so it is clean again. Otherwise it is a mismatch.
-pub fn try_clean(col: &mut Collection, id: &str, start: &str, start_frame: u64, end: &str, checkpoints: Option<&[(u64, String)]>) -> Result<&'static str> {
-    let r = &col.replays[id];
-    let end_ok = r.get("end-hash") == Some(end);
-    let cps_ok = checkpoints.is_none_or(|got| r.checkpoints().unwrap_or_default().iter().all(|(f, h)| got.iter().all(|(gf, gh)| gf != f || gh == h)));
-    if end_ok && cps_ok {
-        let r = col.replays.get_mut(id).unwrap();
-        r.set("start-hash", start);
-        r.set("start-frame", &start_frame.to_string());
-        col.save_replay(id)?;
-        Ok("cleaned")
-    } else {
-        Ok("mismatch")
+/// Records hashes from the local database instead of playing (docs/playback.md, "Recording
+/// hashes"): top down, every segment that isn't clean, whose start is trusted, and whose
+/// content (setup, start, lines) has a stored pass gets that pass's end hash through
+/// `try_record`, as if it had just been played. In memory only; the caller saves.
+///
+/// A stored pass that ends differently from the recorded end hash is left for a real play,
+/// since the database doesn't keep the checkpoint hashes a changed ending needs. Segments
+/// in `skip` (drafts an agent has open) are left alone. Returns (id, verdict) for each
+/// segment it recorded.
+pub fn record_from_cache(col: &mut Collection, cache: &crate::cache::Cache, skip: &std::collections::HashSet<String>) -> Result<Vec<(String, &'static str)>> {
+    let ids: Vec<String> = col.tree_order().into_iter().map(|(id, _)| id.to_string()).collect();
+    let mut out = vec![];
+    for id in ids {
+        if skip.contains(&id) || col.tree_status(&id) == Status::Clean {
+            continue;
+        }
+        let r = &col.replays[&id];
+        let (start, start_frame) = match r.parent() {
+            Some(p) => {
+                let pr = &col.replays[p];
+                if col.tree_status(p) != Status::Clean {
+                    continue;
+                }
+                let (Some(e), Some(sf)) = (pr.get("end-hash"), pr.get("start-frame").and_then(|f| f.parse::<u64>().ok())) else { continue };
+                (e.to_string(), sf + pr.frames().unwrap_or(0))
+            }
+            None => match r.get("start-hash") {
+                Some(s) => (s.to_string(), crate::player::trunk_start_frame(r)),
+                None => continue,
+            },
+        };
+        let body = crate::cache::body_hash(r, &crate::player::devices_at_start(col, &id)?)?;
+        let key = crate::cache::content_key(&cache.setup, &start, &body);
+        let Some(row) = cache.content(&key)? else { continue };
+        if r.get("end-hash").is_some_and(|e| e != row.end_hash) {
+            continue;
+        }
+        let v = try_record(col, &id, &start, start_frame, &row.end_hash, None);
+        if matches!(v, "recorded" | "cleaned") {
+            out.push((id, v));
+        }
     }
+    Ok(out)
 }
 
-/// Records what a play of `id` from `start` produced, in memory only, where nothing recorded
-/// is overwritten (docs/playback.md, "Recording hashes"):
+/// Records what a play of `id` from `start` produced, in memory only (docs/playback.md,
+/// "Recording hashes"). The caller saves.
 ///
-/// - The start must be trusted: the parent is clean and ends with `start`, or for a root
-///   segment, `start` is its recorded start hash (if it has one). Otherwise "blocked".
-/// - No end hash yet (unverified): start, end hash and start frame are recorded: "recorded".
-/// - The recorded end hash and checkpoints still match, but the start hash is old (dirty):
-///   the new start hash is recorded: "cleaned". Already matching: "ok".
-/// - The end hash or a checkpoint differs: nothing changes, "mismatch". Replacing a recorded
-///   hash is a person's call.
+/// - The start must be trusted: for a child, its parent is clean and ends with `start`.
+///   Otherwise "blocked", and nothing changes. A root segment's start is where it starts.
+/// - No end hash yet: start, end hash and start frame are recorded: "recorded".
+/// - The recorded end hash and checkpoints still match, but the start hash is old: the new
+///   start hash is recorded: "cleaned". Already matching: "ok".
+/// - The end hash or a checkpoint differs: the new hashes are recorded anyway: "changed".
+///   Whether a changed ending matters is the author's call; the GUI flags it until saved.
+///
+/// `checkpoints` are the hashes this play saw at recorded checkpoint frames (None: unknown,
+/// as for a result read from the database). On "changed", seen checkpoints take their new
+/// value and unseen ones are dropped, since they can no longer be trusted.
 pub fn try_record(col: &mut Collection, id: &str, start: &str, start_frame: u64, end: &str, checkpoints: Option<&[(u64, String)]>) -> &'static str {
     let r = &col.replays[id];
-    let start_ok = match r.parent() {
-        Some(p) => col.tree_status(p) == Status::Clean && col.replays[p].get("end-hash") == Some(start),
-        None => r.get("start-hash").is_none_or(|s| s == start),
-    };
-    if !start_ok {
-        return "blocked";
+    if let Some(p) = r.parent() {
+        if col.tree_status(p) != Status::Clean || col.replays[p].get("end-hash") != Some(start) {
+            return "blocked";
+        }
     }
-    let cps_ok = checkpoints.is_none_or(|got| r.checkpoints().unwrap_or_default().iter().all(|(f, h)| got.iter().all(|(gf, gh)| gf != f || gh == h)));
-    if !cps_ok {
-        return "mismatch";
-    }
+    let recorded = r.checkpoints().unwrap_or_default();
+    let cps_ok = checkpoints.is_none_or(|got| recorded.iter().all(|(f, h)| got.iter().all(|(gf, gh)| gf != f || gh == h)));
     let verdict = match r.get("end-hash") {
-        Some(e) if e != end => return "mismatch",
         None => "recorded",
+        Some(e) if e != end || !cps_ok => "changed",
+        // A root segment that starts somewhere new (a different blob, say): a change the
+        // author should see, like a changed ending.
+        Some(_) if r.parent().is_none() && r.get("start-hash").is_some_and(|s| s != start) => "changed",
         Some(_) if r.get("start-hash") == Some(start) => return "ok",
         Some(_) => "cleaned",
     };
@@ -270,6 +304,15 @@ pub fn try_record(col: &mut Collection, id: &str, start: &str, start_frame: u64,
     r.set("start-hash", start);
     r.set("end-hash", end);
     r.set("start-frame", &start_frame.to_string());
+    if !cps_ok {
+        let got = checkpoints.unwrap_or_default();
+        r.remove_all("checkpoint");
+        for (f, _) in &recorded {
+            if let Some((_, h)) = got.iter().find(|(gf, _)| gf == f) {
+                r.add("checkpoint", &format!("{f} {h}"));
+            }
+        }
+    }
     verdict
 }
 
@@ -303,10 +346,22 @@ mod tests {
     }
 
     #[test]
-    fn a_different_end_is_never_overwritten() {
-        let mut col = project("mismatch");
-        assert_eq!(try_record(&mut col, "b", "A1", 10, "X", None), "mismatch");
-        assert_eq!(col.replays["b"].get("end-hash"), Some("B"));
+    fn a_different_end_is_recorded_as_changed() {
+        let mut col = project("changed");
+        assert_eq!(try_record(&mut col, "b", "A1", 10, "X", None), "changed");
+        assert_eq!(col.replays["b"].get("end-hash"), Some("X"));
+        assert_eq!(col.tree_status("b"), Status::Clean);
+    }
+
+    #[test]
+    fn a_differing_checkpoint_is_replaced_and_unseen_ones_dropped() {
+        let mut col = project("checkpoints");
+        let b = col.replays.get_mut("b").unwrap();
+        b.add("checkpoint", "3 C3");
+        b.add("checkpoint", "6 C6");
+        let seen = vec![(3, "N3".to_string())];
+        assert_eq!(try_record(&mut col, "b", "A1", 10, "B", Some(&seen)), "changed");
+        assert_eq!(col.replays["b"].checkpoints().unwrap(), vec![(3, "N3".to_string())]);
     }
 
     #[test]
@@ -324,9 +379,52 @@ mod tests {
     }
 
     #[test]
-    fn verify_targets_only_unclean_segments() {
+    fn a_root_that_starts_somewhere_new_is_changed() {
+        let mut col = project("root");
+        col.replays.get_mut("a").unwrap().set("start-hash", "S0");
+        assert_eq!(try_record(&mut col, "a", "S0", 0, "A1", None), "ok");
+        assert_eq!(try_record(&mut col, "a", "S1", 0, "A1", None), "changed");
+        assert_eq!(col.replays["a"].get("start-hash"), Some("S1"));
+    }
+
+    #[test]
+    fn hashes_come_from_the_cache_when_it_has_the_content() {
+        let mut col = project("fromcache");
+        col.replays.get_mut("a").unwrap().set("start-frame", "0");
+        let mut c = crate::cache::Cache::open(&col, "setup", &[], crate::cache::CacheSettings::resolve(None, None).unwrap()).unwrap();
+        let none = std::collections::HashSet::new();
+        // b is dirty (starts at A0, a ends at A1) and nothing is stored: nothing to record.
+        assert!(record_from_cache(&mut col, &c, &none).unwrap().is_empty());
+        // A stored pass of b from A1 that still ends at B: b is cleaned without playing.
+        let devices = crate::player::devices_at_start(&col, "b").unwrap();
+        let body = crate::cache::body_hash(&col.replays["b"], &devices).unwrap();
+        let key = crate::cache::content_key("setup", "A1", &body);
+        let row = crate::cache::ContentRow { key, segment_id: "b".into(), start_hash: "A1".into(), end_hash: "B".into(), body, frames: 10, ticks: None };
+        c.record(&row, &Default::default()).unwrap();
+        assert_eq!(record_from_cache(&mut col, &c, &none).unwrap(), vec![("b".to_string(), "cleaned")]);
+        assert_eq!(col.tree_status("b"), Status::Clean);
+        assert_eq!(col.replays["b"].get("start-frame"), Some("10"));
+    }
+
+    #[test]
+    fn a_stored_pass_with_another_ending_is_left_for_a_play() {
+        let mut col = project("fromcache2");
+        col.replays.get_mut("a").unwrap().set("start-frame", "0");
+        let mut c = crate::cache::Cache::open(&col, "setup", &[], crate::cache::CacheSettings::resolve(None, None).unwrap()).unwrap();
+        let devices = crate::player::devices_at_start(&col, "b").unwrap();
+        let body = crate::cache::body_hash(&col.replays["b"], &devices).unwrap();
+        let key = crate::cache::content_key("setup", "A1", &body);
+        let row = crate::cache::ContentRow { key, segment_id: "b".into(), start_hash: "A1".into(), end_hash: "B2".into(), body, frames: 10, ticks: None };
+        c.record(&row, &Default::default()).unwrap();
+        assert!(record_from_cache(&mut col, &c, &std::collections::HashSet::new()).unwrap().is_empty());
+        assert_eq!(col.tree_status("b"), Status::Dirty);
+    }
+
+    #[test]
+    fn cleaning_looks_at_every_segment_but_records_only_unclean_ones() {
         let col = project("targets");
-        let h = Hydrator::verify(&col, None).unwrap();
-        assert_eq!(h.targets, vec!["b".to_string()]);
+        let h = Hydrator::verify(&col, None, false, false).unwrap();
+        assert_eq!(h.targets.len(), col.replays.len());
+        assert_eq!(h.unclean(&col), 1);
     }
 }

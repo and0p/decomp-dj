@@ -8,6 +8,10 @@ every current feature onto it: keep, merge or drop.
 
 It is a plan, not a spec. Where it changes format version 1 it says so; most of it doesn't.
 
+**Status: carried out** (every step in [Order of work](#order-of-work)). The docs describe
+the result; this note stays as the record of why, with what turned out differently noted
+in place.
+
 ## The model: four rules
 
 1. **Segment files are the only truth.** What is in `segments/` (plus `config.toml`,
@@ -22,7 +26,7 @@ It is a plan, not a spec. Where it changes format version 1 it says so; most of 
    overwrites nothing. The only hash decision a person makes is whether a changed ending is
    intended.
 4. **Coverage is a function of the current tree.** Covered = run by a clean, saved segment,
-   looked up in the cache. What unsaved segments add shows at once as new (yellow) and
+   looked up in the cache. What unsaved segments add shows at once as new (yellow-green) and
    counts when saved. There is no separate "new until hydrated" state.
 
 Everything below follows from these.
@@ -79,6 +83,9 @@ Everything below follows from these.
 - **Change: one reader of the connector.** Today the live view reads and clears the
   connector's flags every refresh, and `Recorder` expects to own them. The recorder becomes
   the only reader, and the live view reads its running total.
+  *As built:* the recorder gathers the flags into its own running total after every frame,
+  so the live view may go on reading and clearing them each refresh (it needs "what ran
+  since the last refresh" for the activity glow). Neither disturbs the other.
 - **Keep** Hydrate all and Hydrate this / this and below, described as filling the cache.
 - **Drop** `dj hydrate --clean` in favour of a CLI `dj clean` that uses the same rule as
   the GUI (`try_record` in `player/src/hydrate.rs`) and writes files, since the CLI has no
@@ -90,20 +97,21 @@ Everything below follows from these.
 ### Coverage
 
 - **Change:** the report reads the segments in the editor, saved or not, so an unsaved
-  segment's coverage shows at once (yellow where it is new), and deleting it takes its
+  segment's coverage shows at once (yellow-green where it is new), and deleting it takes its
   coverage with it. It counts towards the totals when saved.
 - **Decided: dirty segments don't count.** Covered means run by a clean segment, as today.
 - **Change: one colour per meaning on the map and function list.** In order of precedence
   where a unit is run by several segments:
   - **Green:** run by a clean, saved segment. Counted.
-  - **Yellow:** new, not counted until saved: run by an unsaved segment (or the live
+  - **Yellow-green** (today's live colour, `cov::LIVE`): new, not counted until saved: run by an unsaved segment (or the live
     pass being played) and by no saved clean segment. Unsaved coverage that a saved
     segment already runs is just green, so no further distinction is needed.
   - **Dark, faded green:** run only by dirty segments. Not counted; cleaning them brings it
     back. Found from the cache (a dirty segment's last pass), without playing anything.
   - **Grey:** never run. Blue: unreachable, as today.
 
-  The totals show the yellow and faded parts apart ("+N unsaved", "+N if cleaned").
+  The totals show the yellow-green and faded parts apart ("+N unsaved", "+N if cleaned").
+  Nothing on the map uses a pure yellow, which would read as a warning.
 - **Roadmap:** tracking coverage lost ([ROADMAP.md](ROADMAP.md#coverage)).
 
 ### Agents and drafts
@@ -115,6 +123,9 @@ Everything below follows from these.
   your own edits, and recording happens as for any segment. Deleting one is a normal delete.
 - **Drop** Save as segment, Discard draft as a special action, and probably `--allow save`
   and `save_draft` (keep it only if headless agent runs need to commit on their own).
+  *As built:* Save as segment and Discard draft are gone. `--allow save` and `save_draft`
+  stay for now: they are opt-in, and a headless run (fuzzing with no GUI open) has no other
+  way to commit. Dropping them is a one-line decision later.
 - **Keep** following a session and sharing your view.
 
 ### Watching files
@@ -138,7 +149,8 @@ is a child played from its parent's new end that ends somewhere new.
 
 **Saving dirty segments is discouraged, not blocked.** Save offers to clean what the
 save would leave dirty (the edited segments and everything below them), and says what
-stays dirty if you save anyway.
+stays dirty if you save anyway. *As built:* the Save dialog offers **Clean, then save**
+(Clean all segments, then Save) and **Save anyway**.
 
 **What files alone can't show.** Status is worked out by comparing hashes between files,
 so it catches a save made before cleaning, but not hand-edited hashes that agree with each
@@ -150,10 +162,26 @@ play (`dj run`, or Clean all segments with "check everything").
 
 ## Order of work
 
-1. Fold unverified into dirty in the tree, counts, `dj status` and docs. Record changed
-   endings automatically and flag them with **!**; drop Use new end hash.
-2. GUI playback records through `Recorder`, with one reader of the connector.
-3. Coverage over the editor's tree (rule 4), with the colours above.
-4. Drafts as unsaved segments; drop Save as segment and `--allow save`.
-5. `dj clean` on the CLI (replacing `dj hydrate --clean`).
-6. Docs: concepts.md first, since it is where the vocabulary lives, then the rest.
+1. Done: fold unverified into dirty in the tree, counts, `dj status` and docs. Record
+   changed endings automatically and flag them with **!**; drop Use new end hash.
+   (`dj status` marks dirty segments `?`, no hashes recorded, or `~`, starts somewhere its
+   parent no longer ends, so that **!** keeps one meaning.)
+2. Done: GUI playback records through `Recorder` (see the connector note above).
+3. Done: coverage over the editor's tree (rule 4), with the colours above
+   (`coverage::build_report_with`, `Totals::unsaved_new`, `Totals::if_cleaned`).
+4. Done: drafts as unsaved segments; Save as segment and Discard draft dropped
+   (`--allow save` kept, see above). Clean all segments cleans drafts too, except those
+   open in an agent session.
+5. Done: `dj clean` on the CLI, replacing `dj hydrate --clean`.
+6. Done: docs, concepts.md first.
+
+Not done, from [What files alone can't show](#status-two-axes): checking the cache on
+opening for stored passes whose end differs from the file, and a "not checked on this
+machine" mark.
+
+## Follow-up notes
+
+- **Play straight through changed endings.** Next/List must carry on whenever the child is
+  reachable, saved or not (today they stop at anything unsaved, and recording hashes counts
+  as unsaved). An opt-in "Stop at a changed ending" toggle is on the
+  [roadmap](ROADMAP.md#gui).

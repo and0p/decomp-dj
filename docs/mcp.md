@@ -10,7 +10,7 @@ The same queries are CLI commands with `--json` ([cli.md](cli.md)), for scripts 
 
 ## Setting it up
 
-Build `dj` ([install.md](install.md)), hydrate the project once (`dj hydrate <dir>`), then
+Build `dj` ([install.md](install.md)), clean the project once (`dj clean <dir>`), then
 add the server to the agent's client. For Claude Code:
 
 ```sh
@@ -103,7 +103,7 @@ unknown without the bank: results use `PRG:` offsets, and calls aren't followed.
 
 Agents can also read the project directly: segment files, `config.toml`, symbol maps and
 `report/` are plain text, and `dj sql` or `sqlite3` read `.local/cache.db`. Writing the
-database directly isn't safe; everything in it can be rebuilt by hydrating.
+database directly isn't safe; everything in it can be rebuilt by cleaning.
 
 ## Traces
 
@@ -140,7 +140,7 @@ its **draft**, so nothing played is lost and any moment can be saved.
 | `poke(region, addr, bytes)` | Writes now and records a `[WRITE]` line, which makes the draft poked |
 | `rewind(frame)` | Goes back without changing the draft; the session keeps a snapshot every 10 frames, so this is cheap |
 | `branch(title?)` | Copies the draft up to the cursor into a new draft, to keep a point worth returning to |
-| `close_session(keep?)` | Ends the worker. Its draft is deleted unless `keep=true` |
+| `close_session(keep?)` | Ends the worker. Its draft is deleted unless `keep=true`. A kept draft is played once more with recording on, so the local database has its coverage and end state: the GUI shows what it adds and records its hashes without playing it |
 | `sessions()` | Open sessions with their drafts and frames |
 
 Writing anywhere but the end of a draft (a press, `hold`, `poke`, `play_text`) cuts the
@@ -177,8 +177,9 @@ job, from screenshots and memory reads; conditions are for running at full speed
 
 A draft is an ordinary segment file in `.local/drafts/`, with a few extra `draft-` header
 fields (where it came from, a note, a condition it was searched for). The GUI shows drafts
-in the tree in teal ([below](#the-gui)). They are not counted in coverage or `where_runs`,
-and `dj hydrate` skips them.
+in the tree as unsaved segments ([below](#the-gui)). They are not counted in coverage or
+`where_runs` until saved (reports show what they would add), and `dj hydrate` and
+`dj clean` skip them.
 
 | Tool | What it does |
 | --- | --- |
@@ -238,7 +239,7 @@ that machine (`[mcp] gui` in `.local/local.toml`). The right of the status bar s
 state: `MCP off`, or the number of agent sessions running, and whether you are following one
 or sharing your view.
 
-- **Drafts** appear in the tree in teal, marked `draft` (and the session they are open in). Right-click one to **Follow session**, **Save as segment** (moves it to `segments/`; play it to the end, or use Segment > Clean all segments, to record its hashes) or **Discard draft**. You can edit a draft like any segment; your edits are saved to its file.
+- **Drafts** appear in the tree as unsaved segments (yellow italics), marked `agent` (and the session they are open in). They are part of the editor's tree like your own unsaved work: playing one to its end records its hashes, Clean all segments cleans it, the Coverage tab shows what it adds, and **File > Save** moves it into `segments/` with any edits you made. **Delete** removes one (its file goes when you save), and undo brings it back. A draft still open in an agent session is light blue and read-only, stays a draft when you save, and isn't recorded into; right-click it to **Follow session**, or **Take over** to have the session let go of it (it closes at the agent's next call, keeping the draft) and make it yours.
 - **MCP > Follow an agent session** lists running sessions (`dj mcp` publishes them in `.local/mcp/`). Following one shows its draft at the agent's frame as it plays, with its inputs filling the piano roll. **Stop following** takes the view back.
 - **MCP > Share my view with agents** writes the segment and frame you are on to `.local/mcp/gui.json`, which the agent reads with `gui_view`. Ask it to look at what you're looking at, or to take it from there: it opens a session at that point, and you can follow it.
 - **MCP > Show agent drafts** hides or shows them.

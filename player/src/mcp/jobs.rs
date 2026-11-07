@@ -465,7 +465,7 @@ fn save_copy(cfg: &Cfg, tape: &str, title: &str, goal: bool, new: usize, job: &s
     }
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     r.set("draft-created", &t.to_string());
-    std::fs::write(dd.join(format!("{id}.segment")), r.to_text())?;
+    decomp_dj::collection::write_atomic(&dd.join(format!("{id}.segment")), &r.to_text())?;
     Ok(id)
 }
 

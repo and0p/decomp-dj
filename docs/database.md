@@ -1,8 +1,11 @@
 # The local database
 
-`.local/cache.db` is a SQLite file that holds what playing the project produced. It is
-never committed: everything in it can be rebuilt by playing the project, so each author
-fills it on their own machine ("hydrates" it). The design and its reasons are in
+`.local/cache.db` is a SQLite file that holds what playing the project produced. It is a
+cache: every row is a fact worked out from (setup, start state, inputs), so the same key
+always gives the same answer. It is never committed and never "saved": any full pass
+writes it the moment it finishes, whether you watch it in the GUI, clean or let an agent
+play, and everything in it can be rebuilt by playing the project. Cleaning fills in what
+is missing as it goes ([below](#in-the-gui)). The design and its reasons are in
 [CACHE_PLAN.md](../.agents/CACHE_PLAN.md).
 
 The database is optional. Without it (`--no-db`, or `database = false` in
@@ -24,33 +27,55 @@ in `config.toml` or per machine in `.local/local.toml` ([config.md](config.md#ca
 ## From the command line
 
 ```sh
-dj hydrate <dir> [SEGMENT [--children]] [--clean] [--force]  # fill the local database
+dj clean <dir> [SEGMENT] [--accept] [--all]                 # clean, filling in what the database is missing
+dj hydrate <dir> [SEGMENT [--children]] [--force]            # fill it in without recording hashes
 dj cache stats <dir>                                         # size, and how well pages share
 dj cache gc <dir>                                            # drop what no segment uses
 dj sql <dir> "SELECT ..."                                    # query it directly
 ```
 
-- `hydrate` plays only the segments whose content isn't stored yet, so running it again is nearly instant. `SEGMENT --children` limits it to a subtree. `--force` plays even what is stored. `--clean` re-checks dirty segments ([playback.md](playback.md#checking-hashes)).
+- `clean` plays the segments that aren't clean or whose content isn't stored yet, and writes the hashes they reach ([playback.md](playback.md#checking-hashes)). Running it again is nearly instant. `--all` plays every segment, stored or not.
+- `hydrate` fills the database the same way but never writes a file, for scripts that only want the database. `SEGMENT --children` limits it to a subtree; `--force` plays even what is stored.
 - `cache stats` warns when the file is larger than `budget_gb`.
-- `cache gc` deletes contents that no current segment uses, then unused snapshots and pages, and compacts the file.
+- `cache gc` deletes contents that no current segment uses (and snapshots of passes that never finished, for content no segment has now), then unused snapshots and pages, and compacts the file. It refuses while a dj-gui has the project open, since an unsaved edit's snapshots belong to content no saved segment has yet (the GUI keeps a `gui-<pid>.open` file in `.local/` while open); `--force` runs it anyway.
 - Every command that plays takes `--no-db` to run without the database.
 
 ## In the GUI
 
-The end of the Segment menu has **Hydrate all** and **Clean all segments**. Cleaning plays only the
-segments that aren't clean, top down, and [records their hashes](playback.md#recording-hashes)
-where that overwrites nothing, as unsaved changes (so it works with edits open, and Save
-keeps the result). Segments whose ending changed are listed, and those below them skipped.
-Right-click in the tree for **Hydrate this segment**, **Hydrate this and below** and **Clean this and below**. Hydration shows every 4th frame in the picture,
-with a progress bar and **Pause** and **Stop** in the status bar. Selecting, seeking and
-playing wait until it ends. Segments finished before a stop stay stored.
+The end of the Segment menu has **Clean all segments** and **Replay everything**. Cleaning
+plays, top down, the segments that aren't clean or whose content isn't stored yet, and
+[records their hashes](playback.md#recording-hashes) as unsaved changes (so it works with
+edits open, and Save keeps the result). A clean segment whose content is stored is passed
+over without playing. It carries on down the tree through changed endings, marking each
+with **!**; segments below one that couldn't be cleaned are skipped. Drafts are cleaned
+too, except those still open in an agent session. **Replay everything** plays every
+segment again, stored or not: a check after a core update, say.
+Right-click in the tree for **Clean this and below**. A clean shows every 4th frame in the
+picture, with a progress bar and **Pause** and **Stop** in the status bar. Selecting,
+seeking and playing wait until it ends. Segments finished before a stop stay stored.
+
+The database also answers for hashes: whenever the GUI loads or reloads segments, a
+segment that isn't clean, whose start is trusted, and whose current content has a stored
+pass gets that pass's hashes [recorded](playback.md#recording-hashes) without playing
+(as an unsaved change). A stored pass that ends differently from the file is left for a
+real play, since a changed ending needs checkpoint hashes the database doesn't keep.
+
+Playing fills the database too: a pass that runs a segment from frame 0 to its end without
+a jump or an edit records its snapshots, previews, coverage and first hits when it
+finishes, as hydrating would. A pass broken by a jump back or forward, or an edit, keeps the
+snapshots it took, since each is a valid state of that content. So cleaning is only a
+convenience, for what you haven't played.
+
+A segment cleaned by a broken pass (one you jumped around in, then let reach its end) is
+clean, since its hashes are recorded, but it isn't stored: coverage doesn't count it until
+a full pass or a clean plays it from frame 0 to its end.
 
 Segments whose current content is stored show a blue **db** after their length in the
 tree. **Use the local database** turns it off for this machine.
 
 ### Seeking and memory
 
-- While a segment plays, the GUI keeps a snapshot in memory at the start of every 10th frame.
+- While a segment plays, the GUI keeps a snapshot in memory at the start of every 10th frame (sharing the capture with the database's where they fall on the same frame).
 - A seek starts from the nearest snapshot at or before the target, from memory or from the database, whichever is nearer, then runs the core forward and draws only the last frame. With `diff_every = 60`, a seek anywhere is near instant.
 - Selecting a segment starts from its parent's end snapshot in the database when the parent is clean, so deep segments open without playing the chain. The GUI also stores each segment's start snapshot, and the end snapshot of segments with children.
 - Long seeks and loads run in slices, so the window stays usable, with a progress bar in the status bar. Selecting another segment cancels one.

@@ -8,11 +8,12 @@ hashes, fills the local database and reports coverage. Building it is in
 | --- | --- | --- |
 | `dj init <dir> --name NAME --rom ROM --core CORE [--option KEY=VALUE]... [--symbols FILE]` | Creates a project and pins the setup in `config.toml` | [install.md](install.md#a-first-project), [config.md](config.md) |
 | `dj new <dir> [--parent ID] [--title TEXT] [--frames N]` | Adds a segment and prints its path | [editing.md](editing.md) |
-| `dj status <dir>` | The tree with clean, dirty and unverified marks | [playback.md](playback.md#clean-dirty-and-unverified) |
+| `dj status <dir>` | The tree with clean and dirty marks | [playback.md](playback.md#clean-and-dirty) |
 | `dj play <dir> <id> [--screenshots DIR] [--shot 60,120] [--no-cache] [--accept]` | Plays one segment and its chain | [playback.md](playback.md#checking-hashes) |
 | `dj run <dir> [--from-scratch] [--accept] [--screenshots]` | Plays everything, checks hashes, records coverage | [playback.md](playback.md#checking-hashes) |
-| `dj hydrate <dir> [SEGMENT [--children]] [--clean] [--force]` | Fills the local database | [database.md](database.md#from-the-command-line) |
-| `dj report <dir> [--json FILE] [--gaps FILE.csv]` | Coverage of the current, clean segments | [coverage.md](coverage.md#from-the-command-line) |
+| `dj hydrate <dir> [SEGMENT [--children]] [--force]` | Fills in what the local database is missing, without writing files | [database.md](database.md#from-the-command-line) |
+| `dj clean <dir> [SEGMENT] [--accept] [--all]` | Plays the segments that aren't clean or aren't in the local database (or SEGMENT and those below it; `--all`: every one), top down, and writes the hashes they reach into their files. Changed endings are listed and not written (the command fails) unless `--accept` | [playback.md](playback.md#recording-hashes) |
+| `dj report <dir> [--json FILE] [--gaps FILE.csv]` | Coverage of the current, clean, saved segments (drafts are listed apart) | [coverage.md](coverage.md#from-the-command-line) |
 | `dj xref <dir> ADDR` (alias `where`) | Which segments first run that code, at which frame, and the nearest snapshot | [coverage.md](coverage.md#from-the-command-line) |
 | `dj summary <dir>` | Instructions, blocks and functions covered, and the segments that add most | [coverage.md](coverage.md#from-the-command-line) |
 | `dj gaps <dir> [--sort size\|nearness] [--only all\|never\|partial]` | Functions with uncovered code, largest or nearest first | [coverage.md](coverage.md#from-the-command-line) |
@@ -21,11 +22,11 @@ hashes, fills the local database and reports coverage. Building it is in
 | `dj mcp <dir> [--allow query\|draft\|save]` | Serves the project to an AI agent over MCP (stdio) | [mcp.md](mcp.md) |
 | `dj snapshot <dir> SEGMENT FRAME --out FILE` | Writes the core state at that frame, to start a trace from | [coverage.md](coverage.md#from-the-command-line) |
 | `dj sql <dir> "SELECT ..."` | Queries the local database | [database.md](database.md) |
-| `dj cache stats <dir>` / `dj cache gc <dir>` | Database size, or drop what no segment uses | [database.md](database.md#from-the-command-line) |
+| `dj cache stats <dir>` / `dj cache gc <dir> [--force]` | Database size, or drop what no segment uses (not while dj-gui has the project open, unless `--force`) | [database.md](database.md#from-the-command-line) |
 
 Common to every command:
 
 - Ids can be shortened to any unique prefix.
 - `--rom` and `--core` are remembered per project in `.local/local.toml`, so later commands don't need them.
 - Every command that plays takes `--no-db` to run without the local database.
-- The queries (`xref`, `summary`, `gaps`, `function`, `frontier`) take `--json` for scripts, `--limit` and `--cursor` for paging, and an address as `PRG:0x1F3A`, `0x1F3A` (a PRG offset), `$C123` (a CPU address) or a symbol, optionally `name+0x10`. They read the local database, so hydrate first.
+- The queries (`xref`, `summary`, `gaps`, `function`, `frontier`) take `--json` for scripts, `--limit` and `--cursor` for paging, and an address as `PRG:0x1F3A`, `0x1F3A` (a PRG offset), `$C123` (a CPU address) or a symbol, optionally `name+0x10`. They read the local database, so clean first (`dj clean`).

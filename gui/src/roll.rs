@@ -28,12 +28,12 @@ const JOYPAD_BASIC: usize = 8;
 pub struct Neighbours {
     pub prev: Option<String>,
     pub next: Option<String>,
-    pub unverified: Option<Unverified>,
+    pub dirty: Option<DirtyBand>,
 }
 
 /// The ruler band: frames from `from` on aren't verified. `hint` is the hover text.
 #[derive(Clone)]
-pub struct Unverified {
+pub struct DirtyBand {
     pub from: u64,
     pub color: Color32,
     pub hint: String,
@@ -435,7 +435,7 @@ impl RollState {
             self.model = Some(m);
         }
         let model = self.model.take().unwrap();
-        let action = self.draw(ui, &model, playhead, playing, nb.unverified.as_ref());
+        let action = self.draw(ui, &model, playhead, playing, nb.dirty.as_ref());
         self.model = Some(model);
         action
     }
@@ -444,17 +444,11 @@ impl RollState {
         *self.open.get(&(g.port, g.device)).unwrap_or(&g.used())
     }
 
-    fn draw(&mut self, ui: &mut egui::Ui, m: &Model, playhead: Option<u64>, playing: bool, unverified: Option<&Unverified>) -> Option<Action> {
+    fn draw(&mut self, ui: &mut egui::Ui, m: &Model, playhead: Option<u64>, playing: bool, dirty: Option<&DirtyBand>) -> Option<Action> {
         let mut action = None;
         // Toolbar.
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Inputs").strong());
-            info_icon(ui).on_hover_text(
-                "Click an empty cell to add a press as long as the last one made or resized.\n\
-                 Drag a press to move it in time, or its edge to resize it. Hold Alt while dragging (or press Alt+Up/Down) to move presses to the next button row.\n\
-                 Click selects, Shift+click adds or removes. Drag on empty space selects an area (with Shift: adds, with Shift+Alt: removes).\n\
-                 Right-click or Delete removes. Escape clears the selection.",
-            );
             if !self.sel.is_empty() {
                 ui.label(egui::RichText::new(format!("{} selected", self.sel.len())).small());
             }
@@ -782,8 +776,11 @@ impl RollState {
                     action = Some(Action::OpenFrame(boxes[bi].frame));
                 } else if p.x >= tl_left && outside(p.x) {
                     // In a neighbour: read-only, a click does nothing.
-                } else if p.y < rows_top && p.x >= tl_left {
+                } else if p.y < rect.top() + RULER_H && p.x >= tl_left {
+                    // Only the frame ruler moves the playhead.
                     self.scrubbing = true;
+                } else if p.y < rows_top && p.x >= tl_left {
+                    // The marker lane, between markers: nothing.
                 } else if p.x >= tl_left && !header_at(p) && hit(p).is_some() && mods.command {
                     // Ctrl/Cmd+drag: select an area.
                     let a = (ff_at(p.x), p.y - rows_top + self.scroll_y);
@@ -834,7 +831,10 @@ impl RollState {
                                 let now = self.is_open(g);
                                 self.open.insert((g.port, g.device), !now);
                             } else {
-                                self.scrubbing = true;
+                                // A group header in the timeline: a drag selects an area,
+                                // like an empty cell (a click clears the selection).
+                                let a = (ff_at(p.x), p.y - rows_top + self.scroll_y);
+                                self.gesture = Some(Gesture::Marquee { a, b: a, op, cell: None });
                             }
                         }
                         _ => {}
@@ -1181,7 +1181,7 @@ impl RollState {
         }
         // Frames whose hashes aren't known: a band on the ruler in the tree dot's colour.
         let mut stale_rect = None;
-        if let Some(u) = unverified.filter(|u| u.from < m.frames) {
+        if let Some(u) = dirty.filter(|u| u.from < m.frames) {
             let (x0, x1) = (x_of(u.from as f32).max(tl_left), end_x);
             if x1 > x0 {
                 let r = Rect::from_min_max(Pos2::new(x0, rect.top() + RULER_H - 5.0), Pos2::new(x1, rect.top() + RULER_H));
@@ -1451,14 +1451,4 @@ fn move_presses(m: &Model, sel: &BTreeSet<PressId>, delta: i64, dr: i64) -> Opti
         edits.push((key, spans));
     }
     Some((edits, from, new_sel))
-}
-
-/// A small circled "i", painted so it doesn't depend on the font having the glyph.
-fn info_icon(ui: &mut egui::Ui) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::hover());
-    let c = if resp.hovered() { ui.visuals().strong_text_color() } else { ui.visuals().weak_text_color() };
-    let m = rect.center();
-    ui.painter().circle_stroke(m, 6.5, Stroke::new(1.2, c));
-    ui.painter().text(m + egui::vec2(0.0, 0.5), Align2::CENTER_CENTER, "i", FontId::proportional(10.0), c);
-    resp
 }

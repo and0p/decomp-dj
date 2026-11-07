@@ -53,9 +53,9 @@ past its last body line.
 ## What an edit does to hashes
 
 Changing an input or a `[WRITE]` drops the segment's `end-hash` and every checkpoint after
-the first edited frame, because those states are no longer known. The segment turns
-unverified and everything below it dirty, until it is played to its end and the new hashes
-are recorded ([playback.md](playback.md#recording-hashes)). Editing only `[EVENT]`
+the first edited frame, because those states are no longer known. The segment and
+everything below it turn dirty, until it is played to its end and the new hashes are
+recorded ([playback.md](playback.md#recording-hashes)). Editing only `[EVENT]`
 lines changes no state, so it keeps every hash.
 
 ## In the GUI
@@ -101,13 +101,14 @@ their controller's header.
 ### Return to the edit
 
 With View > **Return to the edit** on (the default), any edit pauses playback and shows the
-earliest frame edited since playback last ran, worked out again with the change. Several
-edits in a row keep the playhead on the earliest of them. Turned off, an edit redraws the
-frame you were on instead.
+earliest frame edited since you last played or moved the playhead, worked out again with
+the change. Several edits in a row keep the playhead on the earliest of them; seeking,
+stepping or clicking elsewhere first starts a new run, so the next edit returns to itself.
+Turned off, an edit redraws the frame you were on instead.
 
 Either way, the ruler shows a band over the frames whose hashes aren't known, in the colour
-of the segment's tree dot: gray from the first edited frame of an unverified segment,
-orange over the whole of a dirty one. It shrinks as playback runs through frames not played
+of the segment's tree dot (orange): from the first edited frame of a segment whose hashes
+aren't recorded, over the whole of one that starts somewhere its parent no longer ends. It shrinks as playback runs through frames not played
 since the edit, and goes when the segment is clean again, which reaching its end does when
 it can ([playback.md](playback.md#recording-hashes)). Hover it for what is missing. While
 the picture still shows a frame from before the edit and the new one is being worked out,
@@ -127,7 +128,11 @@ or close it, like a controller.
 
 Edit > **Undo** / **Redo** (Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z or Ctrl+Y) cover every edit: note
 edits, cut and paste, frame lines, renames, segment properties, using a new end hash, new
-segments, splits, branches, joins and deletes. The history holds 200 steps and is cleared
+segments, splits, branches, joins and deletes. Hashes recorded because of an edit (reaching
+a segment's end after changing it, say, and the segments below it that the local database
+can then clean) join that edit's step, so one undo takes back the change and what it
+caused. A clean is a step of its own. A segment that undo or redo brings back to exactly
+what its saved file holds counts as saved again. The history holds 200 steps and is cleared
 when a project is opened or reloaded. A segment removed by undo has its file deleted on the
 next Save.
 

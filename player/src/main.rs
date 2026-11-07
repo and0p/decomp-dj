@@ -79,7 +79,7 @@ enum Cmd {
         #[arg(long, default_value_t = 60)]
         frames: u64,
     },
-    /// Show the segment tree with clean, dirty and unverified marks (no emulation)
+    /// Show the segment tree with clean and dirty marks (no emulation)
     Status { dir: PathBuf },
     /// Play one segment (and its ancestors), check hashes, and save screenshots
     Play {
@@ -115,7 +115,8 @@ enum Cmd {
         #[arg(long)]
         screenshots: bool,
     },
-    /// Fill the local database: play the segments whose current content isn't stored yet
+    /// Fill the local database without recording hashes: play the segments whose current
+    /// content isn't stored yet (dj clean does this too, and records hashes)
     Hydrate {
         dir: PathBuf,
         #[command(flatten)]
@@ -125,13 +126,26 @@ enum Cmd {
         /// With a segment: also every segment below it
         #[arg(long)]
         children: bool,
-        /// Try to clean dirty segments: when a segment still ends with its recorded hashes,
-        /// write its new start hash so it is clean again; otherwise report the mismatch
-        #[arg(long)]
-        clean: bool,
         /// Play segments again even if their content is stored
         #[arg(long)]
         force: bool,
+    },
+    /// Play, top down, the segments that aren't clean or whose content isn't in the local
+    /// database, and write the hashes they reach into their files (as Clean all segments does
+    /// in dj-gui, which leaves them unsaved instead). A changed ending is listed, not written,
+    /// and the command fails, unless --accept
+    Clean {
+        dir: PathBuf,
+        #[command(flatten)]
+        local: Local,
+        /// Only this segment and every segment below it (id or unique prefix)
+        segment: Option<String>,
+        /// Also write changed endings (and go on below them)
+        #[arg(long)]
+        accept: bool,
+        /// Replay every segment, even those whose content is stored
+        #[arg(long)]
+        all: bool,
     },
     /// Which segments first run an address, at which frame, nearest snapshot first
     #[command(alias = "where")]
@@ -220,11 +234,15 @@ enum Cmd {
 enum CacheCmd {
     /// What the local database holds
     Stats { dir: PathBuf },
-    /// Drop content no current segment uses, and pages no snapshot uses
+    /// Drop content no current segment uses, and pages no snapshot uses. Refuses while a
+    /// dj-gui has the project open (its unsaved edits' snapshots would go), unless --force
     Gc {
         dir: PathBuf,
         #[command(flatten)]
         local: Local,
+        /// Run even while a dj-gui has the project open
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -244,7 +262,8 @@ fn real_main() -> Result<()> {
         Cmd::Play { dir, id, local, screenshots, shot, no_cache, accept } => play(&dir, &id, &local, screenshots, shot, no_cache, accept),
         Cmd::Run { dir, local, from_scratch, accept, screenshots } => run(&dir, &local, from_scratch, accept, screenshots),
         Cmd::Report { dir, local, json, gaps } => report(&dir, &local, json, gaps),
-        Cmd::Hydrate { dir, local, segment, children, clean, force } => hydrate(&dir, &local, segment, children, clean, force),
+        Cmd::Hydrate { dir, local, segment, children, force } => hydrate(&dir, &local, segment, children, force),
+        Cmd::Clean { dir, local, segment, accept, all } => clean(&dir, &local, segment, accept, all),
         Cmd::Xref { dir, what, query } => queries::xref(&dir, &what, &query),
         Cmd::Summary { dir, query } => queries::summary(&dir, &query),
         Cmd::Gaps { dir, sort, only, query } => queries::gaps(&dir, sort, only, &query),
@@ -255,7 +274,7 @@ fn real_main() -> Result<()> {
         Cmd::Worker { dir } => mcp::worker::run(dir),
         Cmd::Mcp { dir, allow } => mcp::serve(dir, mcp::tools::Options { allow }),
         Cmd::Cache { cmd: CacheCmd::Stats { dir } } => cache_stats(&dir),
-        Cmd::Cache { cmd: CacheCmd::Gc { dir, local } } => cache_gc(&dir, &local),
+        Cmd::Cache { cmd: CacheCmd::Gc { dir, local, force } } => cache_gc(&dir, &local, force),
     }
 }
 
@@ -349,16 +368,16 @@ fn status(dir: &Path) -> Result<()> {
     let mut counts = BTreeMap::new();
     for (id, depth) in col.tree_order() {
         let r = &col.replays[id];
-        let st = col.status(id);
+        let st = col.tree_status(id);
         *counts.entry(st.label()).or_insert(0) += 1;
         let mark = match st {
             Status::Clean => " ",
-            Status::Dirty => "!",
-            Status::Unverified => "?",
+            Status::Dirty if r.get("end-hash").is_none() => "?",
+            Status::Dirty => "~",
         };
         println!("{mark} {}{} {:>6}f  {}{}", "  ".repeat(depth), &id[..8], r.frames()?, r.title(), if r.is_poked() { "  [poked]" } else { "" });
     }
-    println!("{} replays: {:?}", col.replays.len(), counts);
+    println!("{} segments: {:?}  (? unrecorded: no end hash yet; ~ stale: starts where its parent no longer ends)", col.replays.len(), counts);
     Ok(())
 }
 
@@ -530,7 +549,7 @@ fn report(dir: &Path, local: &Local, json: Option<PathBuf>, gaps: Option<PathBuf
     Ok(())
 }
 
-fn hydrate(dir: &Path, local: &Local, segment: Option<String>, children: bool, clean: bool, force: bool) -> Result<()> {
+fn hydrate(dir: &Path, local: &Local, segment: Option<String>, children: bool, force: bool) -> Result<()> {
     if local.no_db {
         bail!("hydrate fills the local database, so it can't run with --no-db");
     }
@@ -539,7 +558,7 @@ fn hydrate(dir: &Path, local: &Local, segment: Option<String>, children: bool, c
         Some(s) => Some(col.resolve(s)?.to_string()),
         None => None,
     };
-    let mut h = Hydrator::new(&col, seg.as_deref().map(|s| (s, children)), clean, force)?;
+    let mut h = Hydrator::new(&col, seg.as_deref().map(|s| (s, children)), force)?;
     let mut s = open_session(&col, local)?;
     let started = std::time::Instant::now();
     while !h.done() {
@@ -560,6 +579,58 @@ fn hydrate(dir: &Path, local: &Local, segment: Option<String>, children: bool, c
     Ok(())
 }
 
+/// `dj clean`: what Clean all segments does in the GUI, saving each segment it records.
+fn clean(dir: &Path, local: &Local, segment: Option<String>, accept: bool, all: bool) -> Result<()> {
+    if local.no_db {
+        bail!("clean uses the local database, so it can't run with --no-db");
+    }
+    let mut col = Collection::open(dir)?;
+    let seg = match &segment {
+        Some(s) => Some(col.resolve(s)?.to_string()),
+        None => None,
+    };
+    let mut h = Hydrator::verify(&col, seg.as_deref().map(|s| (s, true)), false, all)?;
+    let mut s = open_session(&col, local)?;
+    let started = std::time::Instant::now();
+    while !h.done() {
+        for ev in h.step(&mut s, &mut col, std::time::Duration::from_secs(3600), 0)? {
+            if matches!(ev.verdict, "recorded" | "cleaned") || (accept && ev.verdict == "changed") {
+                col.save_replay(&ev.id)?;
+            } else if ev.verdict == "changed" {
+                // Not written: put the file's version back, so the segments below wait for it.
+                let p = col.paths[&ev.id].clone();
+                col.replays.insert(ev.id.clone(), Replay::load(&p)?);
+            }
+            let depth = col.chain(&ev.id)?.len() - 1;
+            println!("{:<7} {:<9} {}{} {}", ev.action, ev.verdict, "  ".repeat(depth), &ev.id[..8.min(ev.id.len())], col.replays[&ev.id].title());
+        }
+    }
+    let n = |v: &str| h.events.iter().filter(|e| e.verdict == v).count();
+    println!(
+        "{} recorded, {} cleaned, {} with a changed ending, {} blocked, {} already clean ({} frames in {:.1}s)",
+        n("recorded"),
+        n("cleaned"),
+        n("changed"),
+        n("blocked"),
+        n("ok"),
+        h.frames_played,
+        started.elapsed().as_secs_f64()
+    );
+    let changed: Vec<&str> = h.events.iter().filter(|e| e.verdict == "changed").map(|e| e.id.as_str()).collect();
+    if !changed.is_empty() {
+        println!("{}", if accept { "endings changed (written; check them, e.g. with git diff):" } else { "endings changed (not written; check them, then run again with --accept):" });
+        for id in &changed {
+            println!("  {} {}", &id[..8.min(id.len())], col.replays[*id].title());
+        }
+    }
+    if n("blocked") > 0 {
+        println!("blocked: segments below one that couldn't be cleaned (a segment above is still dirty)");
+    }
+    if !accept && !changed.is_empty() {
+        bail!("{} segment(s) end differently from their files", changed.len());
+    }
+    Ok(())
+}
 
 fn snapshot_cmd(dir: &Path, segment: &str, frame: u64, out: &Path, local: &Local) -> Result<()> {
     let col = Collection::open(dir)?;
@@ -669,8 +740,11 @@ fn cache_stats(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cache_gc(dir: &Path, local: &Local) -> Result<()> {
+fn cache_gc(dir: &Path, local: &Local, force: bool) -> Result<()> {
     let col = Collection::open(dir)?;
+    if !force && decomp_dj::cache::gui_open(&col.root) {
+        bail!("a dj-gui has this project open, and gc would drop the snapshots of its unsaved edits; close it first, or pass --force");
+    }
     let mut s = open_session(&col, local)?;
     let c = s.cache.as_mut().ok_or_else(|| anyhow!("gc needs the local database"))?;
     let before = c.file_size();

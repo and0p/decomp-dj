@@ -58,6 +58,18 @@ pub struct Recorder {
     pub last_frame: Option<Frame>,
 }
 
+impl Recorder {
+    /// Whether this pass takes a save state at the start of frame `f` (see `snapshot_at`).
+    pub fn stores_at(&self, f: u64) -> bool {
+        self.record && self.store_at.contains(&f)
+    }
+
+    /// The save state this pass took at the start of frame `f`, if it took one.
+    pub fn snapshot_at(&self, f: u64) -> Option<&[u8]> {
+        self.rec.snapshots.iter().find(|(sf, _, _)| *sf == f).map(|(_, _, s)| s.as_slice())
+    }
+}
+
 /// Ports' devices in effect at the start of `id`: collection defaults plus ancestors' [DEVICE] lines.
 pub fn devices_at_start(col: &Collection, id: &str) -> Result<BTreeMap<u32, u32>> {
     let mut devs = BTreeMap::new();
@@ -340,7 +352,9 @@ impl Session {
             }
         }
         if rec.record {
-            // First frame each ROM byte ran as an opcode, within this segment.
+            // Gathers what ran into `seen` frame by frame, so the connector may be cleared
+            // between frames (the GUI does, for its activity glow), and notes the first frame
+            // each ROM byte ran as an opcode within this segment.
             for i in 0..rec.seen.len() {
                 let Some(cur) = self.core.coverage_slice(i) else { continue };
                 let (name, seen) = &mut rec.seen[i];
@@ -348,14 +362,14 @@ impl Session {
                     seen.resize(cur.len(), 0);
                 }
                 for (ci, (a, b)) in cur.chunks(64).zip(seen.chunks_mut(64)).enumerate() {
-                    if a == b {
+                    if a.iter().zip(b.iter()).all(|(x, y)| x & !y == 0) {
                         continue;
                     }
                     for (j, (x, y)) in a.iter().zip(b.iter_mut()).enumerate() {
                         if x & crate::coverage::FLAG_OPCODE != 0 && *y & crate::coverage::FLAG_OPCODE == 0 {
                             rec.rec.first_hits.push((name.clone(), (ci * 64 + j) as u64, f));
                         }
-                        *y = *x;
+                        *y |= *x;
                     }
                 }
             }
@@ -368,7 +382,11 @@ impl Session {
     pub fn finish(&mut self, col: &Collection, mut rec: Recorder) -> Result<ReplayResult> {
         let end_hash = self.state_hash(col)?;
         let ticks = if col.config.tick.is_some() { self.core.tick_count() } else { None };
-        let coverage = self.core.coverage_regions();
+        let coverage = if rec.record {
+            std::mem::take(&mut rec.seen).into_iter().map(|(name, flags)| CoverageRegion { name, flags }).collect()
+        } else {
+            self.core.coverage_regions()
+        };
         let end_state = self.core.serialize()?;
         let has_children = !col.children(Some(&rec.id)).is_empty();
         let poked = col.replays[&rec.id].is_poked();
@@ -397,6 +415,18 @@ impl Session {
             screenshots: rec.screenshots,
             end_state,
         })
+    }
+
+    /// Ends a pass that will not reach the end (the player jumped elsewhere, or the segment
+    /// was edited): keeps the snapshots and previews it took, which are still right for its
+    /// content, and drops the rest.
+    pub fn keep_snapshots(&mut self, rec: Recorder) -> Result<()> {
+        if let (true, Some(c)) = (rec.record, &mut self.cache) {
+            if !rec.rec.snapshots.is_empty() || !rec.rec.images.is_empty() {
+                c.record_snapshots(&rec.key, &rec.rec)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn write(&mut self, region: &str, address: u64, bytes: &[u8]) -> Result<()> {

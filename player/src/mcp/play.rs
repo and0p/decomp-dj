@@ -151,7 +151,7 @@ impl Server {
             None if self.sessions.len() == 1 => self.sessions.keys().next().unwrap().clone(),
             None => bail!("missing argument session (open sessions: {})", self.sessions.keys().cloned().collect::<Vec<_>>().join(", ")),
         };
-        let s = self.sessions.get_mut(&id).ok_or_else(|| anyhow!("no open session {id} (sessions close after 30 idle minutes; open another)"))?;
+        let s = self.sessions.get_mut(&id).ok_or_else(|| anyhow!("no open session {id} (sessions close after 30 idle minutes, or when the person takes its draft over in dj-gui; open another)"))?;
         s.last_used = Instant::now();
         Ok((id, s))
     }
@@ -174,7 +174,7 @@ impl Server {
         let dd = drafts_dir(&self.root());
         std::fs::create_dir_all(&dd)?;
         let p = dd.join(format!("{}.segment", r.id()?));
-        std::fs::write(&p, r.to_text())?;
+        decomp_dj::collection::write_atomic(&p, &r.to_text())?;
         Ok(p)
     }
 
@@ -287,10 +287,14 @@ impl Server {
                 } else {
                     let mut r = d.r;
                     r.remove_all("draft-scratch");
-                    std::fs::write(&d.path, r.to_text())?;
+                    decomp_dj::collection::write_atomic(&d.path, &r.to_text())?;
                     true
                 };
-                Reply::Json(json!({"closed": sid, "draft": draft, "kept": kept}))
+                // Play the kept draft once with recording on, so the local database knows its
+                // coverage and end state: dj-gui then shows what it adds, and can record its
+                // hashes, without playing it again.
+                let recorded = kept && self.util().and_then(|u| u.call("reload", json!({})).and_then(|_| u.call("verify", json!({"id": draft})))).is_ok();
+                Reply::Json(json!({"closed": sid, "draft": draft, "kept": kept, "recorded": recorded}))
             }
             "sessions" => {
                 self.reap_idle();
@@ -576,7 +580,7 @@ impl Server {
         for k in ["draft-scratch", "draft-from", "draft-created", "draft-note", "draft-condition", "start-hash", "end-hash", "checkpoint"] {
             r.remove_all(k);
         }
-        std::fs::write(&d.path, r.to_text())?;
+        decomp_dj::collection::write_atomic(&d.path, &r.to_text())?;
         let util = self.util()?;
         util.call("reload", json!({}))?;
         let v = util.call("verify", json!({"id": d.id}))?;
@@ -592,7 +596,7 @@ impl Server {
         if path.exists() {
             bail!("{} exists already", path.display());
         }
-        std::fs::write(&path, r.to_text())?;
+        decomp_dj::collection::write_atomic(&path, &r.to_text())?;
         std::fs::remove_file(&d.path)?;
         self.project = None;
         Ok(Reply::Json(json!({"segment": d.id, "path": path, "start_hash": v["start_hash"], "end_hash": v["end_hash"], "note": note, "hint": "a normal segment file now: review it with git diff, undo with git restore/rm"})))

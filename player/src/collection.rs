@@ -122,9 +122,10 @@ pub struct Collection {
     pub drafts: std::collections::BTreeSet<String>,
 }
 
+/// Clean: the segment has an end hash and starts where its parent ends (docs/playback.md,
+/// "Clean and dirty"). Anything else, including no end hash yet, is dirty.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
-    Unverified,
     Clean,
     Dirty,
 }
@@ -132,7 +133,6 @@ pub enum Status {
 impl Status {
     pub fn label(self) -> &'static str {
         match self {
-            Status::Unverified => "unverified",
             Status::Clean => "clean",
             Status::Dirty => "dirty",
         }
@@ -292,7 +292,7 @@ impl Collection {
         out
     }
 
-    /// Status worked out from hashes alone (docs/playback.md, "Clean, dirty and unverified").
+    /// Status worked out from hashes alone (docs/playback.md, "Clean and dirty").
     pub fn status(&self, id: &str) -> Status {
         let r = &self.replays[id];
         if let (Some(p), Some(start)) = (r.parent(), r.get("start-hash")) {
@@ -303,7 +303,7 @@ impl Collection {
             }
         }
         if r.get("end-hash").is_none() {
-            Status::Unverified
+            Status::Dirty
         } else {
             Status::Clean
         }
@@ -392,7 +392,7 @@ impl Collection {
     pub fn save_replay(&mut self, id: &str) -> Result<()> {
         let path = self.paths.get(id).cloned().unwrap_or_else(|| self.root.join("segments").join(format!("{id}.{SEGMENT_EXT}")));
         std::fs::create_dir_all(path.parent().unwrap())?;
-        std::fs::write(&path, self.replays[id].to_text())?;
+        write_atomic(&path, &self.replays[id].to_text())?;
         self.paths.insert(id.to_string(), path);
         Ok(())
     }
@@ -470,4 +470,12 @@ pub fn sha256_file(path: &Path) -> Result<String> {
     use sha2::Digest;
     let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     Ok(format!("{:x}", sha2::Sha256::digest(&data)))
+}
+
+/// Writes a segment (or draft) file whole: to a temporary file beside it, then renamed over
+/// it, so another process (the GUI, `dj mcp`) never reads it half-written.
+pub fn write_atomic(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)
 }

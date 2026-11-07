@@ -9,7 +9,7 @@ use eframe::egui::{self, Color32, RichText};
 use decomp_dj::collection::{Collection, LocalConfig, Status};
 use decomp_dj::format::{Command, InputKey};
 use decomp_dj::hydrate::Hydrator;
-use decomp_dj::player::{trunk_start_frame, Session};
+use decomp_dj::player::{trunk_start_frame, PlayOptions, Recorder, Session};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -21,6 +21,10 @@ mod roll;
 const SNAP_EVERY: u64 = 10;
 /// Agent drafts in the tree.
 const DRAFT: Color32 = Color32::from_rgb(90, 200, 200);
+/// Title of a draft an agent session has open (agent-owned, read-only here).
+const AGENT_OWNED: Color32 = Color32::from_rgb(160, 205, 255);
+/// The "!" on a segment whose ending changed since it was last saved.
+const CHANGED: Color32 = Color32::from_rgb(235, 120, 90);
 
 fn main() -> eframe::Result {
     let start = std::env::args().nth(1).map(PathBuf::from);
@@ -56,6 +60,8 @@ struct Playback {
     checkpoints: BTreeMap<u64, String>,
     /// First checkpoint whose hash did not match, if any.
     checkpoint_miss: Option<u64>,
+    /// Hashes this playback saw at the recorded checkpoint frames.
+    checkpoints_seen: BTreeMap<u64, String>,
     /// State hash after the last frame, once playback has reached it.
     end_hash: Option<String>,
     /// State hash at frame 0, before any of this replay's lines.
@@ -67,12 +73,51 @@ struct Playback {
     stale_from: Option<u64>,
     /// The picture is from before the latest edit and is being recomputed.
     picture_stale: bool,
+    /// The pass being recorded to the local database (snapshots, previews, coverage, first
+    /// hits), while playback runs straight on from frame 0 of this content. A jump or an
+    /// edit ends it, keeping the snapshots it took.
+    rec: Option<Recorder>,
+}
+
+/// What the "!" compares with the saved file: the end hash, and for a root segment its
+/// start hash too (a root that starts somewhere new is a change the author should see).
+/// None until an end hash is recorded.
+fn ending_sig(r: &decomp_dj::format::Replay) -> Option<String> {
+    let end = r.get("end-hash")?;
+    Some(match (r.parent(), r.get("start-hash")) {
+        (None, Some(start)) => format!("{start} {end}"),
+        _ => end.to_string(),
+    })
+}
+
+/// Starts recording a pass of `id` from the core's current state, its frame 0.
+fn start_pass(s: &mut Session, col: &Collection, id: &str, start_frame: u64) -> Result<Recorder> {
+    s.begin(col, id, start_frame, &PlayOptions { record: true, ..Default::default() })
 }
 
 impl Playback {
     fn shown(&self) -> Option<u64> {
         self.ran.checked_sub(1)
     }
+}
+
+/// What the Save dialog asks.
+/// What a clean plays.
+#[derive(Clone, Copy, PartialEq)]
+enum Clean {
+    /// Only segments that aren't clean (before saving).
+    Unclean,
+    /// Those and the clean ones whose content isn't in the local database yet.
+    Fill,
+    /// Every segment, stored or not.
+    Everything,
+}
+
+enum SaveAsk {
+    /// Saving would leave this many segments dirty: clean first?
+    Dirty(usize),
+    /// Cleaning (from the first question) is done: what to review before saving.
+    AfterClean { changed: usize, dirty: usize, failed: Option<String> },
 }
 
 struct App {
@@ -101,9 +146,11 @@ struct App {
     /// Indent every level of the tree, instead of keeping only children in their parent's column.
     indent_all: bool,
     edited: BTreeSet<String>,
-    /// The first frame edited in segments that turned unverified this run of the program,
+    /// The first frame edited in segments that lost their end hash this run of the program,
     /// so the ruler band starts there even after leaving the segment.
-    unverified_from: HashMap<String, u64>,
+    dirty_from: HashMap<String, u64>,
+    /// The end hash of each segment as its file on disk has it, for the "!" on changed endings.
+    saved_end: HashMap<String, Option<String>>,
     /// Modification times of segments/, to pick up files changed by other tools.
     segments_fp: u128,
     roll: roll::RollState,
@@ -124,6 +171,10 @@ struct App {
     renaming: Option<(String, String, bool)>,
     /// The segment waiting for delete confirmation.
     delete_dialog: Option<String>,
+    /// Save was asked for while it would leave this many segments dirty: offer to clean first.
+    save_dialog: Option<SaveAsk>,
+    /// Save once the cleaning started from the save dialog finishes.
+    save_after_clean: bool,
     /// Join with parent, waiting on its confirmation: (segment id, leave a marker, marker text).
     join_dialog: Option<(String, bool, String)>,
     undo: Vec<UndoStep>,
@@ -134,6 +185,8 @@ struct App {
     frame_dialog: Option<FrameDialog>,
     /// Hydration in progress (it has the core to itself until it ends).
     hydrating: Option<Hydrating>,
+    /// Tells `dj cache gc` this project is open here.
+    gui_mark: Option<decomp_dj::cache::GuiMark>,
     /// Segments whose current content is in the local database.
     stored_ids: HashSet<String>,
     /// Limit for in-memory snapshots of the current segment, in MB.
@@ -143,6 +196,9 @@ struct App {
     return_to_edit: bool,
     /// The earliest frame of the current segment edited since playback last ran.
     edit_from: Option<u64>,
+    /// The frame the last edit returned to. Showing any other frame (a seek, a step, a click
+    /// on the ruler) starts a new run of edits.
+    edit_at: Option<u64>,
     /// The MCP menu's switch: drafts, agent sessions and sharing are off until it is on
     /// (`[mcp] gui` in .local/local.toml).
     mcp_on: bool,
@@ -152,6 +208,8 @@ struct App {
     /// When the drafts folder and agent sessions were last looked at (UI time).
     agent_polled: f64,
     agent_sessions: Vec<agent::AgentSession>,
+    /// Drafts taken over from their agent session, until the session is seen closed.
+    taken_over: HashSet<String>,
     /// An agent session the view follows: (pid, session).
     follow: Option<(u64, String)>,
     /// Write what is shown to .local/mcp/gui.json for agents.
@@ -188,7 +246,7 @@ impl EndMode {
         match self {
             EndMode::Stop => "Stop at the end of each segment.",
             EndMode::Loop => "Play the segment again from its first frame, until you stop it.",
-            EndMode::Next => "Carry on into the next segment: the child you came back up from (sticky), or the only child. Stops where a segment has several children and none is sticky, or where either side has unsaved changes.",
+            EndMode::Next => "Carry on into the next segment: the child you came back up from (sticky), or the only child. Stops where a segment has several children and none is sticky, or where the child is open in an agent session.",
             EndMode::List => "Carry on down the segment list in tree order, through every segment below and after this one (whether folded or filtered out), to the end of the list. With the tree focused on a segment (Focus here), it stops at the end of that segment's branch. Started on a root segment, it plays the whole tree.",
         }
     }
@@ -205,6 +263,8 @@ struct Hydrating {
     h: Hydrator,
     paused: bool,
     what: String,
+    /// The targets as they were before, for the undo step the clean leaves.
+    before: HashMap<String, decomp_dj::format::Replay>,
 }
 
 /// Work too long to do in one screen refresh.
@@ -275,8 +335,9 @@ impl Default for App {
             hoist: None,
             indent_all: false,
             edited: BTreeSet::new(),
-            unverified_from: HashMap::new(),
+            dirty_from: HashMap::new(),
             segments_fp: 0,
+            saved_end: HashMap::new(),
             roll: roll::RollState::default(),
             message: None,
             speed: 2,
@@ -287,6 +348,8 @@ impl Default for App {
             node_dialog: None,
             renaming: None,
             delete_dialog: None,
+            save_dialog: None,
+            save_after_clean: false,
             join_dialog: None,
             undo: vec![],
             redo: vec![],
@@ -294,15 +357,18 @@ impl Default for App {
             ctx_copy: None,
             frame_dialog: None,
             hydrating: None,
+            gui_mark: None,
             stored_ids: HashSet::new(),
             max_memory_mb: 512,
             return_to_edit: true,
             edit_from: None,
+            edit_at: None,
             mcp_on: false,
             show_drafts: true,
             drafts_fp: 0,
             agent_polled: 0.0,
             agent_sessions: vec![],
+            taken_over: HashSet::new(),
             follow: None,
             share_view: false,
             shared: None,
@@ -330,7 +396,6 @@ fn status_color(s: Status) -> Color32 {
     match s {
         Status::Clean => Color32::from_rgb(92, 184, 92),
         Status::Dirty => Color32::from_rgb(240, 160, 60),
-        Status::Unverified => Color32::from_gray(130),
     }
 }
 
@@ -620,11 +685,11 @@ impl App {
                 }
                 self.drafts_fp = agent::drafts_fingerprint(dir);
                 self.segments_fp = agent::segments_fingerprint(dir);
-                self.unverified_from.clear();
+                self.dirty_from.clear();
                 self.follow = None;
                 // Only one libretro core can be loaded per process, so drop the old one first.
                 self.session = None;
-                self.pb = None;
+                { self.end_pass(); self.pb = None; }
                 self.playing = false;
                 self.texture = None;
                 self.edited.clear();
@@ -637,6 +702,8 @@ impl App {
                 let n = col.replays.len();
                 self.max_memory_mb = col.load_local().ok().and_then(|l| l.max_memory_mb).unwrap_or(512);
                 self.hydrating = None;
+                self.saved_end = col.replays.iter().map(|(id, r)| (id.clone(), ending_sig(r))).collect();
+                self.gui_mark = Some(decomp_dj::cache::GuiMark::new(&col.root));
                 self.col = Some(col);
                 self.open_session();
                 self.refresh_stored();
@@ -689,28 +756,134 @@ impl App {
             self.error(e);
             return;
         }
-        self.pb = None;
+        { self.end_pass(); self.pb = None; }
         self.open_session();
         if let Some(id) = self.selected.clone() {
             self.select(&id);
         }
     }
 
+    /// Segments with changes not saved yet, and drafts (unsaved segments an agent wrote).
+    fn unsaved(&self) -> BTreeSet<String> {
+        let mut out = self.edited.clone();
+        if let Some(col) = &self.col {
+            out.extend(col.drafts.iter().filter(|d| col.replays.contains_key(*d)).cloned());
+        }
+        // A draft an agent session has open is the agent's work, not the person's.
+        out.retain(|id| !self.agent_owned(id));
+        out
+    }
+
+    /// Segments that saving now would leave dirty: the unsaved ones and everything below them.
+    fn dirty_on_save(&self) -> usize {
+        let Some(col) = &self.col else { return 0 };
+        let mut dirty = BTreeSet::new();
+        for id in self.unsaved() {
+            if col.replays.contains_key(&id) {
+                dirty.extend(subtree(col, &id).into_iter().filter(|i| col.tree_status(i) == Status::Dirty && !self.agent_owned(i)));
+            }
+        }
+        dirty.len()
+    }
+
+    /// Save, but first offer to clean when the save would leave segments dirty: the unsaved
+    /// ones and everything below them (docs/playback.md, "Clean and dirty").
     fn save(&mut self) {
+        match self.dirty_on_save() {
+            0 => self.save_now(),
+            n => self.save_dialog = Some(SaveAsk::Dirty(n)),
+        }
+    }
+
+    /// After "Clean, then save": saves when nothing needs a look, otherwise asks once more,
+    /// so changed endings are never saved unseen.
+    fn after_clean(&mut self, changed: usize, failed: Option<String>) {
+        let dirty = self.dirty_on_save();
+        if changed == 0 && dirty == 0 && failed.is_none() {
+            self.save_now();
+        } else {
+            self.save_dialog = Some(SaveAsk::AfterClean { changed, dirty, failed });
+        }
+    }
+
+    /// Saves every unsaved change. Drafts move into segments/ with any edits made here,
+    /// except drafts an agent still has open in a session (and drafts below those).
+    fn save_now(&mut self) {
+        // Read the sessions again now rather than trust the last poll: a session opened on a
+        // draft in the last second must not see it moved under it.
+        if self.mcp_on {
+            if let Some(root) = self.col.as_ref().map(|c| c.root.clone()) {
+                self.agent_sessions = agent::sessions(&root);
+            }
+        }
+        let in_session: HashSet<String> = self.agent_sessions.iter().map(|s| s.draft.clone()).filter(|d| !self.taken_over.contains(d)).collect();
         let Some(col) = &mut self.col else { return };
         let ids: Vec<String> = self.edited.iter().cloned().collect();
+        let mut saved = vec![];
         for id in &ids {
-            // A segment removed by undo (a split or a new segment) loses its file.
+            // Drafts are moved below, once their parents are saved.
+            if col.is_draft(id) && col.replays.contains_key(id) {
+                continue;
+            }
+            // A segment removed (deleted, or by undo of a split or a new segment) loses its file.
             let res = if col.replays.contains_key(id) { col.save_replay(id) } else { col.delete_replay_file(id) };
             if let Err(e) = res {
                 self.message = Some((format!("Saving {id}: {e:#}"), true));
                 return;
             }
+            if col.is_draft(id) {
+                col.drafts.remove(id);
+            }
+            saved.push(id.clone());
         }
-        self.edited.clear();
+        let drafts: Vec<String> = col.tree_order().into_iter().map(|(id, _)| id.to_string()).filter(|id| col.is_draft(id)).collect();
+        let mut held = 0;
+        for id in drafts {
+            let parent_held = col.replays[&id].parent().is_some_and(|p| col.is_draft(p));
+            if in_session.contains(&id) || parent_held {
+                held += 1;
+                continue;
+            }
+            if let Err(e) = col.draft_to_segment(&id) {
+                self.message = Some((format!("Saving draft {id}: {e:#}"), true));
+                return;
+            }
+            saved.push(id);
+        }
+        for id in &saved {
+            self.edited.remove(id);
+        }
+        self.drafts_fp = agent::drafts_fingerprint(&col.root);
         self.segments_fp = agent::segments_fingerprint(&col.root);
+        self.note_saved(&saved);
         self.coverage_stale();
-        self.info(format!("Saved {} segment(s)", ids.len()));
+        let n = saved.len();
+        if held > 0 {
+            self.info(format!("Saved {n} segment(s). {held} draft(s) still open in an agent session stay drafts."));
+        } else {
+            self.info(format!("Saved {n} segment(s)"));
+        }
+    }
+
+    /// Records the end hashes `ids` have on disk now (just loaded or saved).
+    fn note_saved(&mut self, ids: &[String]) {
+        let Some(col) = &self.col else { return };
+        for id in ids {
+            match col.replays.get(id) {
+                Some(r) => self.saved_end.insert(id.clone(), ending_sig(r)),
+                None => self.saved_end.remove(id),
+            };
+        }
+    }
+
+    /// An unsaved segment whose end hash differs from the one in its saved file: shown with
+    /// a "!" until it is saved (or the change is undone).
+    fn ending_changed(&self, id: &str) -> bool {
+        if !self.edited.contains(id) {
+            return false;
+        }
+        let Some(Some(old)) = self.saved_end.get(id) else { return false };
+        self.col.as_ref().and_then(|c| c.replays.get(id)).and_then(ending_sig).is_some_and(|now| &now != old)
     }
 
     fn reload(&mut self) {
@@ -730,7 +903,7 @@ impl App {
     fn select(&mut self, id: &str) {
         if self.hydrating.is_some() {
             self.selected = Some(id.to_string());
-            self.info("Hydrating: the segment is shown once hydration stops or finishes.");
+            self.info("Cleaning: the segment is shown once the clean stops or finishes.");
             return;
         }
         self.playing = false;
@@ -738,7 +911,7 @@ impl App {
         self.route_target = None;
         self.job = None;
         self.selected = Some(id.to_string());
-        self.pb = None;
+        { self.end_pass(); self.pb = None; }
         if let Err(e) = self.try_select(id) {
             self.error(format!("Could not reach the start of this segment: {e:#}"));
         }
@@ -777,20 +950,40 @@ impl App {
         Ok(())
     }
 
+    /// Re-reads which frames of the current content have a stored snapshot.
+    fn refresh_pass_frames(&mut self) {
+        let (Some(col), Some(s), Some(pb)) = (&self.col, &self.session, &mut self.pb) else { return };
+        if let Some(start) = &pb.start_hash {
+            pb.stored = s.stored_frames(col, &pb.id, start).unwrap_or_default();
+        }
+    }
+
+    /// Ends the pass being recorded, if any, keeping the snapshots it took.
+    fn end_pass(&mut self) {
+        let (Some(s), Some(pb)) = (&mut self.session, &mut self.pb) else { return };
+        if let Some(rec) = pb.rec.take() {
+            if let Err(e) = s.keep_snapshots(rec) {
+                self.error(format!("Could not store this pass's snapshots: {e:#}"));
+            }
+        }
+    }
+
     /// The core is at frame 0 of `id`: set up playback there.
     fn begin_playback(&mut self, id: &str, start_frame: u64) -> Result<()> {
+        self.end_pass();
         let (Some(col), Some(s)) = (&self.col, &mut self.session) else { return Ok(()) };
         let r = &col.replays[id];
         let frames = r.frames().unwrap_or(0);
         let checkpoints = r.checkpoints().unwrap_or_default().into_iter().collect();
+        let rec = start_pass(s, col, id, start_frame)?;
         let snap = s.snapshot()?;
-        let start_hash = s.state_hash(col)?;
+        let start_hash = rec.start_hash.clone();
         // Keep the start state in the database too, so the next visit starts here directly.
         if let Some(c) = &mut s.cache {
             c.put_snapshot(&start_hash, &snap)?;
         }
         let stored = s.stored_frames(col, id, &start_hash).unwrap_or_default();
-        self.pb = Some(Playback { id: id.to_string(), start_frame, frames, ran: 0, snapshots: BTreeMap::from([(0, snap)]), checkpoints, checkpoint_miss: None, end_hash: None, start_hash: Some(start_hash), stored, stale_from: None, picture_stale: false });
+        self.pb = Some(Playback { id: id.to_string(), start_frame, frames, ran: 0, snapshots: BTreeMap::from([(0, snap)]), checkpoints, checkpoint_miss: None, checkpoints_seen: BTreeMap::new(), end_hash: None, start_hash: Some(start_hash), stored, stale_from: None, picture_stale: false, rec: Some(rec) });
         self.edit_from = None;
         self.coverage_restart_live();
         Ok(())
@@ -829,8 +1022,6 @@ impl App {
                 loop {
                     let (Some(col), Some(s)) = (&self.col, &mut self.session) else { return Ok(()) };
                     if qi == queue.len() {
-                        s.restore_inputs(col, &id, 0)?;
-                        s.core.coverage_clear();
                         self.begin_playback(&id, start_frame)?;
                         self.roll.follow_to(then_seek.unwrap_or(0));
                         self.seek(then_seek.unwrap_or(0));
@@ -881,7 +1072,13 @@ impl App {
             return Ok(());
         }
         let k = pb.ran;
-        if k % SNAP_EVERY == 0 && !pb.snapshots.contains_key(&k) {
+        // The pass records only while it runs straight on.
+        if pb.rec.as_ref().is_some_and(|r| r.f != k) {
+            s.keep_snapshots(pb.rec.take().unwrap())?;
+        }
+        let want_snap = k % SNAP_EVERY == 0 && !pb.snapshots.contains_key(&k);
+        let from_pass = pb.rec.as_ref().is_some_and(|r| r.stores_at(k));
+        if want_snap && !from_pass {
             pb.snapshots.insert(k, s.snapshot()?);
             trim_snapshots(&mut pb.snapshots, k, self.max_memory_mb * 1024 * 1024);
         }
@@ -890,8 +1087,22 @@ impl App {
             if &got != want && pb.checkpoint_miss.is_none_or(|m| k < m) {
                 pb.checkpoint_miss = Some(k);
             }
+            pb.checkpoints_seen.insert(k, got);
         }
-        let frame = s.step(col, &pb.id, k, capture || k + 1 == pb.frames)?;
+        let show = capture || k + 1 == pb.frames;
+        let frame = match &mut pb.rec {
+            Some(rec) => {
+                s.advance(col, rec, show)?;
+                if want_snap && from_pass {
+                    if let Some(st) = rec.snapshot_at(k) {
+                        pb.snapshots.insert(k, st.to_vec());
+                        trim_snapshots(&mut pb.snapshots, k, self.max_memory_mb * 1024 * 1024);
+                    }
+                }
+                rec.last_frame.take()
+            }
+            None => s.step(col, &pb.id, k, show)?,
+        };
         pb.ran += 1;
         let reached_end = pb.ran == pb.frames;
         // Frames run since the edit are up to date again.
@@ -901,16 +1112,24 @@ impl App {
         if frame.is_some() {
             pb.picture_stale = false;
         }
+        let mut recorded = false;
         if pb.ran == pb.frames {
-            let h = s.state_hash(col)?;
-            // The end state is where every child starts: keep it in the database.
-            if !col.children(Some(&pb.id)).is_empty() {
-                let state = s.snapshot()?;
-                if let Some(c) = &mut s.cache {
-                    c.put_snapshot(&h, &state)?;
+            if let Some(rec) = pb.rec.take() {
+                // A whole pass from frame 0: write it to the database (the end state too,
+                // where every child starts).
+                pb.end_hash = Some(s.finish(col, rec)?.end_hash);
+                recorded = s.cache.is_some();
+            } else {
+                let h = s.state_hash(col)?;
+                // The end state is where every child starts: keep it in the database.
+                if !col.children(Some(&pb.id)).is_empty() {
+                    let state = s.snapshot()?;
+                    if let Some(c) = &mut s.cache {
+                        c.put_snapshot(&h, &state)?;
+                    }
                 }
+                pb.end_hash = Some(h);
             }
-            pb.end_hash = Some(h);
         }
         if let Some(f) = frame {
             let img = egui::ColorImage::from_rgb([f.width as usize, f.height as usize], &f.rgb);
@@ -922,35 +1141,48 @@ impl App {
         if reached_end {
             self.auto_record();
         }
+        if recorded {
+            self.refresh_stored();
+            self.refresh_pass_frames();
+        }
         Ok(())
     }
 
-    /// At the last frame: records the hashes this playback reached where that overwrites
-    /// nothing (`try_record`: an unverified segment, or a dirty one that still ends the same,
-    /// played from where its clean parent ends). An unsaved change, like an edit.
+    /// At the last frame: records the hashes this playback reached (`try_record`), when it
+    /// started where its clean parent ends. An unsaved change, like an edit. A changed
+    /// ending is recorded too, and flagged with "!" until saved.
     fn auto_record(&mut self) {
-        let (Some(col), Some(pb)) = (&mut self.col, &self.pb) else { return };
-        if pb.checkpoint_miss.is_some() {
+        // An agent may still be writing this draft.
+        if self.pb.as_ref().is_some_and(|pb| self.agent_owned(&pb.id)) {
             return;
         }
+        let (Some(col), Some(pb)) = (&mut self.col, &self.pb) else { return };
         let (Some(end), Some(start)) = (pb.end_hash.clone(), pb.start_hash.clone()) else { return };
         let id = pb.id.clone();
-        // An agent may still be writing a draft; it gets its hashes when it is saved.
-        if col.is_draft(&id) {
-            return;
-        }
-        let verdict = decomp_dj::hydrate::try_record(col, &id, &start, pb.start_frame, &end, None);
-        if matches!(verdict, "recorded" | "cleaned") {
+        let seen: Vec<(u64, String)> = pb.checkpoints_seen.iter().map(|(f, h)| (*f, h.clone())).collect();
+        let before = col.replays[&id].clone();
+        let verdict = decomp_dj::hydrate::try_record(col, &id, &start, pb.start_frame, &end, Some(&seen));
+        if matches!(verdict, "recorded" | "cleaned" | "changed") {
+            self.fold_into_undo(&id, before);
+            let Some(col) = &self.col else { return };
             let title = col_title(Some(col), &id);
+            let cps: BTreeMap<u64, String> = col.replays[&id].checkpoints().unwrap_or_default().into_iter().collect();
+            if let Some(pb) = &mut self.pb {
+                pb.checkpoints = cps;
+                pb.checkpoint_miss = None;
+            }
             self.edited.insert(id.clone());
-            self.unverified_from.remove(&id);
-            self.info(if verdict == "recorded" {
-                format!("Recorded the hashes of \"{title}\". Save to keep them.")
-            } else {
-                format!("\"{title}\" still ends the same: recorded its new start hash. Save to keep it.")
+            self.dirty_from.remove(&id);
+            self.coverage_stale();
+            self.info(match verdict {
+                "recorded" => format!("Recorded the hashes of \"{title}\". Save to keep them."),
+                "cleaned" => format!("\"{title}\" still ends the same: recorded its new start hash. Save to keep it."),
+                _ => format!("\"{title}\" ends differently from its saved version: recorded the new ending (marked !). Save to keep it, or undo."),
             });
         }
     }
+
+    /// Shows frame `target` (0-based) of the selected replay.
     fn seek(&mut self, target: u64) {
         if let Some(Job::Enter { then_seek, .. }) = &mut self.job {
             *then_seek = Some(target);
@@ -994,8 +1226,16 @@ impl App {
                 let state = pb.snapshots[&k].clone();
                 let (Some(col), Some(s)) = (&self.col, &mut self.session) else { return Ok(()) };
                 s.load_state(&state)?;
-                s.restore_inputs(col, &id, k)?;
                 let pb = self.pb.as_mut().unwrap();
+                if let Some(rec) = pb.rec.take() {
+                    s.keep_snapshots(rec)?;
+                }
+                if k == 0 {
+                    // Back at the start: record a new pass.
+                    pb.rec = Some(start_pass(s, col, &id, pb.start_frame)?);
+                } else {
+                    s.restore_inputs(col, &id, k)?;
+                }
                 pb.ran = k;
                 pb.end_hash = None;
             }
@@ -1178,7 +1418,8 @@ impl App {
     }
 
     /// Where continue goes from the current segment: the sticky child, or else the only
-    /// child; None if either side has unsaved changes.
+    /// child, saved or not; None if it is agent-owned. The core is already where the child
+    /// starts, whatever the files say.
     fn next_node(&self) -> Option<String> {
         let (col, pb) = (self.col.as_ref()?, self.pb.as_ref()?);
         let next = match self.sticky_child(&pb.id) {
@@ -1191,10 +1432,31 @@ impl App {
                 kids[0].to_string()
             }
         };
-        if self.edited.contains(&pb.id) || self.edited.contains(&next) {
+        if self.agent_owned(&next) {
             return None;
         }
         Some(next)
+    }
+
+    /// Asks the agent's server to close the session that has draft `id` open, keeping the
+    /// draft (a file in .local/mcp/takeover/, honoured before the agent's next tool call),
+    /// and treats it as the person's from now on.
+    fn take_over(&mut self, id: &str) {
+        let Some(root) = self.col.as_ref().map(|c| c.root.clone()) else { return };
+        let dir = root.join(".local").join("mcp").join("takeover");
+        if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join(id), "")) {
+            self.error(format!("Could not take it over: {e}"));
+            return;
+        }
+        self.taken_over.insert(id.to_string());
+        self.coverage_stale();
+        let title = col_title(self.col.as_ref(), id);
+        self.info(format!("Took over \"{title}\": it is yours to edit and save. The agent's session closes the next time it is used."));
+    }
+
+    /// A draft an agent session has open: the agent's until the session closes.
+    fn agent_owned(&self, id: &str) -> bool {
+        !self.taken_over.contains(id) && self.agent_sessions.iter().any(|s| s.draft == id) && self.col.as_ref().is_some_and(|c| c.is_draft(id))
     }
 
     /// The segment the roll shows after the end of this one: the sticky child, or else the
@@ -1278,13 +1540,13 @@ impl App {
     fn continue_into(&mut self, child: &str) -> Result<()> {
         let (Some(col), Some(s), Some(pb)) = (&self.col, &mut self.session, &self.pb) else { return Ok(()) };
         let start_frame = pb.start_frame + pb.frames;
-        let start_hash = pb.end_hash.clone();
-        s.restore_inputs(col, child, 0)?;
+        let rec = start_pass(s, col, child, start_frame)?;
+        let start_hash = Some(rec.start_hash.clone());
         let snap = s.snapshot()?;
         let r = &col.replays[child];
         let frames = r.frames().unwrap_or(0);
         let checkpoints = r.checkpoints().unwrap_or_default().into_iter().collect();
-        self.pb = Some(Playback { id: child.to_string(), start_frame, frames, ran: 0, snapshots: BTreeMap::from([(0, snap)]), checkpoints, checkpoint_miss: None, end_hash: None, start_hash, stored: vec![], stale_from: None, picture_stale: false });
+        self.pb = Some(Playback { id: child.to_string(), start_frame, frames, ran: 0, snapshots: BTreeMap::from([(0, snap)]), checkpoints, checkpoint_miss: None, checkpoints_seen: BTreeMap::new(), end_hash: None, start_hash, stored: vec![], stale_from: None, picture_stale: false, rec: Some(rec) });
         self.edit_from = None;
         self.selected = Some(child.to_string());
         self.roll.follow_to(0);
@@ -1296,7 +1558,9 @@ impl App {
 
     fn apply_edit(&mut self, label: &str, edits: Vec<(InputKey, Vec<(u64, u64)>)>, from: u64) {
         let Some(id) = self.selected.clone() else { return };
-        self.remember(label, &[&id]);
+        if !self.remember(label, &[&id]) {
+            return;
+        }
         let Some(col) = &mut self.col else { return };
         let r = col.replays.get_mut(&id).unwrap();
         for (key, spans) in edits {
@@ -1309,7 +1573,7 @@ impl App {
     }
 
     /// After a change at frame `from` of `id`: drops the end hash and later checkpoints
-    /// (so the segment and everything below turn unverified or dirty) and redraws.
+    /// (so the segment and everything below turn dirty) and redraws.
     fn invalidate_from(&mut self, id: &str, from: u64) {
         let Some(col) = &mut self.col else { return };
         let id = id.to_string();
@@ -1322,16 +1586,20 @@ impl App {
             r.add("checkpoint", &format!("{f} {h}"));
         }
         self.edited.insert(id.clone());
-        let e = self.unverified_from.entry(id.clone()).or_insert(from);
+        let e = self.dirty_from.entry(id.clone()).or_insert(from);
         *e = (*e).min(from);
         self.roll.invalidate();
+        let here = self.playhead();
         if let Some(pb) = &mut self.pb {
             if pb.id == id {
+                if let (Some(rec), Some(s)) = (pb.rec.take(), &mut self.session) {
+                    let _ = s.keep_snapshots(rec);
+                }
                 pb.snapshots.retain(|k, _| *k <= from);
                 pb.checkpoints = keep.into_iter().collect();
                 pb.checkpoint_miss = pb.checkpoint_miss.filter(|m| *m <= from);
                 pb.end_hash = None;
-                let cur = pb.shown();
+                let cur = here;
                 // Live coverage starts again: the frames after the edit run differently now.
                 self.coverage_restart_live();
                 self.show_after_edit(from, cur);
@@ -1344,6 +1612,11 @@ impl App {
     /// date, then either returns to the edit (pauses, shows the earliest frame edited since
     /// playback last ran) or redraws `cur`.
     fn show_after_edit(&mut self, from: u64, cur: Option<u64>) {
+        // The person moved the playhead since the last edit: this edit starts a new run, so
+        // it returns to itself, not to an earlier edit somewhere else.
+        if cur != self.edit_at {
+            self.edit_from = None;
+        }
         let Some(pb) = &mut self.pb else { return };
         pb.stale_from = Some(pb.stale_from.map_or(from, |s| s.min(from))).filter(|s| *s < pb.frames);
         if cur.is_some_and(|c| c >= from) {
@@ -1354,7 +1627,8 @@ impl App {
             self.playing = false;
             let e = self.edit_from.map_or(from, |e| e.min(from));
             self.edit_from = Some(e);
-            Some(e.min(last))
+            self.edit_at = Some(e.min(last));
+            self.edit_at
         } else {
             cur
         };
@@ -1370,29 +1644,18 @@ impl App {
         }
     }
 
-    /// Records the state hash playback reached at the end as the replay's end-hash.
-    fn accept_end_hash(&mut self) {
-        if let Some(id) = self.pb.as_ref().filter(|p| p.end_hash.is_some()).map(|p| p.id.clone()) {
-            self.remember("Use new end hash", &[&id]);
-        }
-        let (Some(col), Some(pb)) = (&mut self.col, &self.pb) else { return };
-        let Some(h) = pb.end_hash.clone() else { return };
-        let r = col.replays.get_mut(&pb.id).unwrap();
-        r.set("end-hash", &h);
-        r.set("start-frame", &pb.start_frame.to_string());
-        if let Some(sh) = &pb.start_hash {
-            r.set("start-hash", sh);
-        }
-        self.edited.insert(pb.id.clone());
-        self.unverified_from.remove(&pb.id);
-        self.info("Using the new end hash. Save to keep it; child segments will check against it.");
-    }
-
     // ---- undo, redo and clipboard ----
 
     /// Records the segments `ids` as they are now, before a change, as one undo step.
-    fn remember(&mut self, label: &str, ids: &[&str]) {
-        let Some(col) = &self.col else { return };
+    /// Returns false, changing nothing, when one of them is agent-owned: those are read-only
+    /// until taken over.
+    fn remember(&mut self, label: &str, ids: &[&str]) -> bool {
+        if let Some(id) = ids.iter().find(|id| self.agent_owned(id)) {
+            let title = col_title(self.col.as_ref(), id);
+            self.info(format!("\"{title}\" is open in an agent session: right-click it and Take over to edit it."));
+            return false;
+        }
+        let Some(col) = &self.col else { return false };
         let segments = ids.iter().map(|id| (id.to_string(), col.replays.get(*id).cloned())).collect();
         let frame = self.pb.as_ref().and_then(|p| p.shown());
         self.undo.push(UndoStep { label: label.to_string(), segments, selected: self.selected.clone(), frame });
@@ -1401,6 +1664,45 @@ impl App {
         }
         self.redo.clear();
         self.coverage_stale();
+        true
+    }
+
+    /// The frame the playhead is on, or is on its way to when a seek is running.
+    fn playhead(&self) -> Option<u64> {
+        match &self.job {
+            Some(Job::Seek { to, .. }) => to.checked_sub(1),
+            _ => self.pb.as_ref().and_then(|p| p.shown()),
+        }
+    }
+
+    /// Hashes a clean recorded become one undo step, so undo takes them back.
+    fn undo_clean(&mut self, hy: &mut Hydrating) {
+        let mut segments: Vec<(String, Option<decomp_dj::format::Replay>)> = vec![];
+        for e in hy.h.events.iter().filter(|e| matches!(e.verdict, "recorded" | "cleaned" | "changed")) {
+            if let Some(r) = hy.before.remove(&e.id) {
+                segments.push((e.id.clone(), Some(r)));
+            }
+        }
+        if segments.is_empty() {
+            return;
+        }
+        let frame = self.pb.as_ref().and_then(|p| p.shown());
+        self.undo.push(UndoStep { label: format!("Clean {}", hy.what), segments, selected: self.selected.clone(), frame });
+        if self.undo.len() > UNDO_LIMIT {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+    }
+
+    /// Hashes recorded because of the last change (reaching a segment's end after an edit,
+    /// say) join the last undo step, so one undo takes back the change and what it caused.
+    /// `before` is the segment as it was before its hashes were recorded.
+    fn fold_into_undo(&mut self, id: &str, before: decomp_dj::format::Replay) {
+        if let Some(step) = self.undo.last_mut() {
+            if !step.segments.iter().any(|(s, _)| s == id) {
+                step.segments.push((id.to_string(), Some(before)));
+            }
+        }
     }
 
     fn undo(&mut self) {
@@ -1426,7 +1728,7 @@ impl App {
         self.coverage_stale();
         self.renaming = None;
         self.playing = false;
-        let here = self.pb.as_ref().and_then(|p| p.shown());
+        let here = self.playhead();
         let cur = self.selected.clone();
         let Some(col) = &mut self.col else { return step };
         let chain: Vec<String> = cur.as_deref().and_then(|c| col.chain(c).ok()).unwrap_or_default().into_iter().map(String::from).collect();
@@ -1476,13 +1778,14 @@ impl App {
                 }
                 None => {
                     self.selected = None;
-                    self.pb = None;
+                    { self.end_pass(); self.pb = None; }
                     self.texture = None;
                 }
             }
         } else if let (Some(from), Some(id)) = (first_diff, &cur) {
             // Same segment: drop what playback knew past the first change and redraw here.
             let checkpoints: BTreeMap<u64, String> = col.replays[id].checkpoints().unwrap_or_default().into_iter().collect();
+            self.end_pass();
             if let Some(pb) = &mut self.pb {
                 pb.snapshots.retain(|k, _| *k <= from);
                 pb.checkpoints = checkpoints;
@@ -1491,8 +1794,29 @@ impl App {
             }
             self.show_after_edit(from, here);
         }
+        let ids: Vec<String> = reverse.segments.iter().map(|(id, _)| id.clone()).collect();
+        self.settle_edited(&ids);
+        // What the live play ran described the content before the step.
+        if self.selected.as_ref().is_some_and(|s| ids.contains(s)) {
+            self.coverage_restart_live();
+        }
         self.refresh_frame_dialog();
         reverse
+    }
+
+    /// Unsaved means different from the file: segments in `ids` that are back to exactly
+    /// what their saved file holds (a redo after saving, say) stop being unsaved.
+    fn settle_edited(&mut self, ids: &[String]) {
+        let Some(col) = &self.col else { return };
+        for id in ids {
+            let (Some(r), Some(path)) = (col.replays.get(id), col.paths.get(id)) else { continue };
+            if col.is_draft(id) {
+                continue;
+            }
+            if std::fs::read_to_string(path).is_ok_and(|disk| disk == r.to_text()) {
+                self.edited.remove(id);
+            }
+        }
     }
 
     fn copy(&mut self) -> bool {
@@ -1630,7 +1954,9 @@ impl App {
         }
         let mut ids: Vec<&str> = vec![pid.as_str(), id];
         ids.extend(kids.iter().map(String::as_str));
-        self.remember("Join with parent", &ids);
+        if !self.remember("Join with parent", &ids) {
+            return Ok(());
+        }
         let here = if self.selected.as_deref() == Some(id) { self.pb.as_ref().and_then(|b| b.shown()).map(|f| f + pf) } else { None };
         let col = self.col.as_mut().unwrap();
         col.replays.insert(pid.clone(), p);
@@ -1659,7 +1985,9 @@ impl App {
     /// Deletes `id` and everything below it (`ids`, from `subtree`), as one undo step.
     fn delete_nodes(&mut self, id: &str, ids: Vec<String>) {
         let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
-        self.remember("Delete", &refs);
+        if !self.remember("Delete", &refs) {
+            return;
+        }
         let Some(col) = &mut self.col else { return };
         let parent = col.replays.get(id).and_then(|r| r.parent().map(String::from));
         for i in &ids {
@@ -1674,7 +2002,7 @@ impl App {
         let n = ids.len();
         // If the shown segment went, show its parent instead.
         if self.selected.as_ref().is_some_and(|s| ids.contains(s)) {
-            self.pb = None;
+            { self.end_pass(); self.pb = None; }
             self.texture = None;
             self.selected = None;
             if let Some(p) = parent {
@@ -1735,7 +2063,9 @@ impl App {
             if branch {
                 ids.push(b.as_str());
             }
-            self.remember(if branch { "Branch" } else { "Split" }, &ids);
+            if !self.remember(if branch { "Branch" } else { "Split" }, &ids) {
+                return Ok(());
+            }
         }
         let (Some(col), Some(_)) = (&mut self.col, &mut self.session) else { return Ok(()) };
         let (mut up, mut down) = col.replays[&id].split_at(f, &up_id)?;
@@ -1789,7 +2119,9 @@ impl App {
         if d.title.trim() == r.title() && d.frames == old_frames {
             return Ok(());
         }
-        self.remember("Segment properties", &[&d.id]);
+        if !self.remember("Segment properties", &[&d.id]) {
+            return Ok(());
+        }
         let Some(col) = &mut self.col else { return Ok(()) };
         let r = col.replays.get_mut(&d.id).ok_or_else(|| anyhow!("segment is gone"))?;
         r.set("title", d.title.trim());
@@ -1837,7 +2169,9 @@ impl App {
         if line_no.is_none() && text.is_none() {
             return;
         }
-        self.remember(if text.is_none() { "Delete line" } else if line_no.is_none() { "Add line" } else { "Edit line" }, &[&id]);
+        if !self.remember(if text.is_none() { "Delete line" } else if line_no.is_none() { "Add line" } else { "Edit line" }, &[&id]) {
+            return;
+        }
         let Some(col) = &mut self.col else { return };
         let r = col.replays.get_mut(&id).unwrap();
         let res = match (line_no, text) {
@@ -1860,6 +2194,59 @@ impl App {
 
     fn dialogs(&mut self, ctx: &egui::Context) {
         // One confirmation for Segment > Delete and the tree's right-click Delete.
+        if let Some(ask) = self.save_dialog.take() {
+            let mut open = true;
+            let (mut clean, mut save, mut close) = (false, false, false);
+            egui::Window::new("Save").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).show(ctx, |ui| {
+                let s = |n: usize| if n == 1 { "" } else { "s" };
+                match &ask {
+                    SaveAsk::Dirty(n) => {
+                        ui.label(RichText::new(format!("{n} segment{} would be saved dirty.", s(*n))).strong());
+                        ui.label("Dirty segments are unrecorded (no recorded ending yet) or stale (they start where their parent no longer ends). Cleaning plays them and records their hashes; saved dirty, they stay dirty until cleaned and saved again.");
+                    }
+                    SaveAsk::AfterClean { changed, dirty, failed } => {
+                        if let Some(e) = failed {
+                            ui.label(RichText::new(format!("Cleaning didn't finish: {e}")).strong().color(Color32::from_rgb(240, 160, 60)));
+                        }
+                        if *changed > 0 {
+                            ui.label(RichText::new(format!("{changed} ending{} changed (marked ! in the tree).", s(*changed))).strong());
+                            ui.label("Review them before saving: saving clears the marks.");
+                        }
+                        if *dirty > 0 {
+                            ui.label(format!("{dirty} segment{} would still be saved dirty.", s(*dirty)));
+                        }
+                    }
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| match &ask {
+                    SaveAsk::Dirty(_) => {
+                        clean = ui.button("Clean, then save").clicked();
+                        save = ui.button("Save anyway").clicked();
+                        close = ui.button("Cancel").clicked();
+                    }
+                    SaveAsk::AfterClean { dirty, failed, .. } => {
+                        let label = if *dirty > 0 || failed.is_some() { "Save anyway" } else { "Save" };
+                        save = ui.button(label).clicked();
+                        close = ui.button("Review first").clicked();
+                    }
+                });
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    close = true;
+                }
+            });
+            if clean {
+                self.save_after_clean = true;
+                self.start_verify(None, Clean::Unclean);
+                if self.hydrating.is_none() {
+                    // Nothing could be cleaned (no database, say): leave it to the person.
+                    self.save_after_clean = false;
+                }
+            } else if save {
+                self.save_now();
+            } else if !close && open {
+                self.save_dialog = Some(ask);
+            }
+        }
         let pending = self.delete_dialog.clone().and_then(|id| self.col.as_ref().filter(|c| c.replays.contains_key(&id)).map(|c| (id, c)));
         if pending.is_none() {
             self.delete_dialog = None;
@@ -2042,8 +2429,8 @@ impl App {
                         self.open_collection(&dir);
                     }
                 }
-                let n = self.edited.len();
-                if ui.add_enabled(n > 0, egui::Button::new(format!("Save ({n} changed)")).shortcut_text("Ctrl+S")).clicked() {
+                let n = self.unsaved().len();
+                if ui.add_enabled(n > 0, egui::Button::new(format!("Save ({n} unsaved)")).shortcut_text("Ctrl+S")).on_hover_text("Write every changed segment, and move drafts into segments/").clicked() {
                     self.save();
                 }
                 if ui.add_enabled(self.col.is_some(), egui::Button::new("Reload from disk")).on_hover_text("Discards unsaved edits").clicked() {
@@ -2101,14 +2488,6 @@ impl App {
                     self.roll.follow_to(end);
                 }
                 ui.separator();
-                if ui
-                    .add_enabled(self.can_use_new_hash(), egui::Button::new("Use new end hash"))
-                    .on_hover_text("Replace the recorded hashes with the ones this playback reached. Only needed when the ending changed: hashes that overwrite nothing are recorded when playback reaches the last frame.")
-                    .on_disabled_hover_text("Play to the last frame first. Enabled when the playback ended somewhere other than the recorded end hash.")
-                    .clicked()
-                {
-                    self.accept_end_hash();
-                }
                 ui.separator();
                 let idle = self.hydrating.is_none();
                 let mut use_db = self.col.as_ref().and_then(|c| c.load_local().ok()).and_then(|l| l.database).unwrap_or(true);
@@ -2169,16 +2548,21 @@ impl App {
                 ui.separator();
                 let db_on = self.session.as_ref().is_some_and(|s| s.cache.is_some());
                 let idle = self.hydrating.is_none();
-                if ui.add_enabled(db_on && idle, egui::Button::new("Hydrate all")).on_hover_text("Play every segment whose current content isn't in the local database yet").on_disabled_hover_text("Needs the local database").clicked() {
-                    self.start_hydrate(None, false);
-                }
                 if ui
                     .add_enabled(db_on && idle, egui::Button::new("Clean all segments"))
-                    .on_hover_text("Play every segment that isn't clean, top down, and record its hashes where that overwrites nothing (as reaching a segment's end does). Segments whose ending changed are listed for you to check. Results are unsaved changes.")
+                    .on_hover_text("Play, top down, every segment that isn't clean or whose content isn't in the local database yet, and record the hashes it reaches (as reaching a segment's end does). Changed endings are marked ! for you to check. Results are unsaved changes.")
                     .on_disabled_hover_text("Needs the local database")
                     .clicked()
                 {
-                    self.start_verify(None);
+                    self.start_verify(None, Clean::Fill);
+                }
+                if ui
+                    .add_enabled(db_on && idle, egui::Button::new("Replay everything"))
+                    .on_hover_text("Clean all segments, but play every segment again, even those the local database has stored: a check that they still end as recorded (after a core update, say)")
+                    .on_disabled_hover_text("Needs the local database")
+                    .clicked()
+                {
+                    self.start_verify(None, Clean::Everything);
                 }
             }));
             bar.push(ui.menu_button("MCP", |ui| self.agent_menu(ui)));
@@ -2193,7 +2577,7 @@ impl App {
                     self.roll.zoom(1.0 / 1.5);
                 }
                 ui.checkbox(&mut self.roll.follow, "Follow playhead").keep_open();
-                ui.checkbox(&mut self.return_to_edit, "Return to the edit").keep_open().on_hover_text("Any edit pauses playback and shows the earliest frame edited since playback last ran. Off: the frame you were on is redrawn.");
+                ui.checkbox(&mut self.return_to_edit, "Return to the edit").keep_open().on_hover_text("Any edit pauses playback and shows the earliest frame edited since you last played or moved the playhead. Off: the frame you were on is redrawn.");
                 ui.checkbox(&mut self.roll.all_buttons, "Show every joypad button").keep_open();
                 ui.add_enabled(false, egui::Checkbox::new(&mut false, "Second core side by side")).on_disabled_hover_text("Coming later");
             }));
@@ -2207,17 +2591,9 @@ impl App {
         }
     }
 
-    /// "Use new end hash": the playback is at the end, and its hashes aren't the recorded ones.
-    fn can_use_new_hash(&self) -> bool {
-        let (Some(col), Some(pb)) = (self.col.as_ref(), self.pb.as_ref()) else { return false };
-        let Some(end) = &pb.end_hash else { return false };
-        let r = &col.replays[&pb.id];
-        r.get("end-hash") != Some(end.as_str()) || pb.start_hash.as_deref().is_some_and(|s| r.get("start-hash") != Some(s))
-    }
-
     /// The ruler band for `id`: from which frame on its hashes aren't known, in the colour of
     /// its tree dot. None when it is clean.
-    fn unverified_band(&self, id: &str) -> Option<roll::Unverified> {
+    fn dirty_band(&self, id: &str) -> Option<roll::DirtyBand> {
         let col = self.col.as_ref()?;
         let r = col.replays.get(id)?;
         let status = col.tree_status(id);
@@ -2227,31 +2603,25 @@ impl App {
         let color = status_color(status);
         // While playing after an edit: what hasn't been run again yet.
         if let Some(sf) = self.pb.as_ref().filter(|p| p.id == id).and_then(|p| p.stale_from) {
-            return Some(roll::Unverified { from: sf, color, hint: format!("Frames from {sf} on haven't been played since the last edit. Play to the end to record the new hashes.") });
+            return Some(roll::DirtyBand { from: sf, color, hint: format!("Frames from {sf} on haven't been played since the last edit. Play to the end to record the new hashes.") });
         }
         let parent_clean = r.parent().is_none_or(|p| col.tree_status(p) == Status::Clean);
-        if status == Status::Dirty {
+        if r.get("end-hash").is_some() {
             let hint = if parent_clean {
-                "Dirty: its parent's end state changed. Play it to the end to re-check it; if it still ends the same, the new start hash is recorded."
+                "Stale: its parent's end state changed. Play it to the end to record its new hashes (a changed ending gets a !)."
             } else {
-                "Dirty: a segment above it changed and isn't clean yet. Clean that one first (or use Segment > Clean all segments)."
+                "Stale: a segment above it changed and isn't clean yet. Clean that one first (or use Segment > Clean all segments)."
             };
-            return Some(roll::Unverified { from: 0, color, hint: hint.to_string() });
+            return Some(roll::DirtyBand { from: 0, color, hint: hint.to_string() });
         }
         let last_cp = r.checkpoints().unwrap_or_default().into_iter().map(|(f, _)| f).max().unwrap_or(0);
-        let from = self.unverified_from.get(id).copied().unwrap_or(last_cp);
+        let from = self.dirty_from.get(id).copied().unwrap_or(last_cp);
         let hint = if parent_clean {
-            format!("Not verified from frame {from} on. Play to the end to record its hashes.")
+            format!("Unrecorded from frame {from} on: its hashes aren't recorded. Play to the end to record them.")
         } else {
-            format!("Not verified from frame {from} on, and its parent isn't clean: clean that first, or use Segment > Clean all segments.")
+            format!("Unrecorded from frame {from} on, and its parent isn't clean: clean that first, or use Segment > Clean all segments.")
         };
-        Some(roll::Unverified { from, color, hint })
-    }
-
-    fn end_matches(&self) -> Option<bool> {
-        let (col, pb) = (self.col.as_ref()?, self.pb.as_ref()?);
-        let got = pb.end_hash.as_ref()?;
-        Some(col.replays[&pb.id].get("end-hash") == Some(got.as_str()))
+        Some(roll::DirtyBand { from, color, hint })
     }
 
     fn tree(&mut self, ui: &mut egui::Ui) {
@@ -2267,18 +2637,24 @@ impl App {
         };
         ui.add_space(4.0);
         ui.heading(&col.config.name);
-        let (mut clean, mut dirty, mut unv) = (0, 0, 0);
+        let (mut clean, mut dirty) = (0, 0);
         for id in col.replays.keys().filter(|id| !col.is_draft(id)) {
             match col.tree_status(id) {
                 Status::Clean => clean += 1,
                 Status::Dirty => dirty += 1,
-                Status::Unverified => unv += 1,
             }
         }
+        let changed_endings: HashSet<String> = col.replays.keys().filter(|id| self.ending_changed(id)).cloned().collect();
+        let owned: HashSet<String> = col.replays.keys().filter(|id| self.agent_owned(id)).cloned().collect();
+        let flagged = changed_endings.len();
         ui.horizontal(|ui| {
-            for (n, s) in [(clean, Status::Clean), (dirty, Status::Dirty), (unv, Status::Unverified)] {
+            for (n, s) in [(clean, Status::Clean), (dirty, Status::Dirty)] {
                 status_dot(ui, s);
                 ui.label(RichText::new(format!("{n} {}", s.label())).color(status_color(s)).small());
+            }
+            if flagged > 0 {
+                ui.label(RichText::new(format!("! {flagged} changed ending{}", if flagged == 1 { "" } else { "s" })).color(CHANGED).small())
+                    .on_hover_text("Unsaved segments whose end hash differs from their saved file. Save to keep them, or undo.");
             }
             if !col.drafts.is_empty() {
                 ui.label(RichText::new(format!("{} agent drafts", col.drafts.len())).color(DRAFT).small());
@@ -2477,16 +2853,25 @@ impl App {
                         ui.add_space(14.0);
                     }
                     let st = col.tree_status(id);
-                    status_dot(ui, st).on_hover_text(st.label());
+                    let tip = match st {
+                        Status::Clean => "clean",
+                        Status::Dirty if r.get("end-hash").is_none() => "dirty (unrecorded: no end hash yet)",
+                        Status::Dirty => "dirty (stale: starts where its parent no longer ends)",
+                    };
+                    status_dot(ui, st).on_hover_text(tip);
+                    if changed_endings.contains(id) {
+                        ui.label(RichText::new("!").strong().color(CHANGED)).on_hover_text("Its ending changed since it was last saved. Save to keep it, or undo.");
+                    }
                     let mut title = RichText::new(r.title());
                     if filtering && !matches.contains(id) {
                         title = title.weak();
                     }
                     let is_draft = col.is_draft(id);
-                    if is_draft {
-                        title = title.italics().color(DRAFT);
-                    }
-                    if self.edited.contains(id) {
+                    // Agent-owned (open in a session): read-only here. Otherwise unsaved: edited
+                    // here, or a draft an agent wrote.
+                    if owned.contains(id) {
+                        title = title.italics().color(AGENT_OWNED);
+                    } else if self.edited.contains(id) || is_draft {
                         title = title.italics().color(Color32::from_rgb(240, 210, 90));
                     }
                     let sel = self.selected.as_deref() == Some(id);
@@ -2525,7 +2910,7 @@ impl App {
                     let frames = r.frames().unwrap_or(0);
                     ui.label(RichText::new(format!("{frames}f")).weak().small());
                     if self.stored_ids.contains(id) {
-                        ui.label(RichText::new("db").small().color(Color32::from_rgb(110, 150, 190))).on_hover_text("Hydrated: this segment's current content is in the local database");
+                        ui.label(RichText::new("db").small().color(Color32::from_rgb(110, 150, 190))).on_hover_text("Stored: this segment's current content is in the local database");
                     }
                     if let Some(n) = self.cov.unique.get(id) {
                         ui.label(RichText::new(format!("+{n}")).small().color(cov::COVERED))
@@ -2537,12 +2922,12 @@ impl App {
                     if is_draft {
                         let live = self.agent_sessions.iter().find(|s| s.draft == *id).map(|s| s.session.clone());
                         let tag = match &live {
-                            Some(s) => format!("draft · {s}"),
-                            None => "draft".to_string(),
+                            Some(s) => format!("agent · {s}"),
+                            None => "agent".to_string(),
                         };
                         ui.label(RichText::new(tag).small().color(DRAFT)).on_hover_text(match &live {
-                            Some(s) => format!("An agent's draft, open in its session {s}: right-click to follow it, save it as a segment or discard it"),
-                            None => "An agent's draft in .local/drafts/: right-click to save it as a segment or discard it".into(),
+                            Some(s) => format!("An agent's draft, open in its session {s}: the agent's, so read-only here, and not saved or cleaned. Right-click to follow it or take it over."),
+                            None => "An agent's draft in .local/drafts/: an unsaved segment. File > Save moves it into segments/; Delete removes it.".into(),
                         });
                     }
                     let resp = resp.on_hover_ui(|ui| {
@@ -2575,14 +2960,11 @@ impl App {
                                 if ui.button(format!("Follow session {}", s.session)).on_hover_text("Show this draft at the agent's frame as it plays").clicked() {
                                     context = Some((id.to_string(), "follow"));
                                 }
+                                if owned.contains(id) && ui.button("Take over").on_hover_text("Close the agent's session, keeping the draft, so it is yours to edit and save. The agent is told the next time it uses the session.").clicked() {
+                                    context = Some((id.to_string(), "takeover"));
+                                }
+                                ui.separator();
                             }
-                            if ui.button("Save as segment").on_hover_text("Move it into segments/. Play it to the end (or use Clean all segments) to record its hashes.").clicked() {
-                                context = Some((id.to_string(), "draft_save"));
-                            }
-                            if ui.button("Discard draft").on_hover_text("Delete its file in .local/drafts/").clicked() {
-                                context = Some((id.to_string(), "draft_discard"));
-                            }
-                            ui.separator();
                         }
                         if ui.button("Play to here").on_hover_text("Play through to the end of this segment").clicked() {
                             context = Some((id.to_string(), "playto"));
@@ -2601,15 +2983,9 @@ impl App {
                             context = Some((id.to_string(), "delete"));
                         }
                         ui.separator();
-                        if ui.add_enabled(db_on, egui::Button::new("Hydrate this segment")).on_disabled_hover_text("Needs the local database").clicked() {
-                            context = Some((id.to_string(), "hydrate1"));
-                        }
-                        if ui.add_enabled(db_on, egui::Button::new("Hydrate this and below")).on_disabled_hover_text("Needs the local database").clicked() {
-                            context = Some((id.to_string(), "hydrate"));
-                        }
                         if ui
                             .add_enabled(db_on, egui::Button::new("Clean this and below"))
-                            .on_hover_text("Play what isn't clean here and below, and record hashes where that overwrites nothing")
+                            .on_hover_text("Play what isn't clean or isn't in the local database here and below, and record the hashes it reaches")
                             .on_disabled_hover_text("Needs the local database")
                             .clicked()
                         {
@@ -2659,9 +3035,7 @@ impl App {
             // The Enter that ended the rename must not start another one.
             ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
             let changed = title.as_ref().is_some_and(|t| !t.is_empty() && self.col.as_ref().and_then(|c| c.replays.get(&id)).is_some_and(|r| r.title() != t));
-            if changed {
-                self.remember("Rename", &[&id]);
-            }
+            let changed = changed && self.remember("Rename", &[&id]);
             if let (Some(t), Some(col)) = (title.filter(|_| changed), &mut self.col) {
                 if let Some(r) = col.replays.get_mut(&id) {
                     {
@@ -2686,17 +3060,14 @@ impl App {
             Some((_, "unhoist")) => self.hoist = None,
             Some((id, "delete")) => self.delete_dialog = Some(id),
             Some((id, "join")) => self.join_with_parent(&id),
-            Some((id, "hydrate1")) => self.start_hydrate(Some((id, false)), false),
-            Some((id, "hydrate")) => self.start_hydrate(Some((id, true)), false),
-            Some((id, "verify")) => self.start_verify(Some(id)),
+            Some((id, "verify")) => self.start_verify(Some(id), Clean::Fill),
+            Some((id, "takeover")) => self.take_over(&id),
             Some((id, "follow")) => {
                 if let Some(s) = self.agent_sessions.iter().find(|s| s.draft == id) {
                     self.follow = Some((s.pid, s.session.clone()));
                     self.follow_agent();
                 }
             }
-            Some((id, "draft_save")) => self.draft_save(&id),
-            Some((id, "draft_discard")) => self.draft_discard(&id),
             Some((id, _)) => self.open_node_dialog(&id),
             None => {}
         }
@@ -2721,7 +3092,7 @@ impl App {
     }
 
     fn agent_menu_items(&mut self, ui: &mut egui::Ui, has_col: bool) {
-        if ui.checkbox(&mut self.show_drafts, "Show agent drafts").keep_open().on_hover_text("Drafts in .local/drafts/ appear in the tree in teal").changed() {
+        if ui.checkbox(&mut self.show_drafts, "Show agent drafts").keep_open().on_hover_text("Drafts in .local/drafts/ appear in the tree as unsaved segments, marked \"agent\"").changed() {
             if self.show_drafts {
                 if let Some(col) = &mut self.col {
                     let _ = col.load_drafts();
@@ -2808,7 +3179,7 @@ impl App {
         col.drafts.clear();
         if self.selected.as_ref().is_some_and(|s| !col.replays.contains_key(s)) {
             self.selected = None;
-            self.pb = None;
+            { self.end_pass(); self.pb = None; }
         }
     }
 
@@ -2852,11 +3223,15 @@ impl App {
         }
         let Some(root) = self.col.as_ref().map(|c| c.root.clone()) else { return };
         self.agent_sessions = agent::sessions(&root);
+        let sessions = &self.agent_sessions;
+        self.taken_over.retain(|d| sessions.iter().any(|s| &s.draft == d));
         if self.show_drafts && self.hydrating.is_none() {
             let fp = agent::drafts_fingerprint(&root);
             if fp != self.drafts_fp {
                 self.drafts_fp = fp;
                 self.reload_drafts();
+                // An agent's session may have recorded its draft: take the hashes from there.
+                self.refresh_stored();
             }
         }
         if self.follow.is_some() {
@@ -2880,7 +3255,7 @@ impl App {
     }
 
     /// Picks up segment files that other tools changed, added or removed (an agent's
-    /// `save_draft`, `dj hydrate --clean`, `dj play --accept`, an editor). A segment with
+    /// `save_draft`, `dj clean`, `dj play --accept`, an editor). A segment with
     /// unsaved edits here keeps them, with a warning, since saving would overwrite the file.
     fn poll_segments(&mut self) {
         if self.hydrating.is_some() {
@@ -2968,6 +3343,7 @@ impl App {
         if changed.is_empty() && conflicts.is_empty() {
             return;
         }
+        self.note_saved(&changed);
         self.roll.invalidate();
         self.coverage_stale();
         if !conflicts.is_empty() {
@@ -2985,7 +3361,7 @@ impl App {
                 }
             } else {
                 self.selected = None;
-                self.pb = None;
+                { self.end_pass(); self.pb = None; }
             }
         }
     }
@@ -2995,7 +3371,17 @@ impl App {
         // Drafts edited here and not saved yet keep the edits.
         let keep: Vec<(String, decomp_dj::format::Replay)> = self.edited.iter().filter(|id| col.is_draft(id)).filter_map(|id| col.replays.get(id).map(|r| (id.clone(), r.clone()))).collect();
         let old: Option<decomp_dj::format::Replay> = self.selected.as_ref().and_then(|s| col.replays.get(s)).cloned();
+        let deleted: Vec<String> = self.edited.iter().filter(|id| col.is_draft(id) && !col.replays.contains_key(*id)).cloned().collect();
         let Ok(changed) = col.load_drafts() else { return };
+        for id in &deleted {
+            // Deleted here, not saved yet: its file goes on save.
+            col.replays.remove(id);
+        }
+        for id in &changed {
+            if let Some(r) = col.replays.get(id) {
+                self.saved_end.insert(id.clone(), ending_sig(r));
+            }
+        }
         for (id, r) in keep {
             col.replays.insert(id.clone(), r);
             col.drafts.insert(id);
@@ -3007,7 +3393,7 @@ impl App {
         let Some(new) = col.replays.get(&sel).cloned() else {
             // The selected draft was saved or discarded.
             let next = old.as_ref().and_then(|o| o.parent()).map(String::from).filter(|p| col.replays.contains_key(p));
-            self.pb = None;
+            { self.end_pass(); self.pb = None; }
             self.selected = None;
             if let Some(p) = next {
                 self.select(&p);
@@ -3031,6 +3417,9 @@ impl App {
         if let Some(pb) = &mut self.pb {
             if pb.id == sel {
                 let shown = pb.shown();
+                if let (Some(rec), Some(s)) = (pb.rec.take(), &mut self.session) {
+                    let _ = s.keep_snapshots(rec);
+                }
                 pb.snapshots.retain(|k, _| *k <= from);
                 pb.frames = frames;
                 pb.end_hash = None;
@@ -3071,51 +3460,37 @@ impl App {
         }
     }
 
-    fn draft_save(&mut self, id: &str) {
-        if self.edited.contains(id) {
-            self.save();
-        }
-        let Some(col) = &mut self.col else { return };
-        match col.draft_to_segment(id) {
-            Ok(()) => {
-                self.drafts_fp = agent::drafts_fingerprint(&col.root);
-                self.segments_fp = agent::segments_fingerprint(&col.root);
-                self.coverage_stale();
-                self.info("Saved the draft as a segment. Play it to the end (or use Clean all segments) to record its hashes.");
-            }
-            Err(e) => self.error(e),
-        }
-    }
-
-    fn draft_discard(&mut self, id: &str) {
-        let Some(col) = &mut self.col else { return };
-        if col.replays.values().any(|r| r.parent() == Some(id)) {
-            self.error("Other segments or drafts start from this draft; discard those first.");
-            return;
-        }
-        if let Some(p) = col.paths.get(id) {
-            let _ = std::fs::remove_file(p);
-        }
-        let parent = col.replays.get(id).and_then(|r| r.parent()).map(String::from);
-        col.replays.remove(id);
-        col.paths.remove(id);
-        col.drafts.remove(id);
-        self.edited.remove(id);
-        self.drafts_fp = agent::drafts_fingerprint(&col.root);
-        if self.selected.as_deref() == Some(id) {
-            self.pb = None;
-            self.selected = None;
-            if let Some(p) = parent {
-                self.select(&p);
-            }
-        }
-        self.info("Discarded the draft.");
-    }
-
     // ---- local database ----
 
-    /// Which segments' current content is stored (the tree's "db" marks).
+    /// Records hashes the local database already knows (`hydrate::record_from_cache`): a
+    /// dirty segment whose exact content and start were played before is clean again without
+    /// playing. Unsaved changes, like any recorded hashes.
+    fn hashes_from_cache(&mut self) {
+        let skip: HashSet<String> = self.col.as_ref().map(|c| c.replays.keys().filter(|id| self.agent_owned(id)).cloned().collect()).unwrap_or_default();
+        let (Some(col), Some(s)) = (&mut self.col, &self.session) else { return };
+        let Some(c) = &s.cache else { return };
+        let before: HashMap<String, decomp_dj::format::Replay> = col.replays.iter().filter(|(id, _)| col.tree_status(id) != Status::Clean).map(|(id, r)| (id.clone(), r.clone())).collect();
+        match decomp_dj::hydrate::record_from_cache(col, c, &skip) {
+            Ok(done) if !done.is_empty() => {
+                let mut before = before;
+                for (id, _) in &done {
+                    if let Some(r) = before.remove(id) {
+                        self.fold_into_undo(id, r);
+                    }
+                    self.edited.insert(id.clone());
+                    self.dirty_from.remove(id);
+                }
+                self.info(format!("Recorded hashes for {} segment(s) from the local database, without playing. Save to keep them.", done.len()));
+            }
+            Ok(_) => {}
+            Err(e) => self.error(format!("Reading hashes from the local database: {e:#}")),
+        }
+    }
+
+    /// Which segments' current content is stored (the tree's "db" marks). Also records the
+    /// hashes the database already knows.
     fn refresh_stored(&mut self) {
+        self.hashes_from_cache();
         self.coverage_stale();
         self.stored_ids.clear();
         let (Some(col), Some(s)) = (&self.col, &self.session) else { return };
@@ -3131,31 +3506,9 @@ impl App {
         }
     }
 
-    fn start_hydrate(&mut self, scope: Option<(String, bool)>, clean: bool) {
-        let Some(col) = &self.col else { return };
-        if self.session.as_ref().is_none_or(|s| s.cache.is_none()) {
-            self.error("Hydration needs the local database (Emulation > Use the local database).");
-            return;
-        }
-        let what = match &scope {
-            None => if clean { "all segments, cleaning dirty ones".to_string() } else { "all segments".to_string() },
-            Some((id, false)) => format!("\"{}\"", col_title(Some(col), id)),
-            Some((id, true)) => format!("\"{}\" and below", col_title(Some(col), id)),
-        };
-        match Hydrator::new(col, scope.as_ref().map(|(id, ch)| (id.as_str(), *ch)), clean, false) {
-            Ok(h) => {
-                self.playing = false;
-                self.job = None;
-                self.pb = None;
-                self.hydrating = Some(Hydrating { h, paused: false, what });
-            }
-            Err(e) => self.error(e),
-        }
-    }
-
-    /// Verify all (`scope` None) or a subtree: plays the segments that aren't clean and
-    /// records their hashes in memory where that overwrites nothing.
-    fn start_verify(&mut self, scope: Option<String>) {
+    /// Clean all (`scope` None) or a subtree: plays the segments `how` asks for and records
+    /// their hashes in memory (unsaved changes).
+    fn start_verify(&mut self, scope: Option<String>, how: Clean) {
         let Some(col) = &self.col else { return };
         if self.session.as_ref().is_none_or(|s| s.cache.is_none()) {
             self.error("Cleaning needs the local database (Emulation > Use the local database).");
@@ -3165,13 +3518,25 @@ impl App {
             None => "all segments".to_string(),
             Some(id) => format!("\"{}\" and below", col_title(Some(col), id)),
         };
-        match Hydrator::verify(col, scope.as_deref().map(|id| (id, true))) {
-            Ok(h) if h.targets.is_empty() => self.info(format!("Nothing to clean: {what} are clean already.")),
+        // Drafts are unsaved segments and get cleaned too, unless an agent may still be writing one.
+        let in_session: HashSet<String> = self.agent_sessions.iter().map(|s| s.draft.clone()).filter(|d| !self.taken_over.contains(d)).collect();
+        let found = Hydrator::verify(col, scope.as_deref().map(|id| (id, true)), true, how == Clean::Everything).map(|mut h| {
+            h.targets.retain(|id| !in_session.contains(id));
+            if how == Clean::Unclean {
+                h.targets.retain(|id| col.tree_status(id) != Status::Clean);
+            }
+            h
+        });
+        let stored = &self.stored_ids;
+        let nothing = |h: &Hydrator| h.targets.iter().all(|id| col.tree_status(id) == Status::Clean && (how != Clean::Fill || stored.contains(id)));
+        match found {
+            Ok(h) if how != Clean::Everything && nothing(&h) => self.info(format!("Nothing to clean: {what} are clean and stored already.")),
             Ok(h) => {
+                let before = h.targets.iter().filter_map(|id| col.replays.get(id).map(|r| (id.clone(), r.clone()))).collect();
                 self.playing = false;
                 self.job = None;
-                self.pb = None;
-                self.hydrating = Some(Hydrating { h, paused: false, what });
+                { self.end_pass(); self.pb = None; }
+                self.hydrating = Some(Hydrating { h, paused: false, what, before });
             }
             Err(e) => self.error(e),
         }
@@ -3195,9 +3560,9 @@ impl App {
                 }
                 if !events.is_empty() {
                     // Verifying records hashes in memory: unsaved changes.
-                    for e in events.iter().filter(|e| matches!(e.verdict, "recorded" | "cleaned")) {
+                    for e in events.iter().filter(|e| matches!(e.verdict, "recorded" | "cleaned" | "changed")) {
                         self.edited.insert(e.id.clone());
-                        self.unverified_from.remove(&e.id);
+                        self.dirty_from.remove(&e.id);
                     }
                     self.refresh_stored();
                 }
@@ -3206,73 +3571,47 @@ impl App {
                 }
             }
             Err(e) => {
-                self.hydrating = None;
-                self.error(format!("Hydration stopped: {e:#}"));
+                let mut hy = self.hydrating.take();
+                if let Some(hy) = &mut hy {
+                    self.undo_clean(hy);
+                }
+                let changed = hy.map_or(0, |h| h.h.events.iter().filter(|e| e.verdict == "changed").count());
+                self.error(format!("Cleaning stopped: {e:#}"));
                 self.reselect();
+                if std::mem::take(&mut self.save_after_clean) {
+                    self.after_clean(changed, Some(format!("{e:#}")));
+                }
             }
         }
     }
 
     fn end_hydrate(&mut self, stopped: bool) {
-        if self.hydrating.as_ref().is_some_and(|h| h.h.verify) {
-            self.end_verify(stopped);
-            return;
-        }
-        let Some(hy) = self.hydrating.take() else { return };
-        let played = hy.h.events.iter().filter(|e| e.action == "played").count();
-        let stored = hy.h.events.len() - played;
-        let cleaned = hy.h.events.iter().filter(|e| e.verdict == "cleaned").count();
-        let problems: Vec<String> = hy.h.problems().iter().map(|e| format!("{} ({})", col_title(self.col.as_ref(), &e.id), e.verdict)).collect();
-        let mut msg = format!("{} {}: {played} played, {stored} already stored", if stopped { "Stopped hydrating" } else { "Hydrated" }, hy.what);
-        if cleaned > 0 {
-            msg += &format!(", {cleaned} cleaned");
-        }
-        self.refresh_stored();
-        if problems.is_empty() {
-            self.info(msg);
-        } else {
-            self.error(format!("{msg}. Not matching their recorded hashes: {}", problems.join(", ")));
-        }
-        // Cleaning may have rewritten files: pick up the new hashes.
-        if hy.h.clean && cleaned > 0 {
-            if let Some(col) = &mut self.col {
-                for e in hy.h.events.iter().filter(|e| e.verdict == "cleaned") {
-                    if let Some(p) = col.paths.get(&e.id).cloned() {
-                        if let Ok(r) = decomp_dj::format::Replay::load(&p) {
-                            col.replays.insert(e.id.clone(), r);
-                        }
-                    }
-                }
-            }
-        }
-        self.reselect();
+        self.end_verify(stopped);
     }
 
     fn end_verify(&mut self, stopped: bool) {
-        let Some(hy) = self.hydrating.take() else { return };
+        let Some(mut hy) = self.hydrating.take() else { return };
+        self.undo_clean(&mut hy);
         let ev = &hy.h.events;
         let n = |v: &str| ev.iter().filter(|e| e.verdict == v).count();
-        let (recorded, cleaned) = (n("recorded"), n("cleaned"));
-        let names = |v: &str| ev.iter().filter(|e| e.verdict == v).map(|e| format!("\"{}\"", col_title(self.col.as_ref(), &e.id))).collect::<Vec<_>>();
-        let mismatch = names("mismatch");
-        let blocked = n("blocked");
-        let mut msg = format!("{} {}: {recorded} recorded, {cleaned} cleaned", if stopped { "Stopped cleaning" } else { "Cleaned" }, hy.what);
-        if recorded + cleaned > 0 {
-            msg += " (unsaved: save to keep them)";
+        let (recorded, cleaned, changed, blocked) = (n("recorded"), n("cleaned"), n("changed"), n("blocked"));
+        let played = ev.iter().filter(|e| e.action == "played").count();
+        let mut msg = format!("{} {}: {played} played, {recorded} recorded, {cleaned} cleaned", if stopped { "Stopped cleaning" } else { "Cleaned" }, hy.what);
+        if changed > 0 {
+            msg += &format!(", {changed} with a changed ending (marked !)");
+        }
+        if recorded + cleaned + changed > 0 {
+            msg += ". Unsaved: save to keep them, or undo";
+        }
+        if blocked > 0 {
+            msg += &format!(". {blocked} couldn't be reached");
         }
         self.refresh_stored();
-        if mismatch.is_empty() && blocked == 0 {
-            self.info(msg);
-        } else {
-            if !mismatch.is_empty() {
-                msg += &format!(". The ending changed in {}: play each to the end and use Emulation > Use new end hash if that's intended", mismatch.join(", "));
-            }
-            if blocked > 0 {
-                msg += &format!(". {blocked} below those were skipped");
-            }
-            self.error(msg);
-        }
+        self.info(msg);
         self.reselect();
+        if std::mem::take(&mut self.save_after_clean) {
+            self.after_clean(changed, stopped.then(|| "you stopped it".to_string()));
+        }
     }
 
     /// Shows the selected segment again after hydration used the core.
@@ -3292,7 +3631,7 @@ impl App {
             self.error(e);
             return;
         }
-        self.pb = None;
+        { self.end_pass(); self.pb = None; }
         self.open_session();
         self.refresh_stored();
         self.reselect();
@@ -3496,21 +3835,22 @@ impl App {
                 ui.monospace(format!("frame {shown:>5} / {}", pb.frames.saturating_sub(1)));
                 ui.label(RichText::new(format!("power-on frame {}", pb.start_frame + shown)).weak());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some(m) = pb.checkpoint_miss {
-                        ui.label(RichText::new(format!("checkpoint {m} differs")).color(Color32::from_rgb(230, 90, 80)));
-                    }
-                    // The segment's status, as the tree dot shows it. Only a playback that ended
-                    // somewhere other than the recorded end needs saying apart.
-                    let red = Color32::from_rgb(230, 90, 80);
+                    // The segment's status, as the tree shows it.
                     let status = col.tree_status(&pb.id);
-                    let parent_clean = col.replays[&pb.id].parent().is_none_or(|p| col.tree_status(p) == Status::Clean);
-                    let (text, color) = match (self.end_matches(), status) {
-                        (Some(false), _) if pb.checkpoint_miss.is_some() => ("✖ a checkpoint differs (Use new end hash if intended)", red),
-                        (Some(false), _) if col.replays[&pb.id].get("end-hash").is_some() => ("✖ ended differently (Use new end hash if intended)", red),
-                        (_, Status::Clean) => ("● clean", status_color(status)),
-                        (_, _) if !parent_clean => ("● waiting on a segment above", status_color(status)),
-                        (_, Status::Dirty) => ("● dirty: play to the end to re-check", status_color(status)),
-                        (_, Status::Unverified) => ("● unverified: play to the end to record", status_color(status)),
+                    let r = &col.replays[&pb.id];
+                    let parent_clean = r.parent().is_none_or(|p| col.tree_status(p) == Status::Clean);
+                    let (text, color) = if self.ending_changed(&pb.id) {
+                        ("! ending changed since the last save".to_string(), CHANGED)
+                    } else if status == Status::Clean {
+                        ("● clean".to_string(), status_color(status))
+                    } else if let Some(m) = pb.checkpoint_miss {
+                        (format!("● checkpoint {m} differs: play to the end to record the new ending"), status_color(status))
+                    } else if !parent_clean {
+                        ("● dirty: waiting on a segment above".to_string(), status_color(status))
+                    } else if r.get("end-hash").is_none() {
+                        ("● dirty: play to the end to record its hashes".to_string(), status_color(status))
+                    } else {
+                        ("● dirty: play to the end to re-check".to_string(), status_color(status))
                     };
                     ui.label(RichText::new(text).color(color));
                 });
@@ -3628,8 +3968,9 @@ impl App {
                 }
                 if let Some(col) = &self.col {
                     ui.label(RichText::new(format!("{} {}", col.config.core.name, col.config.core.build)).small().weak());
-                    if !self.edited.is_empty() {
-                        ui.label(RichText::new(format!("{} unsaved", self.edited.len())).small().color(Color32::from_rgb(240, 210, 90)));
+                    let n = self.unsaved().len();
+                    if n > 0 {
+                        ui.label(RichText::new(format!("{n} unsaved")).small().color(Color32::from_rgb(240, 210, 90)));
                     }
                 }
                 ui.separator();
@@ -3752,6 +4093,9 @@ impl eframe::App for App {
         let now = ctx.input(|i| i.time);
         if now - self.agent_polled > 0.5 {
             self.agent_polled = now;
+            if let Some(m) = &mut self.gui_mark {
+                m.touch();
+            }
             self.poll_segments();
             self.poll_agents();
         }
@@ -3767,7 +4111,7 @@ impl eframe::App for App {
             ctx.request_repaint();
         }
         let title = match &self.col {
-            Some(c) => format!("decomp-dj: {}{}", c.config.name, if self.edited.is_empty() { "" } else { " *" }),
+            Some(c) => format!("decomp-dj: {}{}", c.config.name, if self.unsaved().is_empty() { "" } else { " *" }),
             None => "decomp-dj".into(),
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
@@ -3788,7 +4132,7 @@ impl eframe::App for App {
                 let nb = roll::Neighbours {
                     prev: col.replays.get(id).and_then(|r| r.parent()).map(String::from),
                     next: self.next_neighbour(),
-                    unverified: self.unverified_band(id),
+                    dirty: self.dirty_band(id),
                 };
                 action = self.roll.show(ui, col, id, shown, self.playing, &nb);
             } else {

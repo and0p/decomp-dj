@@ -1,0 +1,15 @@
+dj-replay 1
+id: 3e78bcdb-1e8d-4ca7-8cc0-4290aa234e9c
+parent: d125778a-24f8-40ba-8784-2d8359f5398a
+title: Pause and unpause
+frames: 300
+start-hash: 297d729e9733d8536441f4529689dd77
+start-frame: 820
+end-hash: c8200685a86f42c5e1837534016851a6
+---
+90 [EVENT] Pause pressed, screen will hide
+90 P1 JOYPAD START 1
+94 P1 JOYPAD START 0
+210 P1 JOYPAD START 1
+210 [EVENT] Unpause pressed, screen will unhide
+214 P1 JOYPAD START 0

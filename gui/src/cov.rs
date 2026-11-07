@@ -5,7 +5,7 @@
 //! as `dj report`: segments that aren't dirty and whose current content has been played into
 //! the local database. Live coverage is what the core's connector has seen since the
 //! selected segment started playing (or was last edited); it never counts towards the
-//! project until the segment is clean and hydrated.
+//! project until the segment is clean and stored.
 
 use decomp_dj::coverage::{FirstHit, Report, FLAG_OPCODE};
 use eframe::egui::{self, Color32, RichText};
@@ -17,8 +17,11 @@ use crate::App;
 /// Same colors as docs/concepts.md: green covered, blue unreachable.
 pub const COVERED: Color32 = Color32::from_rgb(92, 184, 92);
 pub const UNREACHABLE: Color32 = Color32::from_rgb(90, 140, 230);
-/// Reached by the segment being played, but not counted yet (it isn't clean and hydrated).
+/// New code not counted yet: run by unsaved segments (drafts too) or by the segment being
+/// played, and by no saved clean segment. It counts once saved (and clean).
 pub const LIVE: Color32 = Color32::from_rgb(214, 226, 110);
+/// Run only by dirty segments, the last time each played: it counts once they are clean.
+pub const DIRTY_ONLY: Color32 = Color32::from_rgb(58, 92, 62);
 const EMPTY: Color32 = Color32::from_gray(58);
 
 /// How long a square stays highlighted after live play reaches new code in it.
@@ -46,6 +49,8 @@ pub struct Cell {
     pub unreachable: usize,
     pub blocks: usize,
     pub blocks_covered: usize,
+    /// Units only dirty segments ran (not counted, and not new in unsaved ones either).
+    pub dirty: usize,
     /// Index into `Report::functions`, when the cell is a function.
     pub function: Option<usize>,
 }
@@ -56,8 +61,11 @@ pub struct Live {
     pub id: Option<String>,
     /// The connector's PRG flags as last read.
     pub prg: Vec<u8>,
-    /// Units the live play ran that no segment that counts runs, in all and per cell.
+    /// Units the live play or an unsaved segment ran that no segment that counts runs, in all
+    /// and per cell (yellow-green).
     pub new: usize,
+    /// ... of which the selected segment ran: in the live play, or in its own unsaved pass.
+    pub segment: usize,
     pub new_per_cell: Vec<usize>,
     /// When each cell last gained live coverage (seconds, egui time).
     pub flash: HashMap<usize, f64>,
@@ -115,23 +123,33 @@ fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
 }
 
 /// A cell's fill: grey when nothing ran, green as more of it is covered (full green only
-/// at 100%), yellow-green when live play reached more of it, blue when it is all unreachable.
+/// at 100%), yellow-green where unsaved segments or live play add new code, dark faded green
+/// where only dirty segments ran it, blue when it is all unreachable.
 fn cell_color(c: &Cell, live_new: usize) -> Color32 {
+    let base = counted_color(c);
+    if c.units == 0 {
+        base
+    } else if live_new > 0 {
+        let after = (c.covered + live_new) as f32 / c.units as f32;
+        mix(base, LIVE, 0.45 + 0.55 * after)
+    } else if c.dirty > 0 {
+        let after = (c.covered + c.dirty) as f32 / c.units as f32;
+        mix(base, DIRTY_ONLY, 0.5 + 0.5 * after)
+    } else {
+        base
+    }
+}
+
+fn counted_color(c: &Cell) -> Color32 {
     if c.units == 0 {
         return if c.unreachable > 0 { UNREACHABLE } else { EMPTY };
     }
-    let base = if c.covered == 0 {
+    if c.covered == 0 {
         EMPTY
     } else if c.covered >= c.units {
         COVERED
     } else {
         mix(EMPTY, COVERED, 0.3 + 0.55 * c.covered as f32 / c.units as f32)
-    };
-    if live_new > 0 {
-        let after = (c.covered + live_new) as f32 / c.units as f32;
-        mix(base, LIVE, 0.45 + 0.55 * after)
-    } else {
-        base
     }
 }
 
@@ -143,8 +161,9 @@ fn pct(a: usize, b: usize) -> String {
     }
 }
 
-/// A thin bar: covered in green, live in yellow-green, the rest grey.
-fn bar(ui: &mut egui::Ui, width: f32, covered: usize, live: usize, total: usize) -> egui::Response {
+/// A thin bar: covered in green, new (unsaved or live) in yellow-green, dirty-only in dark
+/// green, the rest grey.
+fn bar(ui: &mut egui::Ui, width: f32, covered: usize, live: usize, dirty: usize, total: usize) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 6.0), egui::Sense::hover());
     let p = ui.painter();
     p.rect_filled(rect, 2.0, EMPTY);
@@ -156,13 +175,18 @@ fn bar(ui: &mut egui::Ui, width: f32, covered: usize, live: usize, total: usize)
             let l = egui::Rect::from_min_size(egui::pos2(c.right(), rect.top()), egui::vec2(w(live).min(rect.right() - c.right()), rect.height()));
             p.rect_filled(l, 2.0, LIVE);
         }
+        if dirty > 0 {
+            let x = (c.right() + w(live)).min(rect.right());
+            let d = egui::Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(w(dirty).min(rect.right() - x), rect.height()));
+            p.rect_filled(d, 2.0, DIRTY_ONLY);
+        }
     }
     resp
 }
 
 impl CovState {
     /// Rebuilds the report from the local database.
-    fn rebuild(&mut self, app_col: &decomp_dj::collection::Collection, s: &decomp_dj::player::Session) {
+    fn rebuild(&mut self, app_col: &decomp_dj::collection::Collection, s: &decomp_dj::player::Session, unsaved: &std::collections::HashSet<String>) {
         self.stale = false;
         self.hits = None;
         let Some(c) = &s.cache else {
@@ -174,7 +198,7 @@ impl CovState {
             self.rom = std::fs::read(&s.rom_path).ok().map(|b| (s.rom_path.clone(), b));
         }
         let t0 = std::time::Instant::now();
-        match decomp_dj::coverage::build_report(app_col, c.conn(), self.rom.as_ref().map(|(_, b)| b.as_slice()), Some(&c.setup)) {
+        match decomp_dj::coverage::build_report_with(app_col, c.conn(), self.rom.as_ref().map(|(_, b)| b.as_slice()), Some(&c.setup), unsaved) {
             Ok(r) => {
                 self.took_ms = t0.elapsed().as_millis();
                 self.error = None;
@@ -189,8 +213,8 @@ impl CovState {
                 self.unit_cells.clear();
                 self.unique.clear();
                 let msg = format!("{e:#}");
-                self.error = Some(if msg.contains("run `dj hydrate`") {
-                    "No coverage recorded yet. Hydrate the project (Database > Hydrate all) to record which code each segment runs.".into()
+                self.error = Some(if msg.contains("run `dj clean`") {
+                    "No coverage recorded yet. Clean the project (Segment > Clean all segments) to record which code each segment runs.".into()
                 } else {
                     msg
                 });
@@ -222,6 +246,7 @@ impl CovState {
                     unreachable: d.unreachable_per_function.get(i).copied().unwrap_or(0),
                     blocks: row.blocks,
                     blocks_covered: row.blocks_covered,
+                    dirty: f.instructions.iter().filter(|ins| d.dirty_hit(ins.offset) && !d.hit(ins.offset) && !d.unsaved_hit(ins.offset)).count(),
                     function: Some(i),
                 });
             }
@@ -235,6 +260,7 @@ impl CovState {
                 let cell = self.cells.len();
                 let mut covered = 0;
                 let mut unreachable = 0;
+                let mut dirty = 0;
                 for o in off..end {
                     if d.is_unreachable(o) {
                         unreachable += 1;
@@ -243,6 +269,8 @@ impl CovState {
                     self.unit_cells.push((cell, o));
                     if d.hit(o) {
                         covered += 1;
+                    } else if d.dirty_hit(o) && !d.unsaved_hit(o) {
+                        dirty += 1;
                     }
                 }
                 self.cells.push(Cell {
@@ -255,6 +283,7 @@ impl CovState {
                     unreachable,
                     blocks: 0,
                     blocks_covered: 0,
+                    dirty,
                     function: None,
                 });
                 off = end;
@@ -266,19 +295,29 @@ impl CovState {
     /// Recounts live coverage against the report. Returns the cells that gained some.
     fn recount_live(&mut self) -> Vec<usize> {
         let mut per = vec![0usize; self.cells.len()];
-        let mut total = 0;
+        let (mut total, mut segment) = (0, 0);
         if let Some(r) = &self.report {
+            // The selected segment's own pass, once stored: what it ran stays its, not the live play's.
+            let own = self.live.id.as_ref().and_then(|id| r.detail.unsaved_per_segment.get(id));
             for (cell, off) in &self.unit_cells {
+                if r.detail.hit(*off) {
+                    continue;
+                }
                 let live = self.live.prg.get(*off as usize).is_some_and(|b| b & FLAG_OPCODE != 0);
-                if live && !r.detail.hit(*off) {
+                let mine = live || own.is_some_and(|p| p.get(*off as usize).is_some_and(|b| b & FLAG_OPCODE != 0));
+                if mine || r.detail.unsaved_hit(*off) {
                     per[*cell] += 1;
                     total += 1;
+                    if mine {
+                        segment += 1;
+                    }
                 }
             }
         }
         let gained = per.iter().enumerate().filter(|(i, n)| **n > self.live.new_per_cell.get(*i).copied().unwrap_or(0)).map(|(i, _)| i).collect();
         self.live.new_per_cell = per;
         self.live.new = total;
+        self.live.segment = segment;
         gained
     }
 
@@ -286,8 +325,7 @@ impl CovState {
     pub fn clear_live(&mut self, id: Option<&str>) {
         self.live.id = id.map(String::from);
         self.live.prg.clear();
-        self.live.new = 0;
-        self.live.new_per_cell.iter_mut().for_each(|n| *n = 0);
+        self.recount_live();
         self.live.flash.clear();
         self.live.glow.clear();
     }
@@ -327,7 +365,9 @@ impl App {
             return;
         };
         if self.cov.stale {
-            self.cov.rebuild(col, s);
+            let mut unsaved: std::collections::HashSet<String> = self.edited.iter().cloned().collect();
+            unsaved.extend(col.drafts.iter().cloned());
+            self.cov.rebuild(col, s, &unsaved);
         }
         // Live: what the connector has seen since the selected segment started.
         let id = self.pb.as_ref().map(|p| p.id.clone());
@@ -336,7 +376,8 @@ impl App {
         }
         // The connector's flags hold what ran since they were last cleared. They are read and
         // cleared every screen refresh, so they say what ran since the last one (the glow),
-        // and are OR'd into `live.prg` for everything since the segment started.
+        // and are OR'd into `live.prg` for everything since the segment started. Clearing is
+        // safe for the pass being recorded: it gathers the flags after every frame.
         let Some(i) = s.core.coverage_region_index("PRG") else { return };
         let Some(flags) = s.core.coverage_slice(i) else { return };
         if flags.iter().any(|b| *b != 0) {
@@ -408,7 +449,7 @@ impl App {
         }
         if self.cov.report.is_none() {
             let text = if self.hydrating.is_some() {
-                "Coverage updates when hydration finishes.".to_string()
+                "Coverage updates when the clean finishes.".to_string()
             } else {
                 self.cov.error.clone().unwrap_or_else(|| "No coverage yet.".into())
             };
@@ -424,7 +465,7 @@ impl App {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
-                for (color, label) in [(COVERED, "covered"), (EMPTY, "uncovered"), (UNREACHABLE, "unreachable"), (LIVE, "playing")] {
+                for (color, label) in [(COVERED, "covered"), (LIVE, "new, unsaved"), (DIRTY_ONLY, "dirty only"), (EMPTY, "never run"), (UNREACHABLE, "unreachable")] {
                     let (rr, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
                     ui.painter().rect_filled(rr, 1.0, color);
                     ui.label(RichText::new(label).small().weak());
@@ -440,10 +481,10 @@ impl App {
             if let Some(id) = &cov.live.id {
                 ui.horizontal(|ui| {
                     let title = crate::col_title(self.col.as_ref(), id);
-                    let n = cov.live.new;
-                    let text = if n > 0 { RichText::new(format!("+{n} new while playing")).small().strong().color(LIVE) } else { RichText::new("No new code while playing").small().weak() };
+                    let n = cov.live.segment;
+                    let text = if n > 0 { RichText::new(format!("+{n} new in this segment, counted once saved")).small().strong().color(LIVE) } else { RichText::new("No new code in this segment").small().weak() };
                     ui.label(text).on_hover_text(format!(
-                        "Code that \"{title}\" has run since it started playing (or was last edited) and that no segment that counts runs. It counts once the segment is clean and hydrated."
+                        "Code that \"{title}\" runs (while playing now, or in its last full pass since it changed) and that no saved clean segment runs. It counts once the segment is clean and saved."
                     ));
                 });
             }
@@ -503,7 +544,10 @@ impl App {
                             ui.label(format!("{} of {} bytes ran as an opcode", c.covered, c.units));
                         }
                         if live_new > 0 {
-                            ui.label(RichText::new(format!("+{live_new} while playing")).color(LIVE));
+                            ui.label(RichText::new(format!("+{live_new} new, counted once saved")).color(LIVE));
+                        }
+                        if c.dirty > 0 {
+                            ui.label(RichText::new(format!("+{} run only by dirty segments", c.dirty)).color(DIRTY_ONLY.gamma_multiply(1.6)));
                         }
                         if c.unreachable > 0 {
                             ui.label(RichText::new(format!("{} unreachable", c.unreachable)).color(UNREACHABLE));
@@ -545,7 +589,7 @@ impl App {
         }
         if self.cov.report.is_none() {
             if self.hydrating.is_some() {
-                ui.label(RichText::new("Coverage updates when hydration finishes.").weak());
+                ui.label(RichText::new("Coverage updates when the clean finishes.").weak());
             }
             return;
         }
@@ -559,7 +603,7 @@ impl App {
             // Totals.
             let w = ui.available_width();
             // A label and the numbers on one line, a full-width bar under them.
-            let line = |ui: &mut egui::Ui, label: &str, a: usize, b: usize, live: usize| {
+            let line = |ui: &mut egui::Ui, label: &str, a: usize, b: usize, live: usize, dirty: usize| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(label).small());
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -567,27 +611,43 @@ impl App {
                         ui.label(RichText::new(format!("{a} / {b}")).small().monospace().weak());
                     });
                 });
-                bar(ui, w, a, live, b);
+                bar(ui, w, a, live, dirty, b);
                 ui.add_space(2.0);
             };
             if r.symbols {
-                line(ui, "Functions", t.functions_entered, t.functions, 0);
-                line(ui, "Blocks", t.blocks_covered, t.blocks, 0);
+                line(ui, "Functions", t.functions_entered, t.functions, 0, 0);
+                line(ui, "Blocks", t.blocks_covered, t.blocks, 0, 0);
             }
-            line(ui, if r.symbols { "Instructions" } else { "Opcode bytes" }, t.instructions_covered, t.instructions, cov.live.new);
+            line(ui, if r.symbols { "Instructions" } else { "Opcode bytes" }, t.instructions_covered, t.instructions, cov.live.new, t.if_cleaned);
+            if cov.live.new > 0 || t.if_cleaned > 0 {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if cov.live.new > 0 {
+                        ui.label(RichText::new(format!("+{} unsaved", cov.live.new)).small().color(LIVE))
+                            .on_hover_text("New code run by unsaved segments (drafts too) or by the segment being played, and by no saved clean segment. It counts once saved and clean.");
+                    }
+                    if t.if_cleaned > 0 {
+                        ui.label(RichText::new(format!("+{} if cleaned", t.if_cleaned)).small().color(DIRTY_ONLY.gamma_multiply(1.6)))
+                            .on_hover_text("Code only dirty segments ran, the last time each played. It counts once they are clean again (Segment > Clean all segments), if they still run it.");
+                    }
+                });
+            }
             let mut notes = vec![];
             if t.dirty_segments > 0 {
                 notes.push(format!("{} dirty", t.dirty_segments));
             }
             if t.unplayed_segments > 0 {
-                notes.push(format!("{} not hydrated", t.unplayed_segments));
+                notes.push(format!("{} not stored", t.unplayed_segments));
+            }
+            if t.unsaved_segments > 0 {
+                notes.push(format!("{} unsaved", t.unsaved_segments));
             }
             if !notes.is_empty() || t.unreachable_instructions > 0 || !r.symbols {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     if !notes.is_empty() {
                         ui.label(RichText::new(format!("Left out: {}", notes.join(", "))).small().weak())
-                            .on_hover_text("Only segments that aren't dirty and whose current content is in the local database count, as in `dj report`.");
+                            .on_hover_text("Only saved segments that aren't dirty and whose current content is in the local database count, as in `dj report`.");
                     }
                     if t.unreachable_instructions > 0 {
                         ui.label(RichText::new(format!("{} unreachable", t.unreachable_instructions)).small().color(UNREACHABLE)).on_hover_text("Instructions inside unreachable.txt ranges, left out of the counts");
@@ -686,7 +746,7 @@ impl App {
                         let r = ui.selectable_label(sel, RichText::new(name).small().monospace());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.add_sized([62.0, row_h], egui::Label::new(RichText::new(format!("{}/{}", c.covered, c.units)).small().monospace().weak()).halign(egui::Align::RIGHT));
-                            bar(ui, (ui.available_width() - 2.0).clamp(20.0, 80.0), c.covered, live_new, c.units);
+                            bar(ui, (ui.available_width() - 2.0).clamp(20.0, 80.0), c.covered, live_new, if live_new > 0 { 0 } else { c.dirty }, c.units);
                         });
                         r
                     })

@@ -17,8 +17,9 @@ only. Ancestors' frames are not counted again.
 
 It keeps this in the local database (`.local/cache.db`, see [database.md](database.md))
 keyed by the segment's **content key**, so the totals always describe the
-current files: a report counts only clean segments whose current content has
-been played, and says how many were dirty or not played yet. Each segment also
+current files: a report counts only clean, saved segments whose current content has
+been played, and says how many were dirty, unsaved (drafts, on the command line) or not
+played yet. Each segment also
 records the frame at which each ROM byte first ran in it, which answers "which
 segment reaches this code, and when".
 
@@ -91,7 +92,7 @@ dj frontier <dir> [ADDR]                          # covered branches into uncove
 dj snapshot <dir> SEGMENT FRAME --out FILE        # the core state there, to start a trace from
 ```
 
-- `report` reads the local database, not the files: it counts only clean segments that have been hydrated, and lists how many were dirty or not played yet. Run `dj hydrate` first ([database.md](database.md)).
+- `report` reads the local database, not the files: it counts only clean segments whose current content has been played into it, and lists how many were dirty or not played yet. Drafts are left out, with what they would add once saved; so is what dirty segments ran the last time each played ("+N if cleaned"). Run `dj clean` first ([database.md](database.md)).
 - `--gaps` writes the gap list as CSV.
 - `xref` (also `where`) takes an address (`PRG:0x1234`, `0x1234` for a PRG offset, `$C123` for a CPU address, or a symbol, optionally `name+0x10`) and lists the segments where that code first runs, best first, with the frame and the nearest snapshot. `snapshot` then writes the core state at that frame, to start a trace from.
 - `gaps --sort nearness` puts first the functions whose uncovered code a covered branch skips: the cheapest to reach. `frontier` lists those branches with the segments and frames that run them; given an uncovered address, it lists the ways into its block. With no symbol map, on a NES ROM, they work from the instructions that ran instead ([mcp.md](mcp.md#without-a-symbol-map)).
@@ -101,22 +102,34 @@ dj snapshot <dir> SEGMENT FRAME --out FILE        # the core state there, to sta
 
 **Coverage map.** Always at the bottom of the left sidebar, whatever the tab; drag its top
 edge to resize it. There is one square per function in ROM order (about 1,024 equal slices
-of PRG without a symbol map), so a square never moves as coverage grows. A square goes from
-grey to green as more of the function is covered, and is blue when `unreachable.txt`
-covers all of it. Clicking a square opens that function in the Coverage tab.
+of PRG without a symbol map), so a square never moves as coverage grows. The colours, in order of
+precedence where several segments run the same code:
+
+- **Green:** run by a clean, saved segment. Counted. A square goes from grey to green as more of the function is covered.
+- **Yellow-green:** new, not counted yet: run by an unsaved segment (your edits, hashes recorded but not saved, or an agent's draft) or by the pass being played, and by no saved clean segment. It counts once saved and clean. Unsaved code a saved segment already runs is just green.
+- **Dark, faded green:** run only by dirty segments, from the last time each played (found in the database, without playing anything). Not counted; it comes back when they are clean again.
+- **Grey:** never run. **Blue:** all of it is in `unreachable.txt`.
+
+The totals show the yellow-green and faded parts apart ("+N unsaved", "+N if cleaned").
+Clicking a square opens that function in the Coverage tab.
 
 **Live coverage.** While a segment plays, every square whose code runs glows and fades over
 half a second, so code that runs every frame stays lit. Code that runs while playing but
-that no counted segment runs is "new while playing": yellow-green on the map and the bars,
-with a white outline on squares that gain some, and counted as "+N new while playing". The
-live count starts again when you select or edit a segment, and when playback continues into
-a child. It counts towards the project only once the segment is clean and hydrated.
+that no counted segment runs is new: yellow-green on the map and the bars, with a white
+outline on squares that gain some, and counted as "+N new in this segment, counted once
+saved". The count covers what the selected segment runs that no counted segment does: in
+the play now, and in its last full pass if it is unsaved, so it stays the same once the
+pass reaches the end and is recorded in the database ([database.md](database.md#in-the-gui)).
+The live part starts again when you select or edit a segment, undo or redo a change to it,
+and when playback continues into a child. It counts towards the project once the segment
+is clean and saved.
 
 **Coverage tab.** The project's coverage from the local database, the same numbers as
 `dj report`, and a function list that sorts by ROM order, most uncovered, least covered or
 name. Click a row (or a square on the map) to see the function's uncovered blocks and the
 segments where it first runs; click one of those to go to that segment and frame. The
-report is rebuilt after any edit, undo, save or hydration, which takes milliseconds at NES
+report reads the segments in the editor, saved or not, so deleting an unsaved segment takes
+its coverage with it. It is rebuilt after any edit, undo, save, finished pass or clean, which takes milliseconds at NES
 sizes. Coverage needs the local database to be on (Emulation > Use the local database).
 
 **Tree badges.** In the Segments tab, "+N" after a segment is how many instructions only

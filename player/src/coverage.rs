@@ -31,6 +31,13 @@ pub struct Totals {
     /// Segments left out because they are dirty, or have not been played yet.
     pub dirty_segments: usize,
     pub unplayed_segments: usize,
+    /// Segments with unsaved changes, and drafts: left out until saved.
+    pub unsaved_segments: usize,
+    /// Units (instructions, or opcode bytes) only unsaved segments run: they count once saved.
+    pub unsaved_new: usize,
+    /// Units only dirty segments ran, the last time each played: they count once those
+    /// segments are clean again, if they still run them.
+    pub if_cleaned: usize,
 }
 
 #[derive(Serialize)]
@@ -84,6 +91,12 @@ pub struct Detail {
     pub unreachable_per_function: Vec<usize>,
     /// PRG flags of every segment that counts, OR'd together.
     pub prg: Vec<u8>,
+    /// PRG flags of unsaved segments (and drafts) that are clean, OR'd together.
+    pub unsaved_prg: Vec<u8>,
+    /// PRG flags of dirty segments from their last recorded play, OR'd together.
+    pub dirty_prg: Vec<u8>,
+    /// Each unsaved segment's (or draft's) PRG flags, as in `unsaved_prg`.
+    pub unsaved_per_segment: BTreeMap<String, Vec<u8>>,
     /// Segments that count, with their PRG flags.
     pub per_segment_prg: BTreeMap<String, Vec<u8>>,
     /// PRG ranges from unreachable.txt (inclusive).
@@ -94,6 +107,16 @@ impl Detail {
     /// Whether PRG offset `off` ran as an opcode in any segment that counts.
     pub fn hit(&self, off: u64) -> bool {
         self.prg.get(off as usize).is_some_and(|b| b & FLAG_OPCODE != 0)
+    }
+
+    /// Whether `off` ran in an unsaved segment that is clean.
+    pub fn unsaved_hit(&self, off: u64) -> bool {
+        self.unsaved_prg.get(off as usize).is_some_and(|b| b & FLAG_OPCODE != 0)
+    }
+
+    /// Whether `off` ran in a dirty segment's last recorded play.
+    pub fn dirty_hit(&self, off: u64) -> bool {
+        self.dirty_prg.get(off as usize).is_some_and(|b| b & FLAG_OPCODE != 0)
     }
 
     pub fn is_unreachable(&self, off: u64) -> bool {
@@ -118,19 +141,57 @@ fn opcode_set(flags: &[u8]) -> Vec<bool> {
 /// isn't dirty and has been played with its current content counts (docs/coverage.md).
 /// `setup` picks the setup (ROM, core and options) to report on; by default, the one played last.
 pub fn build_report(col: &Collection, conn: &Connection, rom: Option<&[u8]>, setup: Option<&str>) -> Result<Report> {
+    build_report_with(col, conn, rom, setup, &std::collections::HashSet::new())
+}
+
+/// `build_report` for an editor: `unsaved` names segments with changes not saved yet. Like
+/// drafts, they don't count; what they (or dirty segments, from their last recorded play)
+/// would add is reported apart (`Totals::unsaved_new`, `Totals::if_cleaned`).
+pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>, setup: Option<&str>, unsaved: &std::collections::HashSet<String>) -> Result<Report> {
     let setup: String = match setup {
         Some(s) => s.to_string(),
         None => conn
             .query_row("SELECT setup FROM contents ORDER BY played_at DESC LIMIT 1", [], |r| r.get(0))
-            .context("nothing has been played into the local database yet; run `dj hydrate` first")?,
+            .context("nothing has been played into the local database yet; run `dj clean` first")?,
     };
     let keys = cache::current_keys(conn, col, &setup)?;
     let mut cov: BTreeMap<String, BTreeMap<String, Vec<u8>>> = BTreeMap::new();
     let mut ticks: HashMap<String, Option<i64>> = HashMap::new();
     let (mut dirty_segments, mut unplayed_segments) = (0, 0);
+    let (mut unsaved_prg, mut dirty_prg): (Vec<u8>, Vec<u8>) = (vec![], vec![]);
+    let mut unsaved_segments = 0;
+    let mut unsaved_per_segment: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut last_run = conn.prepare_cached("SELECT c.key, c.body FROM segment_runs s JOIN contents c ON c.key = s.content WHERE s.segment_id = ?1 AND c.setup = ?2")?;
     for (id, (key, status)) in &keys {
-        if *status == Status::Dirty {
-            dirty_segments += 1;
+        // Unsaved first (drafts too, which have no end hash until played, so are dirty):
+        // whatever they run is new until saved, yellow-green, whether or not they are clean.
+        let is_unsaved = col.is_draft(id) || unsaved.contains(id);
+        if is_unsaved || *status == Status::Dirty {
+            if is_unsaved {
+                unsaved_segments += 1;
+            } else {
+                dirty_segments += 1;
+            }
+            // Its current content if that was played; otherwise what it ran the last time it
+            // played with these lines, whatever it started from.
+            let mut regions = match key {
+                Some(k) => cache::coverage_of(conn, k)?,
+                None => HashMap::new(),
+            };
+            if regions.is_empty() {
+                let r = &col.replays[id];
+                let body = cache::body_hash(r, &crate::player::devices_at_start(col, id)?)?;
+                let last: Option<(String, String)> = last_run.query_row(rusqlite::params![id, setup], |row| Ok((row.get(0)?, row.get(1)?))).ok();
+                if let Some((k, _)) = last.filter(|(_, b)| *b == body) {
+                    regions = cache::coverage_of(conn, &k)?;
+                }
+            }
+            if let Some(p) = regions.get("PRG") {
+                union(if is_unsaved { &mut unsaved_prg } else { &mut dirty_prg }, p);
+                if is_unsaved {
+                    unsaved_per_segment.insert(id.clone(), p.clone());
+                }
+            }
             continue;
         }
         let Some(key) = key else {
@@ -146,8 +207,8 @@ pub fn build_report(col: &Collection, conn: &Connection, rom: Option<&[u8]>, set
         let t: Option<Option<i64>> = conn.query_row("SELECT ticks FROM contents WHERE key = ?1", [key], |r| r.get(0)).ok();
         ticks.insert(id.clone(), t.flatten());
     }
-    if cov.is_empty() {
-        bail!("no segment has coverage recorded for its current content (was the core built with a coverage connector?); run `dj hydrate`");
+    if cov.is_empty() && unsaved_prg.is_empty() && dirty_prg.is_empty() {
+        bail!("no segment has coverage recorded for its current content (was the core built with a coverage connector?); run `dj clean`");
     }
     let unreachable = cache::load_unreachable(col)?;
     let is_unreachable = |off: u64| unreachable.iter().any(|u| u.region == "PRG" && off >= u.start && off <= u.end);
@@ -184,7 +245,7 @@ pub fn build_report(col: &Collection, conn: &Connection, rom: Option<&[u8]>, set
     let units: Vec<u64> = if symbols {
         analyzed.iter().flat_map(|f| f.instructions.iter().map(|i| i.offset)).collect()
     } else {
-        let max = cov.values().filter_map(|m| m.get("PRG")).map(|f| f.len()).max().unwrap_or(0);
+        let max = cov.values().filter_map(|m| m.get("PRG")).map(|f| f.len()).chain([unsaved_prg.len(), dirty_prg.len()]).max().unwrap_or(0);
         (0..max as u64).collect()
     };
     let hit = |flags: Option<&Vec<u8>>, off: u64| flags.and_then(|f| f.get(off as usize)).map(|b| b & FLAG_OPCODE != 0).unwrap_or(false);
@@ -322,6 +383,9 @@ pub fn build_report(col: &Collection, conn: &Connection, rom: Option<&[u8]>, set
             uncovered_blocks: uncovered,
         });
     }
+    // What would count once saved, and once the dirty segments are clean (and saved).
+    let unsaved_new = units.iter().filter(|u| hit(Some(&unsaved_prg), **u) && !hit(all_flags, **u)).count();
+    let if_cleaned = units.iter().filter(|u| hit(Some(&dirty_prg), **u) && !hit(all_flags, **u) && !hit(Some(&unsaved_prg), **u)).count();
     if !symbols {
         ni = units.len();
         nic = opcode_set(&all_prg).iter().filter(|b| **b).count();
@@ -344,6 +408,9 @@ pub fn build_report(col: &Collection, conn: &Connection, rom: Option<&[u8]>, set
             unreachable_instructions,
             dirty_segments,
             unplayed_segments,
+            unsaved_segments,
+            unsaved_new,
+            if_cleaned,
         },
         replays,
         smallest_set,
@@ -353,6 +420,9 @@ pub fn build_report(col: &Collection, conn: &Connection, rom: Option<&[u8]>, set
             unreachable_per_function,
             per_segment_prg: cov.iter().filter_map(|(id, m)| m.get("PRG").map(|p| (id.clone(), p.clone()))).collect(),
             prg: all_prg,
+            unsaved_prg,
+            dirty_prg,
+            unsaved_per_segment,
             unreachable: unreachable.iter().filter(|u| u.region == "PRG").map(|u| (u.start, u.end)).collect(),
         },
     })
@@ -405,6 +475,12 @@ pub fn print_report(rep: &Report, col: &Collection) {
     println!("Coverage of the current segments (setup {})", rep.setup);
     if t.dirty_segments + t.unplayed_segments > 0 {
         println!("  left out: {} dirty, {} not played with their current content", t.dirty_segments, t.unplayed_segments);
+    }
+    if t.unsaved_segments > 0 {
+        println!("  left out: {} drafts, +{} units they would add once saved", t.unsaved_segments, t.unsaved_new);
+    }
+    if t.if_cleaned > 0 {
+        println!("  +{} units the dirty segments ran when last played: they count once those are clean", t.if_cleaned);
     }
     if t.unreachable_instructions > 0 {
         println!("  unreachable (unreachable.txt): {} instructions, not counted", t.unreachable_instructions);

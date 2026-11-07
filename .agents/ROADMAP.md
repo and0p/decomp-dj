@@ -21,17 +21,31 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   last one made or resized, and a drag on empty space selects. Holding the button down
   on an empty cell and dragging could set the new press's length instead, with
   selecting moved to a modifier or to drags that start outside the rows.
-- **Record while playing the list.** The GUI's List mode (the end-of-segment dropdown:
-  Stop, Loop, Next, List) plays every segment in tree order, the order hydration uses,
-  and at MAX speed it is hydration you can watch. A later step could make it record as
-  it plays (snapshots, coverage and first hits for each segment it finishes cleanly), so
-  watching the coverage map light up and filling the database are the same run.
+- **A file watcher instead of polling.** The GUI learns about drafts, sessions and the
+  shared view by fingerprinting `.local/` about once a second, so following an agent shows
+  one step in several (a 60-frame `step` takes about 100 ms at 500 to 700 fps) and new
+  drafts arrive late. Watch `segments/`, `.local/drafts/` and `.local/mcp/` with the
+  `notify` crate (inotify, FSEvents, ReadDirectoryChangesW) and react within milliseconds,
+  keeping the fingerprint poll as a slow fallback for file systems that don't notify
+  (network mounts). Since every writer writes to a temporary file and renames, a change event always finds a whole file.
+  This keeps the no-daemon design and costs about a day; it fixes the lag and the
+  half-written reads, which are the file-system part of the draft problems. Ownership
+  (agent-owned segments) isn't, and stays as it is. Sockets
+  ([below](#project-and-cli)) are then only needed for attach.
+- **Stop at a changed ending.** An opt-in toggle (off by default) that pauses playback as
+  soon as a segment records an ending that differs from its saved file (the **!**), so the
+  author can undo before the children below it replay. By default playback carries
+  straight on, since a child always starts from where its parent really ends.
 - **Recording live inputs.** Play the game from the keyboard and record what is held into
   the piano roll.
   - **Bindings.** A bindings dialog (Input > Keyboard mapping…) maps keys to each port's
     buttons, saved per machine in `.local/local.toml` with a sensible default for a joypad.
     Gamepads come later: device discovery, hot-plugging, analog dead zones and per-OS
     differences make them a larger job.
+  - **Per-console default bindings.** The first version has one default layout (WASD for the
+    d-pad, J = B, K = A, U = Select, I = Start) for one controller. Each console (NES, SNES,
+    N64, ...) should get its own default that covers its buttons, picked from the core or
+    the project's system.
   - **Record button.** A ● Record toggle in the transport that is unmistakable while on:
     red, and tinting part of the window (the transport bar and the roll's ruler, or a red
     frame around the picture) so nobody records by accident.
@@ -68,7 +82,7 @@ When one ships, its user-facing description moves into `docs/` and the entry her
 - **A coverage report that can be committed.** `dj report --write` (or a step of `dj run`)
   writes a `report/` folder in the project that goes into version control, so a
   collaborator can see what is covered, and the overall %, from a fresh clone without
-  hydrating anything, and review coverage changes in a diff. The folder splits the headline
+  cleaning anything, and review coverage changes in a diff. The folder splits the headline
   from the detail:
   - `report/README.md` (or `summary.md`): the headline numbers (functions, blocks and
     instructions covered, overall %, how many segments counted, dirty or not played), what
@@ -134,7 +148,7 @@ When one ships, its user-facing description moves into `docs/` and the entry her
 - **Backups without version control.** `dj backup <dir>` (and File > Back up… in
   the GUI) writes the project's shared files to a ZIP: `config.toml`, `segments/`,
   `blobs/`, `symbols/` and `unreachable.txt`, never `.local/` (the database can be
-  rebuilt by hydrating) and never the ROM. `dj restore <zip> <dir>` puts them back,
+  rebuilt by cleaning) and never the ROM. `dj restore <zip> <dir>` puts them back,
   replacing `segments/` whole so deleted segments come back and new ones go. Useful
   before a big agent-driven edit or an experiment, for authors who don't use git.
   Possible extras: an automatic backup before risky commands (a bulk clean, a large
@@ -172,8 +186,8 @@ When one ships, its user-facing description moves into `docs/` and the entry her
 - **MCP follow-ups.** `dj mcp` is built ([mcp.md](../docs/mcp.md)). Left to do:
   - **Sockets alongside the files.** The GUI follows sessions and shares its view through
     files in `.local/mcp/`, which needs no connection handling while agent servers come and
-    go, but runs about a second behind and can't share a core. Keep the files as discovery
-    and fallback, and add a local socket: `dj mcp` listens and writes its address and a token
+    go, but can't share a core (the lag is fixed by the file watcher in the
+    [GUI section](#gui)). Keep the files as discovery and fallback, and add a local socket: `dj mcp` listens and writes its address and a token
     into the `sessions-<pid>.json` it already publishes. The GUI connects for live frames and
     inputs, falling back to the files when it can't. Then **attach**: the GUI drives the
     agent's own core instead of opening a copy at the same point. Use loopback TCP with the
@@ -238,7 +252,7 @@ When one ships, its user-facing description moves into `docs/` and the entry her
 
 - **Refactor the Rust before release (maybe).** Once the tool is close to a first working
   release, consider splitting the longest files by feature. `gui/src/main.rs` is about
-  3,000 lines and holds playback, editing, undo, the tree, hydration and the transport
+  3,000 lines and holds playback, editing, undo, the tree, cleaning and the transport
   bar. It could follow `roll.rs` and `cov.rs` into modules such as `playback.rs`,
   `edit.rs`, `tree.rs` and `transport.rs`. In the player, `format.rs` and `libretro.rs`
   are the next largest. This changes no behaviour, so it may not be worth doing at all.

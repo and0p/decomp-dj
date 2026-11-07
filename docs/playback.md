@@ -18,7 +18,7 @@ To play segment `R`:
 Players may skip step 4 for ancestors by loading a cached local state taken
 at an ancestor's end. They may do so only if that state was produced by this
 same setup, its hash matches the ancestor's `end-hash`, and the ancestor is
-clean (see [below](#clean-dirty-and-unverified)), so nothing above it has changed since. Otherwise they play
+clean (see [below](#clean-and-dirty)), so nothing above it has changed since. Otherwise they play
 the chain from the root segment.
 
 A player that has just finished a segment may go straight on into one of its
@@ -30,7 +30,7 @@ state; the player only releases all inputs and sets port devices for the child
 
 State hashes are only meaningful for one core build, one ROM, and one set of core
 options, all pinned in [config.toml](config.md). A different build is a different
-project, or a re-validation of this one (see [below](#clean-dirty-and-unverified)).
+project, or a re-validation of this one (see [below](#clean-and-dirty)).
 `dj init` records every core option's current value, not only the ones you changed, so
 the setup stays pinned when a core's defaults change.
 
@@ -79,43 +79,50 @@ Only `exec` is implemented in v1; `write` is **(reserved)**.
 Input lines stay keyed by frame in v1, because that is what a core consumes. Keying input by tick is **(reserved)** for a later version
 once it has been tried on a multithreaded game.
 
-## Clean, dirty and unverified
+## Clean and dirty
 
-A segment is:
+A segment is **clean** if it has an `end-hash` and its `start-hash` (if any) equals its
+parent's `end-hash`, and its parent is clean. Otherwise it is **dirty**:
 
-- **unverified** if it has no `end-hash`.
-- **clean** if it has an `end-hash` and its `start-hash` (if any) equals its
-  parent's `end-hash`.
-- **dirty** if its `start-hash` differs from its parent's current `end-hash`.
-  This happens when a parent is edited and re-recorded.
+- it has no `end-hash` (it is new, or was edited and not played to its end since), or
+- its `start-hash` differs from its parent's current `end-hash` (the parent was edited
+  and re-recorded), or
+- a segment above it is dirty: its start state rests on something that has changed.
 
-A segment below a dirty segment is also dirty, even when its own hashes agree
-with its parent's: its start state rests on something that has changed.
+Clean and dirty are never stored. Tools work them out from the hashes. Cleaning a dirty
+segment means playing it from its parent's end state and recording the hashes it reaches
+([below](#recording-hashes)). Its children may then be dirty in turn, and so on down the
+tree.
 
-Dirty is never stored. Tools work it out from the hashes. Re-validating a
-dirty segment means playing it from its parent's new end state and, if it still
-does what it should, writing the new `start-hash` and `end-hash`. Its children
-then become dirty in turn, and so on down the tree.
+When a segment is edited, tools remove its `end-hash` and every `checkpoint` after the
+first edited frame, because those states are no longer known. The segment and everything
+below it are dirty until it is played to its end and the new hashes are recorded. Editing
+only `[EVENT]` lines changes no state, so it keeps every hash.
 
-When a segment is edited, tools remove its `end-hash` and every `checkpoint`
-after the first edited frame, because those states are no longer known. The
-segment becomes unverified and everything below it dirty, until it is played
-and the new hashes are recorded. Editing only `[EVENT]` lines changes no
-state, so it keeps every hash.
+Saving a dirty segment is allowed, but the GUI offers to clean first: a saved dirty
+segment says only that it hasn't been checked. Hand-edited hashes that agree with each
+other, or an input edit that kept the old hashes, look clean from the files alone; only a
+play (`dj run`, `dj clean`) proves them.
 
 ## Recording hashes
 
-Playing a segment to its end records its hashes when that overwrites nothing:
+Playing a segment to its end records its hashes, as long as its start is trusted: it
+played from where its parent ends, and the parent is clean (a root segment starts where it
+starts). Then:
 
-- Its start is trusted: it played from where its parent ends, and the parent is clean (for
-  a root segment, from its recorded `start-hash`, if it has one).
-- It is **unverified**: its `start-hash`, `end-hash` and `start-frame` are recorded, so it is clean.
-- It is **dirty** but still ends with its recorded `end-hash` and checkpoints: its new
-  `start-hash` is recorded, so it is clean again.
+- With no `end-hash` yet, its `start-hash`, `end-hash` and `start-frame` are recorded.
+- If it still ends with its recorded `end-hash` and checkpoints, only its new `start-hash`
+  is recorded: it is **cleaned**.
+- If the end hash or a checkpoint differs, the new hashes are recorded anyway: its
+  **ending changed**. The tools don't judge whether that matters (an upstream change has
+  clear consequences, and the author knows whether it was intended). The GUI marks a
+  segment whose unsaved ending differs from its saved file with a **!** next to its dot
+  until it is saved; undo or reload takes the change back. `dj clean` lists them.
 
-When the end hash or a checkpoint differs from the recorded one, nothing is recorded:
-whether the new ending is intended is a person's call (the GUI's **Use new end hash**,
-`--accept` on the command line). A segment below one that isn't clean waits for it.
+A segment below one that isn't clean waits for it.
+
+In the GUI these are unsaved changes, like edits: File > Save (Ctrl/Cmd+S) keeps them. On
+the command line `dj clean` writes them to the files (changed endings only with `--accept`).
 
 ## Checking hashes
 
@@ -124,7 +131,10 @@ From the command line:
 - `dj play <dir> <id>` plays one segment and its chain. `--accept` writes the new hashes.
 - `dj run <dir>` plays every segment and exits with an error when a segment's hashes differ from the recorded ones. `--accept` writes the new hashes instead.
 - `dj run --from-scratch` plays every chain from power-on instead of from cached parent states, which checks that snapshots round-trip exactly.
-- `dj status <dir>` prints the tree with clean, dirty and unverified marks.
-- `dj hydrate <dir> --clean` re-checks dirty segments: one that still ends with its recorded end hash and checkpoints gets its new start hash written to its file (it is clean again); the others are listed as mismatches.
+- `dj status <dir>` prints the tree with clean and dirty marks: `?` for a dirty segment with no recorded hashes, `~` for one that starts somewhere its parent no longer ends (or below such a segment).
+- `dj clean <dir> [segment]` plays every segment that isn't clean or whose content isn't in the local database (or that segment and those below it; `--all` plays every one), top down, and [records](#recording-hashes) the hashes each reaches in its file. The command line has no **!** to review, so a changed ending is listed and not written, the segments below it wait, and the command exits with an error. `--accept` writes changed endings too and carries on below them, as `--accept` does for `dj play` and `dj run`.
 
-In the GUI, the segment tree shows clean (green), dirty (orange) and unverified (gray) dots. Reaching a segment's last frame checks its end hash and [records hashes](#recording-hashes) where that is safe, as an unsaved change: File > Save (Ctrl/Cmd+S) keeps them. **Segment > Clean all segments** does the same for every segment that isn't clean, top down, and lists the ones whose ending changed. For those, play to the end and use **Emulation > Use new end hash** if the change is intended.
+In the GUI, the segment tree shows clean (green) and dirty (orange) dots. Reaching a
+segment's last frame [records its hashes](#recording-hashes) as an unsaved change.
+**Segment > Clean all segments** (or **Clean this and below** on a segment's menu) does
+the same for every segment that isn't clean, top down.

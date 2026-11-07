@@ -170,9 +170,9 @@ impl Worker {
                 setup = last;
             }
         }
-        for (_, (key, st)) in cache::current_keys(&conn, &self.col, &setup)? {
+        for (id, (key, st)) in cache::current_keys(&conn, &self.col, &setup)? {
             let Some(k) = key else { continue };
-            if st == decomp_dj::collection::Status::Dirty {
+            if st == decomp_dj::collection::Status::Dirty || self.col.is_draft(&id) {
                 continue;
             }
             if let Some(p) = cache::coverage_of(&conn, &k)?.get("PRG") {

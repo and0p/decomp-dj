@@ -304,7 +304,7 @@ impl Cache {
     pub fn open_readonly(col: &Collection) -> Result<Connection> {
         let path = cache_path(col);
         if !path.exists() {
-            bail!("no local database yet ({}); run `dj hydrate` first", path.display());
+            bail!("no local database yet ({}); run `dj clean` first", path.display());
         }
         let conn = Connection::open(&path)?;
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
@@ -456,6 +456,21 @@ impl Cache {
         Ok(())
     }
 
+    /// Writes only the snapshots and previews of a pass that did not reach the end.
+    pub fn record_snapshots(&mut self, key: &str, rec: &Recording) -> Result<()> {
+        let (setup, page_bytes) = (self.setup.clone(), self.settings.page_bytes);
+        let tx = self.write_tx()?;
+        for (frame, hash, data) in &rec.snapshots {
+            Self::put_snapshot_tx(&tx, &setup, page_bytes, hash, data)?;
+            tx.execute("INSERT OR REPLACE INTO frames(content, frame, state_hash) VALUES (?1,?2,?3)", params![key, *frame as i64, hash])?;
+        }
+        for (frame, role, png) in &rec.images {
+            tx.execute("INSERT OR REPLACE INTO images(content, frame, role, png) VALUES (?1,?2,?3,?4)", params![key, *frame as i64, role, png])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn begin_run(&self, core: &str, kind: &str) -> Result<i64> {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
         self.conn.execute("INSERT INTO runs(created, setup, core, kind) VALUES (?1,?2,?3,?4)", params![now, self.setup, core, kind])?;
@@ -514,6 +529,10 @@ impl Cache {
             }
             tx.execute("DELETE FROM contents WHERE key = ?1", [k])?;
         }
+        // Snapshots and previews of passes that never reached the end, for content no segment has now.
+        for t in ["frames", "images"] {
+            tx.execute(&format!("DELETE FROM {t} WHERE content NOT IN (SELECT content FROM segments_now WHERE content IS NOT NULL)"), [])?;
+        }
         let snaps = tx.execute("DELETE FROM snapshots WHERE hash NOT IN (SELECT state_hash FROM frames)", [])?;
         let mut live: HashSet<Vec<u8>> = HashSet::new();
         {
@@ -547,6 +566,52 @@ impl Cache {
     }
 }
 
+/// Marks a project as open in a dj-gui, so `cache gc` leaves it alone: the snapshots of an
+/// unsaved edit belong to content no saved segment has, and gc would drop them. The mark is
+/// a file in `.local/` touched every so often (`touch`); one not touched for
+/// `GUI_MARK_STALE` seconds is from a GUI that has gone. Dropping the mark removes it.
+pub struct GuiMark {
+    path: std::path::PathBuf,
+    touched: Option<std::time::Instant>,
+}
+
+pub const GUI_MARK_STALE: u64 = 180;
+
+impl GuiMark {
+    pub fn new(root: &std::path::Path) -> GuiMark {
+        let mut m = GuiMark { path: root.join(".local").join(format!("gui-{}.open", std::process::id())), touched: None };
+        m.touch();
+        m
+    }
+
+    /// Writes the mark again if it is a minute old.
+    pub fn touch(&mut self) {
+        if self.touched.is_some_and(|t| t.elapsed().as_secs() < 60) {
+            return;
+        }
+        self.touched = Some(std::time::Instant::now());
+        let _ = std::fs::create_dir_all(self.path.parent().unwrap());
+        let _ = std::fs::write(&self.path, b"");
+    }
+}
+
+impl Drop for GuiMark {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Whether a dj-gui has the project open now (see `GuiMark`).
+pub fn gui_open(root: &std::path::Path) -> bool {
+    let Ok(dir) = std::fs::read_dir(root.join(".local")) else { return false };
+    dir.flatten().any(|e| {
+        let name = e.file_name().to_string_lossy().to_string();
+        name.starts_with("gui-")
+            && name.ends_with(".open")
+            && e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age.as_secs() < GUI_MARK_STALE)
+    })
+}
+
 /// Content keys of the current segments, from their recorded hashes (no emulation).
 /// A segment whose start hash isn't recorded falls back to the last content it played
 /// as, if its body hasn't changed since. Dirty segments get their status but still map,
@@ -555,9 +620,6 @@ pub fn current_keys(conn: &Connection, col: &Collection, setup: &str) -> Result<
     let mut out = BTreeMap::new();
     let mut last = conn.prepare_cached("SELECT c.key, c.body FROM segment_runs s JOIN contents c ON c.key = s.content WHERE s.segment_id = ?1 AND c.setup = ?2")?;
     for (id, _) in col.tree_order() {
-        if col.is_draft(id) {
-            continue;
-        }
         let r = &col.replays[id];
         let devices = crate::player::devices_at_start(col, id)?;
         let body = body_hash(r, &devices)?;

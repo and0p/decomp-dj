@@ -2,6 +2,7 @@
 //! The `dj` command-line tool and the GUI are both built on this library.
 
 pub mod analysis;
+pub mod annotations;
 pub mod cache;
 pub mod collection;
 pub mod compare;

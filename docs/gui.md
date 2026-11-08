@@ -16,7 +16,7 @@ The ROM and core come from the project's `.local/local.toml` (written by the CLI
 
 | Area | What it holds | Details |
 | --- | --- | --- |
-| Left sidebar | Tabs for **Segments**, **Markers** and **Coverage**, with the coverage map below them | Below, and [coverage.md](coverage.md#in-the-gui) |
+| Left sidebar | Tabs for **Segments**, **Markers** and **Coverage**, with the coverage map below them. On the map, blue is unreachable code and purple is data, both from [annotations.toml](config.md#annotationstoml); hovering a square shows each entry's `why`. | Below, and [coverage.md](coverage.md#in-the-gui) |
 | Top | The emulator picture, with the transport bar below it | [Transport](#transport) |
 | Bottom | The piano roll and marker lane | [editing.md](editing.md#piano-roll) |
 | Bottom edge | The status bar: messages on the left; the unsaved count, the core and the MCP state (off, or agent sessions running, following, sharing) on the right. Long seeks, loads and cleans show a progress bar there. | |

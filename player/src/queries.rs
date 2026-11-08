@@ -72,6 +72,12 @@ pub fn summary(dir: &Path, q: &QueryArgs) -> Result<()> {
     } else {
         println!("opcode bytes run: {} (no symbol map)", s.instructions.covered);
     }
+    if s.unreachable_instructions + s.data_bytes > 0 {
+        println!("left out (annotations.toml): {} unreachable, {} data bytes", s.unreachable_instructions, s.data_bytes);
+    }
+    for w in &s.annotation_warnings {
+        println!("warning: {w}");
+    }
     println!("{} segments ({} dirty and {} unplayed left out)", s.segments, s.segments_left_out.dirty, s.segments_left_out.unplayed);
     for t in &s.top_segments {
         println!("  {t}");

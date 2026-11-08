@@ -1,7 +1,7 @@
 dj-replay 1
 id: f5ed9179-8744-4ead-b9d0-147f3d267a47
 parent: d125778a-24f8-40ba-8784-2d8359f5398a
-title: Lose Game immediately and return to menu
+title: Lose immediately and return to menu
 frames: 1141
 checkpoint: 961 f88738efb5718a7c1ba9dab32f5eed87
 start-hash: 297d729e9733d8536441f4529689dd77

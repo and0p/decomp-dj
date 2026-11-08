@@ -2,7 +2,7 @@
 //! frames inside segments, previews, coverage and first hits, all keyed by content key.
 //! Everything here is derived by playing the collection and can be deleted at any time.
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -184,54 +184,6 @@ pub fn marker_frames(r: &Replay) -> Vec<u64> {
     v
 }
 
-// ---- unreachable.txt ---------------------------------------------------------------
-
-/// One range from unreachable.txt: `PRG:0x1234-0x12FF  # why`. The region defaults to PRG.
-#[derive(Clone, Debug, Serialize)]
-pub struct Unreachable {
-    pub region: String,
-    pub start: u64,
-    pub end: u64,
-    pub comment: String,
-}
-
-pub fn load_unreachable(col: &Collection) -> Result<Vec<Unreachable>> {
-    let path = col.root.join("unreachable.txt");
-    if !path.exists() {
-        return Ok(vec![]);
-    }
-    let text = std::fs::read_to_string(&path)?;
-    let mut out = vec![];
-    for (n, raw) in text.lines().enumerate() {
-        let (body, comment) = match raw.split_once('#') {
-            Some((b, c)) => (b.trim(), c.trim().to_string()),
-            None => (raw.trim(), String::new()),
-        };
-        if body.is_empty() {
-            continue;
-        }
-        let (region, range) = match body.split_once(':') {
-            Some((r, rest)) if !r.trim().starts_with("0x") => (r.trim().to_ascii_uppercase(), rest.trim()),
-            _ => ("PRG".to_string(), body),
-        };
-        let (a, b) = range.split_once('-').map(|(a, b)| (a, Some(b))).unwrap_or((range, None));
-        let hex = |s: &str| -> Result<u64> {
-            let s = s.trim();
-            u64::from_str_radix(s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s), 16).map_err(|_| anyhow!("unreachable.txt line {}: {s:?} is not a hex address", n + 1))
-        };
-        let start = hex(a)?;
-        let end = match b {
-            Some(b) => hex(b)?,
-            None => start,
-        };
-        if end < start {
-            bail!("unreachable.txt line {}: the range ends before it starts", n + 1);
-        }
-        out.push(Unreachable { region, start, end, comment });
-    }
-    Ok(out)
-}
-
 // ---- the database ------------------------------------------------------------------
 
 pub struct Cache {
@@ -296,7 +248,7 @@ impl Cache {
         let info = serde_json::to_string(&info_map)?;
         conn.execute("INSERT OR REPLACE INTO setups(id, info) VALUES (?1, ?2)", params![setup, info])?;
         let c = Cache { conn, settings, setup: setup.to_string(), path };
-        c.refresh_unreachable(col)?;
+        c.refresh_annotations(col)?;
         Ok(c)
     }
 
@@ -325,11 +277,12 @@ impl Cache {
         self.conn.transaction_with_behavior(TransactionBehavior::Immediate)
     }
 
-    fn refresh_unreachable(&self, col: &Collection) -> Result<()> {
-        let list = load_unreachable(col)?;
-        self.conn.execute("DELETE FROM unreachable", [])?;
-        for u in list {
-            self.conn.execute("INSERT INTO unreachable(region, start, end, comment) VALUES (?1,?2,?3,?4)", params![u.region, u.start as i64, u.end as i64, u.comment])?;
+    /// Copies annotations.toml into the `annotation` table, for `dj sql`.
+    fn refresh_annotations(&self, col: &Collection) -> Result<()> {
+        let ann = crate::annotations::Annotations::load(&col.root)?;
+        self.conn.execute("DELETE FROM annotation", [])?;
+        for (kind, region, start, end, name, why) in ann.rows() {
+            self.conn.execute("INSERT INTO annotation(kind, region, start, end, name, why) VALUES (?1,?2,?3,?4,?5,?6)", params![kind, region, start as i64, end as i64, name, why])?;
         }
         Ok(())
     }
@@ -649,7 +602,8 @@ CREATE TABLE IF NOT EXISTS images(content TEXT NOT NULL, frame INTEGER NOT NULL,
 CREATE TABLE IF NOT EXISTS coverage(content TEXT NOT NULL, region TEXT NOT NULL, size INTEGER NOT NULL, flags BLOB NOT NULL, PRIMARY KEY(content, region));
 CREATE TABLE IF NOT EXISTS first_hits(content TEXT NOT NULL, region TEXT NOT NULL, rom_offset INTEGER NOT NULL, frame INTEGER NOT NULL, PRIMARY KEY(content, region, rom_offset));
 CREATE INDEX IF NOT EXISTS first_hits_offset ON first_hits(region, rom_offset);
-CREATE TABLE IF NOT EXISTS unreachable(region TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, comment TEXT);
+DROP TABLE IF EXISTS unreachable;
+CREATE TABLE IF NOT EXISTS annotation(kind TEXT NOT NULL, region TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, name TEXT, why TEXT);
 CREATE TABLE IF NOT EXISTS runs(id INTEGER PRIMARY KEY, created INTEGER NOT NULL, setup TEXT NOT NULL, core TEXT NOT NULL, kind TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS run_results(run_id INTEGER NOT NULL, segment_id TEXT NOT NULL, content TEXT, outcome TEXT, PRIMARY KEY(run_id, segment_id));
 ";

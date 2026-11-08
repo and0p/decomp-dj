@@ -228,6 +228,12 @@ enum Cmd {
         #[arg(long)]
         gaps: Option<PathBuf>,
     },
+    /// List annotations.toml's entries, and check them against the coverage
+    Annotations {
+        dir: PathBuf,
+        #[command(flatten)]
+        local: Local,
+    },
 }
 
 #[derive(Subcommand)]
@@ -262,6 +268,7 @@ fn real_main() -> Result<()> {
         Cmd::Play { dir, id, local, screenshots, shot, no_cache, accept } => play(&dir, &id, &local, screenshots, shot, no_cache, accept),
         Cmd::Run { dir, local, from_scratch, accept, screenshots } => run(&dir, &local, from_scratch, accept, screenshots),
         Cmd::Report { dir, local, json, gaps } => report(&dir, &local, json, gaps),
+        Cmd::Annotations { dir, local } => annotations(&dir, &local),
         Cmd::Hydrate { dir, local, segment, children, force } => hydrate(&dir, &local, segment, children, force),
         Cmd::Clean { dir, local, segment, accept, all } => clean(&dir, &local, segment, accept, all),
         Cmd::Xref { dir, what, query } => queries::xref(&dir, &what, &query),
@@ -546,6 +553,74 @@ fn report(dir: &Path, local: &Local, json: Option<PathBuf>, gaps: Option<PathBuf
     if let Some(g) = gaps {
         coverage::write_gaps_csv(&rep, &g)?;
         println!("wrote {}", g.display());
+    }
+    Ok(())
+}
+
+fn annotations(dir: &Path, local: &Local) -> Result<()> {
+    use decomp_dj::annotations::{Annotations, Kind};
+    let col = Collection::open(dir)?;
+    let ann = Annotations::load(&col.root)?;
+    if ann.is_empty() {
+        println!("no annotations ({} not found or empty)", col.root.join(decomp_dj::annotations::FILE).display());
+        return Ok(());
+    }
+    let rom = match resolve_local(&col, local) {
+        Ok((rom, _)) => Some(std::fs::read(&rom).with_context(|| format!("reading {}", rom.display()))?),
+        Err(_) => None,
+    };
+    // What the maps alone say, to tell a rename from a new function.
+    let maps = decomp_dj::analysis::project_functions(&col, rom.as_deref(), &Annotations::default())?;
+    let merged = decomp_dj::analysis::project_functions(&col, rom.as_deref(), &ann)?;
+    let rep = match cache::Cache::open_readonly(&col) {
+        Ok(conn) => match coverage::build_report(&col, &conn, rom.as_deref(), None) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                println!("(not checked against coverage: {e:#})");
+                None
+            }
+        },
+        Err(e) => {
+            println!("(not checked against coverage: {e:#})");
+            None
+        }
+    };
+    let mut problems = 0;
+    for kind in [Kind::Unreachable, Kind::Data, Kind::Function] {
+        for e in ann.of_kind(kind) {
+            let mut line = format!("{:<20} {:<22}", e.label(), e.range_text());
+            match kind {
+                Kind::Function => {
+                    let name = e.name.as_deref().unwrap_or("");
+                    let was = maps.iter().find(|(f, _)| f.region == e.region && f.offset == e.start);
+                    let now = merged.iter().find(|(f, _)| f.region == e.region && f.offset == e.start).map(|(f, _)| f.size).unwrap_or(0);
+                    match was {
+                        Some((f, _)) if f.name == name && f.size == now => line += &format!(" {name}: the map says the same"),
+                        Some((f, _)) => line += &format!(" {name}: was {} ({:#X} bytes), now {now:#X} bytes", f.name, f.size),
+                        None => line += &format!(" {name}: new, {now:#X} bytes"),
+                    }
+                }
+                _ => {
+                    let size = e.end - e.start + 1;
+                    line += &format!(" {size:>5} bytes");
+                    if let Some(w) = rep.as_ref().and_then(|r| r.annotation_warnings.iter().find(|w| w.entry == e.label())) {
+                        line += &format!("  RAN: {}", w.text(&col));
+                        problems += 1;
+                    }
+                }
+            }
+            if !e.why.is_empty() {
+                line += &format!("  # {}", e.why);
+            }
+            println!("{line}");
+        }
+    }
+    if let Some(r) = &rep {
+        let t = &r.totals;
+        println!("left out of coverage: {} unreachable {}, {} data bytes", t.unreachable_instructions, if r.symbols { "instructions" } else { "bytes" }, t.data_bytes);
+    }
+    if problems > 0 {
+        bail!("{problems} annotated range(s) ran as code");
     }
     Ok(())
 }

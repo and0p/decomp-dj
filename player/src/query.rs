@@ -47,10 +47,8 @@ impl Project {
                 Err(e) => (None, Some(format!("the ROM at {} can't be read: {e}", p.display()))),
             },
         };
-        let mut funcs = vec![];
-        for s in &col.config.symbols {
-            funcs.extend(analysis::load_symbols(&col.root, s, rom.as_deref())?);
-        }
+        let ann = crate::annotations::Annotations::load(&col.root)?;
+        let mut funcs: Vec<Function> = analysis::project_functions(&col, rom.as_deref(), &ann)?.into_iter().map(|(f, _)| f).collect();
         funcs.sort_by_key(|f| (f.region.clone(), f.offset));
         let prg = rom.as_ref().map(|rom| {
             let header = match col.config.symbols.first() {
@@ -221,7 +219,8 @@ impl Project {
 
     /// The headline numbers of the coverage report.
     pub fn summary(&mut self) -> Result<Summary> {
-        let rep = self.report()?;
+        self.report()?;
+        let rep = self.report.as_ref().unwrap();
         let t = &rep.totals;
         let pct = |a: usize, b: usize| if b == 0 { 0.0 } else { (a as f64 * 1000.0 / b as f64).round() / 10.0 };
         Ok(Summary {
@@ -232,6 +231,8 @@ impl Project {
             functions: Ratio { covered: t.functions_entered, total: t.functions, percent: pct(t.functions_entered, t.functions) },
             by_play_alone: Ratio { covered: t.played_only_instructions_covered, total: t.instructions, percent: pct(t.played_only_instructions_covered, t.instructions) },
             unreachable_instructions: t.unreachable_instructions,
+            data_bytes: t.data_bytes,
+            annotation_warnings: rep.annotation_warnings.iter().map(|w| w.text(&self.col)).collect(),
             executed_outside_symbols: t.executed_outside_symbols,
             segments: rep.replays.len(),
             segments_left_out: LeftOut { dirty: t.dirty_segments, unplayed: t.unplayed_segments },
@@ -245,12 +246,26 @@ impl Project {
         })
     }
 
+    /// Marks what annotations.toml calls data or unreachable as taken, so it isn't a gap.
+    fn mark_annotated(&mut self, exec: &mut [bool]) -> Result<()> {
+        let d = &self.report()?.detail;
+        for (a, b) in d.data.iter().chain(&d.unreachable) {
+            for o in *a..=*b {
+                if let Some(e) = exec.get_mut(o as usize) {
+                    *e = true;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Uncovered PRG with no symbol map to divide it up: the runs of bytes no instruction that
     /// ran occupies, with how covered code leads into them. Data shows up here too.
     pub fn uncovered_ranges(&mut self, sort: GapSort, limit: usize, cursor: usize) -> Result<Page<UncoveredRange>> {
         let (prg, flags) = self.need_sweep()?;
         let edges = analysis::covered_edges_6502(&prg, &flags, self.fixed_prg);
-        let exec = analysis::executed_bytes_6502(&prg, &flags);
+        let mut exec = analysis::executed_bytes_6502(&prg, &flags);
+        self.mark_annotated(&mut exec)?;
         let mut rows: Vec<UncoveredRange> = analysis::uncovered_ranges(&exec)
             .into_iter()
             .map(|(start, end)| {
@@ -271,7 +286,7 @@ impl Project {
             GapSort::Nearness => rows.sort_by(|a, b| (b.ways_in > 0).cmp(&(a.ways_in > 0)).then(b.bytes.cmp(&a.bytes)).then(a.at.cmp(&b.at))),
         }
         let total = rows.len();
-        let note = format!("no symbol map: these are PRG byte ranges that no instruction that ran occupies, and they include data. ways_in counts covered branches and calls that lead into them (frontier lists them). Add [[symbols]] to config.toml for gaps by function.{}", if self.fixed_prg.is_some() { "" } else { " PRG here is bankable, so calls aren't followed." });
+        let note = format!("no symbol map: these are PRG byte ranges that no instruction that ran occupies, and they include any data annotations.toml doesn't mark. ways_in counts covered branches and calls that lead into them (frontier lists them). Add [[symbols]] to config.toml for gaps by function.{}", if self.fixed_prg.is_some() { "" } else { " PRG here is bankable, so calls aren't followed." });
         Ok(Page::new(rows.into_iter().skip(cursor).take(limit).collect(), total, cursor).with_note(note))
     }
 
@@ -385,7 +400,8 @@ impl Project {
         let known = self.cpu_text(start).is_some();
         let cpu_addr = self.fixed_prg.and_then(|m| m.cpu_of(start)).unwrap_or(0x8000);
         let func = Function { name: format!("sweep_{start:04X}"), region: "PRG".into(), offset: start, size: end - start, cpu_addr: Some(cpu_addr) };
-        let analyzed = analysis::analyze_6502(std::slice::from_ref(&func), &prg);
+        let data = self.report()?.detail.data.clone();
+        let analyzed = analysis::analyze_6502_with(std::slice::from_ref(&func), &prg, &data);
         let f = analyzed.first().ok_or_else(|| anyhow!("nothing to read at {}", a.text))?;
         let firsts = self.first_frames("PRG", start, end)?;
         let succ = analysis::block_successors_6502(f, &prg);
@@ -580,8 +596,11 @@ impl Project {
     /// those into the uncovered range that holds it.
     fn frontier_by_sweep(&mut self, target: Option<&Addr>, limit: usize, cursor: usize) -> Result<Page<FrontierEdge>> {
         let (prg, flags) = self.need_sweep()?;
-        let exec = analysis::executed_bytes_6502(&prg, &flags);
+        let mut exec = analysis::executed_bytes_6502(&prg, &flags);
+        self.mark_annotated(&mut exec)?;
         let mut edges = analysis::covered_edges_6502(&prg, &flags, self.fixed_prg);
+        // No way into data or unreachable code counts (they are marked taken in `exec` now).
+        edges.retain(|e| !exec.get(e.to as usize).copied().unwrap_or(false) || flags.get(e.to as usize).is_some_and(|b| b & coverage::FLAG_OPCODE != 0));
         if let Some(t) = target {
             let range = analysis::uncovered_ranges(&exec).into_iter().find(|(s, e)| t.region == "PRG" && t.offset >= *s && t.offset < *e);
             edges.retain(|e| range.is_some_and(|(s, end)| e.to >= s && e.to < end));
@@ -757,6 +776,10 @@ pub struct Summary {
     pub functions: Ratio,
     pub by_play_alone: Ratio,
     pub unreachable_instructions: usize,
+    /// PRG bytes annotations.toml marks as data.
+    pub data_bytes: usize,
+    /// Code that ran where annotations.toml says none can.
+    pub annotation_warnings: Vec<String>,
     pub executed_outside_symbols: usize,
     pub segments: usize,
     pub segments_left_out: LeftOut,
@@ -870,11 +893,24 @@ mod tests {
     }
 
     fn project_with(name: &str, write_rom: bool, prg_banks: u8) -> (std::path::PathBuf, Project) {
+        project_full(name, write_rom, prg_banks, None, None)
+    }
+
+    /// `project`, with an annotations.toml and a CSV symbol map.
+    fn project_full(name: &str, write_rom: bool, prg_banks: u8, annotations: Option<&str>, symbols: Option<&str>) -> (std::path::PathBuf, Project) {
         let dir = std::env::temp_dir().join(format!("dj-query-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("segments")).unwrap();
         std::fs::create_dir_all(dir.join(".local")).unwrap();
         std::fs::write(dir.join("config.toml"), "format = 1\nname = \"t\"\n[rom]\nsha256 = \"\"\nfile = \"t.nes\"\n[core]\nname = \"c\"\nbuild = \"c\"\nsha256 = \"\"\n[[ports]]\nport = 1\ndevice = \"JOYPAD\"\n[hash]\nalgorithm = \"blake3\"\nregions = [\"RAM\"]\n").unwrap();
+        if let Some(csv) = symbols {
+            std::fs::write(dir.join("symbols.csv"), csv).unwrap();
+            let mut c = std::fs::OpenOptions::new().append(true).open(dir.join("config.toml")).unwrap();
+            std::io::Write::write_all(&mut c, b"[[symbols]]\nfile = \"symbols.csv\"\nformat = \"csv\"\n").unwrap();
+        }
+        if let Some(a) = annotations {
+            std::fs::write(dir.join("annotations.toml"), a).unwrap();
+        }
         let id = "11111111-1111-1111-1111-111111111111";
         std::fs::write(dir.join("segments").join(format!("{id}.segment")), format!("dj-replay 1\nid: {id}\nparent: none\ntitle: s\nframes: 1\nstart-hash: a\nend-hash: b\n---\n")).unwrap();
         let rom_path = dir.join("t.nes");
@@ -957,6 +993,53 @@ mod tests {
         assert!(f.note.unwrap().contains("bankable"));
         let e = p.frontier(None, 10, 0).unwrap();
         assert_eq!(e.items[0].branch, "PRG:0x2");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn annotations_leave_data_out_without_symbols() {
+        let ann = "[[unreachable]]\nrange = \"0x7-0x9\"\nwhy = \"dead\"\n[[data]]\nrange = \"0x100-0x7FFF\"\nwhy = \"tables\"\n";
+        let (dir, mut p) = project_full("ann", true, 2, Some(ann), None);
+        let s = p.summary().unwrap();
+        assert_eq!((s.instructions.covered, s.instructions.total, s.unreachable_instructions, s.data_bytes), (2, 0x100 - 3, 3, 0x7F00));
+        assert!(s.annotation_warnings.is_empty());
+        // Neither is a gap, nor a way into one.
+        let g = p.uncovered_ranges(GapSort::Size, 10, 0).unwrap();
+        let ranges: Vec<(&str, &str)> = g.items.iter().map(|r| (r.at.as_str(), r.end.as_str())).collect();
+        assert_eq!(ranges, vec![("PRG:0xa", "PRG:0xff"), ("PRG:0x4", "PRG:0x6")]);
+        let f = p.frontier(None, 10, 0).unwrap();
+        assert_eq!(f.items.iter().map(|e| e.uncovered.as_str()).collect::<Vec<_>>(), vec!["$8004"]);
+        let d = &p.report().unwrap().detail;
+        assert_eq!(d.annotation_at(0x8).map(|e| e.why.as_str()), Some("dead"));
+        assert!(d.is_data(0x100) && !d.is_data(0xFF));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn annotations_warn_when_code_runs_there() {
+        let ann = "[[data]]\nrange = \"0x1000\"\n[[unreachable]]\nrange = \"PRG:0x2-0x3\"\n";
+        let (dir, mut p) = project_full("warn", true, 2, Some(ann), None);
+        let w = p.report().unwrap().annotation_warnings.clone();
+        assert_eq!(w.len(), 1);
+        let w = &w[0];
+        assert_eq!((w.entry.as_str(), w.range.as_str(), w.at.as_str()), ("unreachable entry 1", "PRG:0x0002-0x0003", "PRG:0x0002"));
+        assert_eq!(w.segments, vec!["11111111-1111-1111-1111-111111111111"]);
+        assert_eq!(w.text(&p.col), "annotations.toml unreachable entry 1 (PRG:0x0002-0x0003) ran as code at PRG:0x0002 in \"s\"");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn annotations_with_symbols() {
+        // f covers the whole routine; bytes 4-6 (INC $10; RTS) are declared data, and a
+        // function is added at 7 (DEC $11; RTS), which cuts f short.
+        let ann = "[[data]]\nrange = \"0x4-0x6\"\n[[function]]\nat = \"0x7\"\nname = \"tail\"\nwhy = \"the branch target\"\n";
+        let (dir, mut p) = project_full("sym", true, 2, Some(ann), Some("name,region,offset,size,cpu\nf,PRG,0,A,8000\n"));
+        let r = p.report().unwrap();
+        assert!(r.symbols);
+        let rows: Vec<(&str, &str, usize, usize)> = r.functions.iter().map(|f| (f.name.as_str(), f.offset.as_str(), f.instructions, f.instructions_covered)).collect();
+        assert_eq!(rows, vec![("f", "0x0", 2, 2), ("tail", "0x7", 2, 0)]);
+        assert_eq!((r.totals.instructions, r.totals.data_bytes), (4, 3));
+        assert_eq!(p.resolve("tail").unwrap().offset, 7);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

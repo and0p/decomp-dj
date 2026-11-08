@@ -236,5 +236,46 @@ Next to it in `.local/`, the tools keep `cache.db` (the [local database](databas
 
 These aren't settings, but they sit next to `config.toml` and change results:
 
-- `unreachable.txt`: ROM ranges left out of coverage totals, one per line (`0x8000-0x80FF`, `0x8123`, optionally `PRG:` first, `#` comments).
+- `annotations.toml`: what you know about the ROM that the symbol maps don't say ([below](#annotationstoml)).
 - `blobs/`: SRAM and snapshot files a root segment starts from, named by content hash.
+
+## annotations.toml
+
+Optional, next to `config.toml`, and meant to be committed. It marks code no input can
+reach, bytes that aren't code, and functions the symbol maps get wrong or miss. Every entry
+can say `why`, which the GUI shows over the coverage map and `dj annotations` lists.
+
+```toml
+[[unreachable]]                 # code that can't run: left out of the totals
+range = "PRG:0x018C-0x0197"
+why = "two-player mode, which the US release can't start"
+
+[[data]]                        # bytes that aren't code
+range = "PRG:0x0050-0x0059"
+why = "jump table after jsr switch_s_plus_2a"
+
+[[function]]                    # name a function, or add one
+at = "PRG:0x0161"
+name = "branchOnGameMode"
+size = 0x13                     # optional
+```
+
+Ranges are region offsets, inclusive: `PRG:0x8000-0x80FF`, or one byte, `PRG:0x8123`. The
+region is `PRG` when left out.
+
+| Entry | Effect |
+| --- | --- |
+| `[[unreachable]]` | Its instructions (bytes, without a symbol map) are left out of every total and shown blue on the map. |
+| `[[data]]` | Never read as code: disassembly skips it and starts again after it, so a jump table inside a function doesn't throw off the instructions that follow. Left out of every total, with or without a symbol map, and shown purple. Where it overlaps an `[[unreachable]]` range, data wins. |
+| `[[function]]` | At the offset of a map's function, renames it, and resizes it given a `size`. Elsewhere it adds a function: with no `size`, it runs to the end of the map's function it falls inside (which then ends where it starts), or else to the next function. Map functions it overlaps give way to it. |
+
+If code runs inside a `[[data]]` or `[[unreachable]]` range, the annotation is wrong (or the
+segment does something the game can't): `dj report`, `dj summary` and the Coverage tab warn,
+naming the entry and the segments. `dj annotations <dir>` lists every entry, what each
+`[[function]]` changed, and which ranges ran, and fails if any did. A mistake in the file is
+reported with the entry it is in, such as `annotations.toml, data entry 3: range ...`.
+
+This replaces `unreachable.txt`. A project that still has one and no `annotations.toml`
+stops with an error, rather than counting what it left out: move each line into an
+`[[unreachable]]` entry, with its comment as `why`. In the local database, `dj sql` sees
+the entries in the `annotation` table (`kind`, `region`, `start`, `end`, `name`, `why`).

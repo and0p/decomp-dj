@@ -301,7 +301,7 @@ fn local_allow(root: &Path) -> Result<Option<Allow>> {
 }
 
 /// A cheap fingerprint of what queries read: modification times of the config, the
-/// segment files, the symbol maps, unreachable.txt and the database.
+/// segment files, the symbol maps, annotations.toml and the database.
 pub fn fingerprint(dir: &Path) -> u128 {
     let mut h: u128 = 0;
     let mut add = |p: &Path| {
@@ -311,7 +311,7 @@ pub fn fingerprint(dir: &Path) -> u128 {
         }
     };
     add(&dir.join("config.toml"));
-    add(&dir.join("unreachable.txt"));
+    add(&dir.join("annotations.toml"));
     add(&dir.join(".local/cache.db"));
     add(&dir.join(".local/cache.db-wal"));
     for sub in ["segments", "symbols"] {

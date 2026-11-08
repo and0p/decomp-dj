@@ -1,0 +1,120 @@
+# What Tetris (USA) holds that its symbol map doesn't say (docs/config.md).
+#
+# Offsets are PRG offsets (CPU address - $8000; the 32 KB PRG is mapped whole at
+# $8000), ranges inclusive. Labels are from CelestialAmber/TetrisNESDisasm.
+
+# ---- unreachable --------------------------------------------------------------------
+#
+# Two-player mode. The US release has no way to start a two-player game: the only
+# write to numberOfPlayers ($BE) is `lda #$01; sta numberOfPlayers` at boot ($8130),
+# so every path taken when numberOfPlayers is 2 (or not 1) is dead, along with the
+# routines only those paths call. Two-player code that runs unconditionally in a
+# one-player game is not listed: picking player 2's garbage hole in the level menu,
+# copying the B-type playfield to player 2's and blanking it, and adding to
+# pendingGarbageInactivePlayer after line clears.
+
+[[unreachable]]
+range = "PRG:0x018C-0x0197"
+why = "$818C gameModeState_updatePlayer2: makePlayer2Active, branchOnPlayStatePlayer2, stageSpriteForCurrentPiece, savePlayer2State"
+
+[[unreachable]]
+range = "PRG:0x01D9-0x01FF"
+why = "$81D9 branchOnPlayStatePlayer2 (and its jump table), playState_player2ControlsActiveTetrimino"
+
+[[unreachable]]
+range = "PRG:0x0577-0x057D"
+why = "$8577 level menu: moves the level cursor down for activePlayer 1; the menu sets activePlayer to 0"
+
+[[unreachable]]
+range = "PRG:0x05A7-0x05AD"
+why = "$85A7 level menu: the same for the height cursor"
+
+[[unreachable]]
+range = "PRG:0x0792-0x07AD"
+why = "$8792 makePlayer2Active"
+
+[[unreachable]]
+range = "PRG:0x07BF-0x07C6"
+why = "$87BF savePlayer1State: swaps pendingGarbage with the other player's"
+
+[[unreachable]]
+range = "PRG:0x07C8-0x07DB"
+why = "$87C8 savePlayer2State"
+
+[[unreachable]]
+range = "PRG:0x0A19-0x0A2B"
+why = "$8A19 stageSpriteForCurrentPiece: x offsets of the two playfields"
+
+[[unreachable]]
+range = "PRG:0x1540-0x158B"
+why = "$9540 render_mode_play_and_demo @renderPlayer2Playfield: player 2's line clears and row copy"
+
+[[unreachable]]
+range = "PRG:0x15B5-0x15E2"
+why = "$95B5 render_mode_play_and_demo @renderLinesTwoPlayers"
+
+[[unreachable]]
+range = "PRG:0x1740-0x175D"
+why = "$9740 copyPlayfieldRowToVRAM: the two playfields' VRAM addresses"
+
+[[unreachable]]
+range = "PRG:0x17A6-0x17BC"
+why = "$97A6 updateLineClearingAnimation @twoPlayers"
+
+[[unreachable]]
+range = "PRG:0x189A-0x18B9"
+why = "$989A playState_spawnNextTetrimino: the delay that deals both players the same piece"
+
+[[unreachable]]
+range = "PRG:0x18DA-0x18E0"
+why = "$98DA playState_spawnNextTetrimino: takes that shared piece as the next one"
+
+[[unreachable]]
+range = "PRG:0x1B09-0x1B4F"
+why = "$9B09 playState_receiveGarbage: pushes garbage rows up from the bottom"
+
+[[unreachable]]
+range = "PRG:0x1CCF-0x1CD8"
+why = "$9CCF gameModeState_handleGameOver: waits for the other player to top out too"
+
+[[unreachable]]
+range = "PRG:0x1CDF-0x1CE3"
+why = "$9CDF gameModeState_handleGameOver: two-player game over (gameModeState 9)"
+
+[[unreachable]]
+range = "PRG:0x1FF8-0x1FFA"
+why = "$9FF8 showHighScores: skips the table in a two-player game"
+
+# ---- data ---------------------------------------------------------------------------
+#
+# Jump tables. `jsr switch_s_plus_2a` ($AC82) jumps through the table of 16-bit
+# addresses that follows the call, so the bytes after each such jsr are data, not code.
+# Each table runs from just after the jsr to the first routine it points at.
+
+[[data]]
+range = "PRG:0x0050-0x0059"
+why = "$8050 render: jump table, 5 entries"
+
+[[data]]
+range = "PRG:0x0166-0x0173"
+why = "$8166 branchOnGameMode: jump table, 7 entries"
+
+[[data]]
+range = "PRG:0x01A0-0x01B1"
+why = "$81A0 gameMode_playAndEndingHighScore: jump table, 9 entries"
+
+[[data]]
+range = "PRG:0x01B7-0x01CE"
+why = "$81B7 branchOnPlayStatePlayer1: jump table, 12 entries"
+
+[[data]]
+range = "PRG:0x01DE-0x01F5"
+why = "$81DE branchOnPlayStatePlayer2: jump table, 12 entries (inside the unreachable range above)"
+
+[[data]]
+range = "PRG:0x24B6-0x24C3"
+why = "$A4B6 ending_typeBConcertPatchToPpuForHeight: jump table, 7 entries"
+
+[[data]]
+range = "PRG:0x2540-0x254B"
+why = "$A540 ending_typeBConcert: jump table, 6 entries"

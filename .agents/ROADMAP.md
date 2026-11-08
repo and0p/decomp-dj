@@ -73,6 +73,30 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   load without selecting another segment. MAX speed off the UI thread.
 
 ## Coverage
+- **Shipped: annotations.toml.** `[[unreachable]]`, `[[data]]` and `[[function]]` entries
+  with a `why`, replacing `unreachable.txt`. Data is skipped by the sweep and left out of
+  totals in both modes; code that runs inside an annotated range warns; `dj annotations`
+  lists and checks the entries. Tetris carries its unreachable two-player code and the
+  seven `switch_s_plus_2a` jump tables.
+- **Editing annotations in the GUI (later phase).** Right-click a map square or a range
+  in the Coverage tab to mark it unreachable or data, or to name or resize a function, and
+  write the entry (with a `why` prompt) to annotations.toml. Possibly a jump-table helper
+  that, given the `jsr`, works out the table's end from the words that follow.
+- **Find functions without a symbol map.** For games with no decomp or disassembly (most
+  NES games), generate a symbol map instead of requiring one. Seed a recursive-descent
+  disassembly from the reset, NMI and IRQ vectors and every `JSR` target, following branches
+  and jumps to find blocks and function bounds. Add the coverage flags: every byte flagged
+  as an executed opcode is a proven instruction start, and anything reached from one is
+  proven code, which resolves indirect jumps and inline jump tables (Tetris's
+  `switch_s_plus_2a`) that static analysis can only guess at. Everything else is "not
+  seen", neither code nor data. Output a map in the `csv` format with `auto_8161`-style
+  names, kept until a real map replaces it, and regenerate it as coverage grows (new
+  coverage can extend or split functions). Builds on `sweep_bounds_6502` and
+  `call_target_6502`. Related: a connector flag for ROM bytes read as data (0x04; Mesen's
+  code/data logger already tracks this), or importing Mesen `.cdl` files, to mark data
+  positively. splat is no help here: it is MIPS only (N64, PS1, PS2, PSP) and needs the
+  code/data split written by hand; its output is already readable via `[[symbols]]`. A
+  headless Ghidra export (CSV) is another source for larger systems.
 
 - **A coverage report that can be committed.** `dj report --write` (or a step of `dj run`)
   writes a `report/` folder in the project that goes into version control, so a
@@ -142,7 +166,7 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   - Recording which `dj` version last wrote a project, for bug reports.
 - **Backups without version control.** `dj backup <dir>` (and File > Back up… in
   the GUI) writes the project's shared files to a ZIP: `config.toml`, `segments/`,
-  `blobs/`, `symbols/` and `unreachable.txt`, never `.local/` (the database can be
+  `blobs/`, `symbols/` and `annotations.toml`, never `.local/` (the database can be
   rebuilt by cleaning) and never the ROM. `dj restore <zip> <dir>` puts them back,
   replacing `segments/` whole so deleted segments come back and new ones go. Useful
   before a big agent-driven edit or an experiment, for authors who don't use git.

@@ -14,9 +14,11 @@ use std::path::PathBuf;
 
 use crate::App;
 
-/// Same colors as docs/concepts.md: green covered, blue unreachable.
+/// Same colors as docs/concepts.md: green covered, blue unreachable, purple data.
 pub const COVERED: Color32 = Color32::from_rgb(92, 184, 92);
 pub const UNREACHABLE: Color32 = Color32::from_rgb(90, 140, 230);
+/// Bytes annotations.toml says are data, not code.
+pub const DATA: Color32 = Color32::from_rgb(150, 110, 190);
 /// New code not counted yet: run by unsaved segments (drafts too) or by the segment being
 /// played, and by no saved clean segment. It counts once saved (and clean).
 pub const LIVE: Color32 = Color32::from_rgb(214, 226, 110);
@@ -47,6 +49,8 @@ pub struct Cell {
     pub units: usize,
     pub covered: usize,
     pub unreachable: usize,
+    /// Bytes annotations.toml marks as data (none of them count).
+    pub data: usize,
     pub blocks: usize,
     pub blocks_covered: usize,
     /// Units only dirty segments ran (not counted, and not new in unsaved ones either).
@@ -124,7 +128,7 @@ fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
 
 /// A cell's fill: grey when nothing ran, green as more of it is covered (full green only
 /// at 100%), yellow-green where unsaved segments or live play add new code, dark faded green
-/// where only dirty segments ran it, blue when it is all unreachable.
+/// where only dirty segments ran it, blue when it is all unreachable, purple when all data.
 fn cell_color(c: &Cell, live_new: usize) -> Color32 {
     let base = counted_color(c);
     if c.units == 0 {
@@ -142,7 +146,13 @@ fn cell_color(c: &Cell, live_new: usize) -> Color32 {
 
 fn counted_color(c: &Cell) -> Color32 {
     if c.units == 0 {
-        return if c.unreachable > 0 { UNREACHABLE } else { EMPTY };
+        return if c.unreachable > 0 && c.unreachable >= c.data {
+            UNREACHABLE
+        } else if c.data > 0 {
+            DATA
+        } else {
+            EMPTY
+        };
     }
     if c.covered == 0 {
         EMPTY
@@ -150,6 +160,21 @@ fn counted_color(c: &Cell) -> Color32 {
         COVERED
     } else {
         mix(EMPTY, COVERED, 0.3 + 0.55 * c.covered as f32 / c.units as f32)
+    }
+}
+
+/// The annotations.toml entries over a cell, with why each is there.
+fn annotation_notes(ui: &mut egui::Ui, ann: &decomp_dj::annotations::Annotations, c: &Cell) {
+    use decomp_dj::annotations::Kind;
+    for e in ann.entries.iter().filter(|e| e.region == "PRG" && e.start < c.offset + c.size.max(1) && e.end >= c.offset) {
+        let (color, what) = match e.kind {
+            Kind::Unreachable => (UNREACHABLE, "unreachable".to_string()),
+            Kind::Data => (DATA, "data".to_string()),
+            Kind::Function if e.start == c.offset => (Color32::GRAY, format!("named {}", e.name.as_deref().unwrap_or(""))),
+            Kind::Function => continue,
+        };
+        let why = if e.why.is_empty() { String::new() } else { format!(": {}", e.why) };
+        ui.label(RichText::new(format!("{} {what}{why}", e.range_text())).small().color(color));
     }
 }
 
@@ -244,6 +269,7 @@ impl CovState {
                     units: row.instructions,
                     covered: row.instructions_covered,
                     unreachable: d.unreachable_per_function.get(i).copied().unwrap_or(0),
+                    data: (f.func.offset..f.func.offset + f.func.size).filter(|o| d.is_data(*o)).count(),
                     blocks: row.blocks,
                     blocks_covered: row.blocks_covered,
                     dirty: f.instructions.iter().filter(|ins| d.dirty_hit(ins.offset) && !d.hit(ins.offset) && !d.unsaved_hit(ins.offset)).count(),
@@ -260,8 +286,13 @@ impl CovState {
                 let cell = self.cells.len();
                 let mut covered = 0;
                 let mut unreachable = 0;
+                let mut data = 0;
                 let mut dirty = 0;
                 for o in off..end {
+                    if d.is_data(o) {
+                        data += 1;
+                        continue;
+                    }
                     if d.is_unreachable(o) {
                         unreachable += 1;
                         continue;
@@ -278,9 +309,10 @@ impl CovState {
                     offset: off,
                     size: end - off,
                     cpu_addr: None,
-                    units: (end - off) as usize - unreachable,
+                    units: (end - off) as usize - unreachable - data,
                     covered,
                     unreachable,
+                    data,
                     blocks: 0,
                     blocks_covered: 0,
                     dirty,
@@ -465,7 +497,7 @@ impl App {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
-                for (color, label) in [(COVERED, "covered"), (LIVE, "new, unsaved"), (DIRTY_ONLY, "dirty only"), (EMPTY, "never run"), (UNREACHABLE, "unreachable")] {
+                for (color, label) in [(COVERED, "covered"), (LIVE, "new, unsaved"), (DIRTY_ONLY, "dirty only"), (EMPTY, "never run"), (UNREACHABLE, "unreachable"), (DATA, "data")] {
                     let (rr, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
                     ui.painter().rect_filled(rr, 1.0, color);
                     ui.label(RichText::new(label).small().weak());
@@ -552,6 +584,10 @@ impl App {
                         if c.unreachable > 0 {
                             ui.label(RichText::new(format!("{} unreachable", c.unreachable)).color(UNREACHABLE));
                         }
+                        if c.data > 0 {
+                            ui.label(RichText::new(format!("{} bytes of data", c.data)).color(DATA));
+                        }
+                        annotation_notes(ui, &r.detail.annotations, c);
                     });
                 }
                 if resp.clicked() {
@@ -642,7 +678,7 @@ impl App {
             if t.unsaved_segments > 0 {
                 notes.push(format!("{} unsaved", t.unsaved_segments));
             }
-            if !notes.is_empty() || t.unreachable_instructions > 0 || !r.symbols {
+            if !notes.is_empty() || t.unreachable_instructions > 0 || t.data_bytes > 0 || !r.annotation_warnings.is_empty() || !r.symbols {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     if !notes.is_empty() {
@@ -650,7 +686,16 @@ impl App {
                             .on_hover_text("Only saved segments that aren't dirty and whose current content is in the local database count, as in `dj report`.");
                     }
                     if t.unreachable_instructions > 0 {
-                        ui.label(RichText::new(format!("{} unreachable", t.unreachable_instructions)).small().color(UNREACHABLE)).on_hover_text("Instructions inside unreachable.txt ranges, left out of the counts");
+                        ui.label(RichText::new(format!("{} unreachable", t.unreachable_instructions)).small().color(UNREACHABLE)).on_hover_text("Inside annotations.toml's [[unreachable]] ranges, left out of the counts");
+                    }
+                    if t.data_bytes > 0 {
+                        ui.label(RichText::new(format!("{} data bytes", t.data_bytes)).small().color(DATA)).on_hover_text("Inside annotations.toml's [[data]] ranges: never read as code or counted");
+                    }
+                    for w in &r.annotation_warnings {
+                        ui.label(RichText::new(format!("⚠ {} ran as code", w.entry)).small().color(Color32::from_rgb(230, 160, 60))).on_hover_text(match &self.col {
+                            Some(col) => w.text(col),
+                            None => format!("{} ({}) ran as code at {}", w.entry, w.range, w.at),
+                        });
                     }
                     if !r.symbols {
                         ui.label(RichText::new("No symbol map: counting opcode bytes").small().weak());

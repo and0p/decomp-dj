@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use crate::analysis::{self, AnalyzedFunction};
+use crate::annotations::{Annotations, Kind};
 use crate::collection::Collection;
 use crate::cache;
 use crate::collection::Status;
@@ -26,8 +27,11 @@ pub struct Totals {
     pub played_only_instructions_covered: usize,
     pub executed_bytes_by_region: BTreeMap<String, usize>,
     pub executed_outside_symbols: usize,
-    /// Instructions inside unreachable.txt ranges (left out of the counts above).
+    /// Instructions inside annotations.toml's `[[unreachable]]` ranges (left out of the
+    /// counts above).
     pub unreachable_instructions: usize,
+    /// PRG bytes inside `[[data]]` ranges: never read as code, never counted.
+    pub data_bytes: usize,
     /// Segments left out because they are dirty, or have not been played yet.
     pub dirty_segments: usize,
     pub unplayed_segments: usize,
@@ -67,6 +71,25 @@ pub struct FunctionRow {
     pub uncovered_blocks: Vec<String>,
 }
 
+#[derive(Serialize, Clone, Debug)]
+pub struct AnnotationWarning {
+    /// "data entry 3"
+    pub entry: String,
+    pub range: String,
+    /// The first offset that ran, as `PRG:0x...`.
+    pub at: String,
+    /// The segments that ran code there.
+    pub segments: Vec<String>,
+}
+
+impl AnnotationWarning {
+    pub fn text(&self, col: &Collection) -> String {
+        let names: Vec<String> = self.segments.iter().take(3).map(|id| col.replays.get(id.as_str()).map(|r| format!("\"{}\"", r.title())).unwrap_or_else(|| id.clone())).collect();
+        let more = if self.segments.len() > 3 { format!(" and {} more", self.segments.len() - 3) } else { String::new() };
+        format!("annotations.toml {} ({}) ran as code at {} in {}{more}", self.entry, self.range, self.at, names.join(", "))
+    }
+}
+
 #[derive(Serialize)]
 pub struct Report {
     /// The setup (ROM, core and options) the coverage was recorded with.
@@ -76,6 +99,9 @@ pub struct Report {
     pub replays: Vec<ReplayRow>,
     pub smallest_set: Vec<String>,
     pub functions: Vec<FunctionRow>,
+    /// Code that ran inside a `[[data]]` or `[[unreachable]]` range: the annotation is wrong,
+    /// or the segment does something the game can't.
+    pub annotation_warnings: Vec<AnnotationWarning>,
     /// What the report was worked out from, for views that need more than the rows (the GUI).
     #[serde(skip)]
     pub detail: Detail,
@@ -87,7 +113,7 @@ pub struct Report {
 #[derive(Default)]
 pub struct Detail {
     pub analyzed: Vec<AnalyzedFunction>,
-    /// Instructions of each analyzed function that unreachable.txt removed.
+    /// Instructions of each analyzed function that `[[unreachable]]` entries removed.
     pub unreachable_per_function: Vec<usize>,
     /// PRG flags of every segment that counts, OR'd together.
     pub prg: Vec<u8>,
@@ -99,8 +125,12 @@ pub struct Detail {
     pub unsaved_per_segment: BTreeMap<String, Vec<u8>>,
     /// Segments that count, with their PRG flags.
     pub per_segment_prg: BTreeMap<String, Vec<u8>>,
-    /// PRG ranges from unreachable.txt (inclusive).
+    /// PRG ranges of `[[unreachable]]` entries (inclusive).
     pub unreachable: Vec<(u64, u64)>,
+    /// PRG ranges of `[[data]]` entries (inclusive).
+    pub data: Vec<(u64, u64)>,
+    /// annotations.toml as read for this report.
+    pub annotations: Annotations,
 }
 
 impl Detail {
@@ -121,6 +151,15 @@ impl Detail {
 
     pub fn is_unreachable(&self, off: u64) -> bool {
         self.unreachable.iter().any(|(a, b)| off >= *a && off <= *b)
+    }
+
+    pub fn is_data(&self, off: u64) -> bool {
+        self.data.iter().any(|(a, b)| off >= *a && off <= *b)
+    }
+
+    /// The `[[data]]` or `[[unreachable]]` entry that covers PRG offset `off`.
+    pub fn annotation_at(&self, off: u64) -> Option<&crate::annotations::Entry> {
+        self.annotations.excluded_at("PRG", off)
     }
 }
 
@@ -210,24 +249,27 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
     if cov.is_empty() && unsaved_prg.is_empty() && dirty_prg.is_empty() {
         bail!("no segment has coverage recorded for its current content (was the core built with a coverage connector?); run `dj clean`");
     }
-    let unreachable = cache::load_unreachable(col)?;
-    let is_unreachable = |off: u64| unreachable.iter().any(|u| u.region == "PRG" && off >= u.start && off <= u.end);
+    let ann = Annotations::load(&col.root)?;
+    let unreachable = ann.ranges(Kind::Unreachable, "PRG");
+    let data = ann.ranges(Kind::Data, "PRG");
+    let in_ranges = |r: &[(u64, u64)], off: u64| r.iter().any(|(a, b)| off >= *a && off <= *b);
+    let is_unreachable = |off: u64| in_ranges(&unreachable, off);
+    let is_data = |off: u64| in_ranges(&data, off);
 
-    // Symbols -> analyzed functions (PRG only for now, 6502). With several symbol maps, the
-    // first one listed wins where two describe the same bytes.
+    // Symbols -> analyzed functions (PRG only for now, 6502), with annotations.toml's
+    // functions merged in and its data skipped.
     let mut analyzed: Vec<AnalyzedFunction> = vec![];
-    let mut taken: Vec<(u64, u64)> = vec![];
-    for s in &col.config.symbols {
-        let funcs = analysis::load_symbols(&col.root, s, rom)?;
-        let funcs: Vec<_> = funcs.into_iter().filter(|f| f.region == "PRG" && !taken.iter().any(|(a, b)| f.offset < *b && f.offset + f.size > *a)).collect();
-        if funcs.is_empty() {
-            continue;
-        }
-        taken.extend(funcs.iter().map(|f| (f.offset, f.offset + f.size)));
+    let funcs: Vec<_> = analysis::project_functions(col, rom, &ann)?.into_iter().filter(|(f, _)| f.region == "PRG").collect();
+    if !funcs.is_empty() {
         let Some(rom) = rom else { bail!("symbols need the ROM to disassemble") };
-        let header = s.rom_header.unwrap_or_else(|| analysis::default_rom_header(&s.format, Some(rom))) as usize;
-        let prg = &rom[header.min(rom.len())..];
-        analyzed.extend(analysis::analyze_6502(&funcs, prg));
+        let mut headers: Vec<u64> = funcs.iter().map(|(_, h)| *h).collect();
+        headers.sort();
+        headers.dedup();
+        for h in headers {
+            let these: Vec<_> = funcs.iter().filter(|(_, fh)| *fh == h).map(|(f, _)| f.clone()).collect();
+            let prg = &rom[(h as usize).min(rom.len())..];
+            analyzed.extend(analysis::analyze_6502_with(&these, prg, &data));
+        }
     }
     analyzed.sort_by_key(|f| f.func.offset);
     let symbols = !analyzed.is_empty();
@@ -241,13 +283,18 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
         unreachable_per_function.push(before - f.instructions.len());
     }
 
-    // Units of coverage: instruction offsets in PRG when we have symbols, else opcode bytes.
+    // Units of coverage: instruction offsets in PRG when we have symbols, else every PRG
+    // byte that isn't annotated as data or unreachable.
+    let prg_size = cov.values().filter_map(|m| m.get("PRG")).map(|f| f.len()).chain([unsaved_prg.len(), dirty_prg.len()]).max().unwrap_or(0) as u64;
     let units: Vec<u64> = if symbols {
         analyzed.iter().flat_map(|f| f.instructions.iter().map(|i| i.offset)).collect()
     } else {
-        let max = cov.values().filter_map(|m| m.get("PRG")).map(|f| f.len()).chain([unsaved_prg.len(), dirty_prg.len()]).max().unwrap_or(0);
-        (0..max as u64).collect()
+        (0..prg_size).filter(|o| !is_data(*o) && !is_unreachable(*o)).collect()
     };
+    let data_bytes = (0..prg_size).filter(|o| is_data(*o)).count();
+    if !symbols {
+        unreachable_instructions = (0..prg_size).filter(|o| is_unreachable(*o) && !is_data(*o)).count();
+    }
     let hit = |flags: Option<&Vec<u8>>, off: u64| flags.and_then(|f| f.get(off as usize)).map(|b| b & FLAG_OPCODE != 0).unwrap_or(false);
 
     // Unions.
@@ -388,8 +435,26 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
     let if_cleaned = units.iter().filter(|u| hit(Some(&dirty_prg), **u) && !hit(all_flags, **u) && !hit(Some(&unsaved_prg), **u)).count();
     if !symbols {
         ni = units.len();
-        nic = opcode_set(&all_prg).iter().filter(|b| **b).count();
-        npi = opcode_set(&played_prg).iter().filter(|b| **b).count();
+        nic = units.iter().filter(|u| hit(all_flags, **u)).count();
+        npi = units.iter().filter(|u| hit(Some(&played_prg), **u)).count();
+    }
+
+    // Code that ran where annotations.toml says none can: the first offset per entry, and
+    // every segment that counts that ran any of it.
+    let mut annotation_warnings = vec![];
+    for e in ann.entries.iter().filter(|e| e.region == "PRG" && e.kind != Kind::Function) {
+        let ran_in = |flags: &[u8]| (e.start..=e.end).find(|o| flags.get(*o as usize).is_some_and(|b| b & FLAG_OPCODE != 0));
+        let mut first: Option<u64> = None;
+        let mut segments = vec![];
+        for (id, regions) in &cov {
+            if let Some(o) = regions.get("PRG").and_then(|p| ran_in(p)) {
+                first = Some(first.map_or(o, |f| f.min(o)));
+                segments.push(id.clone());
+            }
+        }
+        if let Some(at) = first {
+            annotation_warnings.push(AnnotationWarning { entry: e.label(), range: e.range_text(), at: format!("PRG:{at:#06X}"), segments });
+        }
     }
 
     Ok(Report {
@@ -406,6 +471,7 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
             executed_bytes_by_region,
             executed_outside_symbols,
             unreachable_instructions,
+            data_bytes,
             dirty_segments,
             unplayed_segments,
             unsaved_segments,
@@ -415,6 +481,7 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
         replays,
         smallest_set,
         functions,
+        annotation_warnings,
         detail: Detail {
             analyzed,
             unreachable_per_function,
@@ -423,7 +490,9 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
             unsaved_prg,
             dirty_prg,
             unsaved_per_segment,
-            unreachable: unreachable.iter().filter(|u| u.region == "PRG").map(|u| (u.start, u.end)).collect(),
+            unreachable,
+            data,
+            annotations: ann,
         },
     })
 }
@@ -483,7 +552,14 @@ pub fn print_report(rep: &Report, col: &Collection) {
         println!("  +{} units the dirty segments ran when last played: they count once those are clean", t.if_cleaned);
     }
     if t.unreachable_instructions > 0 {
-        println!("  unreachable (unreachable.txt): {} instructions, not counted", t.unreachable_instructions);
+        let what = if rep.symbols { "instructions" } else { "bytes" };
+        println!("  unreachable (annotations.toml): {} {what}, not counted", t.unreachable_instructions);
+    }
+    if t.data_bytes > 0 {
+        println!("  data (annotations.toml): {} bytes, not counted", t.data_bytes);
+    }
+    for w in &rep.annotation_warnings {
+        println!("  warning: {}", w.text(col));
     }
     if rep.symbols {
         println!("  functions entered    {:>6} / {:<6} {}", t.functions_entered, t.functions, pct(t.functions_entered, t.functions));

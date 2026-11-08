@@ -288,6 +288,35 @@ pub fn load_symbols(root: &Path, cfg: &crate::collection::SymbolsConfig, rom: Op
     Ok(funcs)
 }
 
+/// Every function of every `[[symbols]]` map, with annotations.toml's `[[function]]`
+/// entries applied, each with the ROM header its map says to skip. Where two maps describe
+/// the same bytes of a region, the first one listed wins.
+pub fn project_functions(col: &crate::collection::Collection, rom: Option<&[u8]>, ann: &crate::annotations::Annotations) -> Result<Vec<(Function, u64)>> {
+    let mut funcs: Vec<(Function, u64)> = vec![];
+    for s in &col.config.symbols {
+        let header = s.rom_header.unwrap_or_else(|| default_rom_header(&s.format, rom));
+        for f in load_symbols(&col.root, s, rom)? {
+            if !funcs.iter().any(|(g, _)| g.region == f.region && f.offset < g.offset + g.size && g.offset < f.offset + f.size) {
+                funcs.push((f, header));
+            }
+        }
+    }
+    if !ann.entries.iter().any(|e| e.kind == crate::annotations::Kind::Function) {
+        return Ok(funcs);
+    }
+    let default_header = funcs.first().map(|(_, h)| *h).unwrap_or_else(|| default_rom_header("", rom));
+    let fixed = rom.and_then(FixedPrg::of_rom);
+    let headers: Vec<(String, u64, u64, u64)> = funcs.iter().map(|(f, h)| (f.region.clone(), f.offset, f.offset + f.size, *h)).collect();
+    let merged = ann.merge_functions(funcs.into_iter().map(|(f, _)| f).collect(), |region, off| if region == "PRG" { fixed.and_then(|m| m.cpu_of(off)) } else { None })?;
+    Ok(merged
+        .into_iter()
+        .map(|f| {
+            let h = headers.iter().find(|(r, a, b, _)| *r == f.region && f.offset >= *a && f.offset < *b).map_or(default_header, |x| x.3);
+            (f, h)
+        })
+        .collect())
+}
+
 /// Largest size given to a function whose size isn't known and that has no next symbol.
 const LAST_FUNCTION_MAX: u64 = 0x1000;
 
@@ -529,6 +558,12 @@ fn flow_6502(op: u8, bytes: &[u8], cpu: u64) -> Flow {
 /// Data embedded in a function's range can throw the sweep off; ca65 code keeps
 /// data in RODATA, so this is rarely a problem there.
 pub fn analyze_6502(funcs: &[Function], rom: &[u8]) -> Vec<AnalyzedFunction> {
+    analyze_6502_with(funcs, rom, &[])
+}
+
+/// `analyze_6502`, skipping `data` (inclusive offset ranges, such as jump tables from
+/// annotations.toml): the sweep starts again after each one, with a new block there.
+pub fn analyze_6502_with(funcs: &[Function], rom: &[u8], data: &[(u64, u64)]) -> Vec<AnalyzedFunction> {
     let mut out = vec![];
     for f in funcs {
         let mut insns = vec![];
@@ -546,10 +581,20 @@ pub fn analyze_6502(funcs: &[Function], rom: &[u8]) -> Vec<AnalyzedFunction> {
             }
         };
         while off < end {
+            if let Some(&(_, e)) = data.iter().find(|(a, b)| off >= *a && off <= *b) {
+                off = e + 1;
+                leaders.insert(off);
+                continue;
+            }
             let op = rom[off as usize];
             let len = op_len_6502(op);
             if off + len as u64 > end {
                 break;
+            }
+            // An instruction can't run on into data: the data starts where it would be.
+            if let Some(&(a, _)) = data.iter().filter(|(a, _)| *a > off && *a < off + len as u64).min() {
+                off = a;
+                continue;
             }
             insns.push(Instruction { offset: off, len });
             let bytes = &rom[off as usize..(off + len as u64) as usize];
@@ -906,6 +951,25 @@ mod tests {
         let a = &analyze_6502(&[f], &rom)[0];
         let starts: Vec<u64> = a.blocks.iter().map(|b| b.offset).collect();
         assert_eq!(starts, vec![0, 6, 9, 10]);
+    }
+
+    #[test]
+    fn sweep_skips_data() {
+        // C000 JSR $AC82; .word C009, C00B; C007 (two stray bytes) ; C009 INC $11; RTS; C00C DEC $11; RTS
+        // Read as code, the table's $09 $C0 would be ORA #$C0 and swallow the real code's start.
+        let rom = [0x20, 0x82, 0xAC, 0x09, 0xC0, 0x0C, 0xC0, 0x00, 0x00, 0xE6, 0x11, 0x60, 0xC6, 0x11, 0x60];
+        let f = Function { name: "f".into(), region: "PRG".into(), offset: 0, size: rom.len() as u64, cpu_addr: Some(0xC000) };
+        let a = &analyze_6502_with(std::slice::from_ref(&f), &rom, &[(3, 8)])[0];
+        let insns: Vec<u64> = a.instructions.iter().map(|i| i.offset).collect();
+        assert_eq!(insns, vec![0, 9, 11, 12, 14]);
+        let starts: Vec<u64> = a.blocks.iter().map(|b| b.offset).collect();
+        assert_eq!(starts, vec![0, 9, 12]);
+        // Data starting inside an instruction cuts it off there.
+        let a = &analyze_6502_with(std::slice::from_ref(&f), &rom, &[(1, 8)])[0];
+        assert_eq!(a.instructions.iter().map(|i| i.offset).collect::<Vec<_>>(), vec![9, 11, 12, 14]);
+        // Without the annotation the sweep reads the table as code.
+        let a = &analyze_6502(&[f], &rom)[0];
+        assert!(a.instructions.iter().any(|i| i.offset == 3));
     }
 
     fn temp(name: &str, text: &str) -> std::path::PathBuf {

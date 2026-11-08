@@ -827,11 +827,21 @@ impl RollState {
                             }
                         }
                         None => {
-                            // An empty cell: a drag selects an area; a click adds a press here.
+                            // An empty cell: a drag draws a press as long as the drag (a click
+                            // makes one as long as the last); with Shift or Alt a drag selects
+                            // an area instead (as Ctrl/Cmd+drag does anywhere).
                             let f = frame_at(p.x);
                             let cell = row_here.filter(|_| f < m.frames && ff_at(p.x) >= 0.0).map(|(gi, ri)| (gi, ri, f));
-                            let a = (ff_at(p.x), p.y - rows_top + self.scroll_y);
-                            self.gesture = Some(Gesture::Marquee { a, b: a, op, cell });
+                            match cell.filter(|_| !mods.shift && !mods.alt) {
+                                Some((group, row, f)) => {
+                                    self.sel.clear();
+                                    self.drag = Some(Drag { group, row, anchor: f, current: f, moved: false });
+                                }
+                                None => {
+                                    let a = (ff_at(p.x), p.y - rows_top + self.scroll_y);
+                                    self.gesture = Some(Gesture::Marquee { a, b: a, op, cell });
+                                }
+                            }
                         }
                     }
                 } else if let Some(ix) = hit(p) {

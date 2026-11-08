@@ -136,5 +136,5 @@ From the command line:
 
 In the GUI, the segment tree shows clean (green) and dirty (orange) dots. Reaching a
 segment's last frame [records its hashes](#recording-hashes) as an unsaved change.
-**Segment > Clean all segments** (or **Clean this and below** on a segment's menu) does
+**Project > Clean all segments** (or **Clean this and below** on a segment's menu) does
 the same for every segment that isn't clean, top down.

@@ -28,19 +28,11 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   database or `.local/`) or just for the session; and how it works while recording (likely
   re-recording over the loop each pass, with overwrite on). Jumping back to A uses the
   nearest snapshot, so the comparison core re-syncs at A each pass.
-- **Replay everything as a pausable list play.** Segment > Replay everything runs as a
-  one-off job today. Make it ordinary playback in **List** end mode, started from frame 0 of
-  the first root segment (the first branch in tree order), so it can be paused, resumed and
-  watched like any other playback, and the transport's controls work on it.
 - **Rewinding up the chain.** Stepping or seeking back past frame 0 goes into the
   parent's last frames (loading a snapshot of the parent, from memory or the local
   database), and playing forward from there follows the sticky segments back down. A
   possible next step is one timeline across the whole chain, with the segment
   boundaries drawn on the ruler.
-- **Drag to draw in the piano roll.** Today a click makes a press as long as the
-  last one made or resized, and a drag on empty space selects. Holding the button down
-  on an empty cell and dragging could set the new press's length instead, with
-  selecting moved to a modifier or to drags that start outside the rows.
 - **A file watcher instead of polling.** The GUI learns about drafts, sessions and the
   shared view by fingerprinting `.local/` about once a second, so following an agent shows
   one step in several (a 60-frame `step` takes about 100 ms at 500 to 700 fps) and new
@@ -65,10 +57,18 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   (side-by-side comparison), an A|B toggle picks which core you hear.
 - **More ways to join.** Merge into children (copy the parent's frames onto the front of every child, then remove
   the parent: no hash changes, but the frames are duplicated). (Join a chain is done:
-  Segment > Join chain….)
+  Edit > Join chain….)
 - **Instead of deleting,** merge a segment into its children, or move its children up to the
   grandparent, which turns everything below dirty.
 - **Moving segments** to another parent from the GUI.
+- **Focus on tagged segments.** The tree filters by tag (`#tag`, the **#** menu) and can show
+  what's below the matches. Still open: a Focus-like view of every segment with a tag at
+  once (Focus here takes one segment), clearing the tag filter as it focuses.
+- **Menu follow-ups.** The menus are regrouped (File, Edit, View, Project, Emulation, MCP).
+  Placeholders still to fill: File > Options… (the GUI preferences in `.local/local.toml`,
+  with Keyboard mapping maybe folded in) and Project > Project settings… (the
+  project-related settings of `config.toml` and `local.toml`). Later, View toggles to hide or
+  show the major parts of the window.
 - **Back and forward, like a browser.** A history of where you've been, as segment and
   frame: selecting another segment (in the tree, the Coverage tab's "First runs in", a
   marker, a search), or a seek far enough to count as a jump, pushes the place you left.
@@ -164,6 +164,19 @@ When one ships, its user-facing description moves into `docs/` and the entry her
 
 ## Project and CLI
 
+- **Snapshot and memory profiles for common consoles.** `[cache]` has presets for NES and
+  N64 only ([config.md](../docs/config.md#cache-optional)). Add tuned presets (page size, snapshot
+  interval, previews, and `exclude` ranges once they're applied) for the other common
+  consoles: SNES, Game Boy / Color, Game Boy Advance, Genesis / Mega Drive, Master System,
+  PC Engine, PlayStation, Nintendo DS. Measure each core's save-state size and how much of
+  it changes per frame to pick the values, and choose the preset from the core or the
+  project's system by default.
+- **Connectors for the best core of the 10 most popular consoles.** Only Mesen (NES) has a
+  connector today ([connectors.md](../docs/connectors.md)). For each of the ten most
+  popular consoles, pick the best libretro core the way Mesen was picked for the NES (the
+  best balance of accuracy and speed, with deterministic save states and a debugger to
+  hook execution into), then write its connector. First step: the list of consoles and the
+  chosen core for each, with the reasons.
 - **Versioning projects.** A project should say which version of the format and the
   tools it needs, and the tools should handle the difference both ways. Today
   `config.toml` has `format = 1` and `dj-replay 1` heads each segment, and older

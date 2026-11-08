@@ -220,7 +220,7 @@ diff_every = 300
 | --- | --- | --- |
 | `rom` | none | Path to the ROM (short for `[rom] path`). Set by `--rom`, remembered after the first use. |
 | `core` | none | Path to the core library (short for `[core] path`). Set by `--core`, remembered after the first use. |
-| `database` | `true` | `false` plays without the local database, like `--no-db` on every command. The GUI's Emulation > Use the local database writes it. |
+| `database` | `true` | `false` plays without the local database, like `--no-db` on every command. The GUI's Project > Use the local database writes it. |
 | `max_memory_mb` | `512` | How much memory the GUI's in-memory snapshots for the current segment may use (Emulation > Snapshot memory). |
 | `[cache]` | none | Any key from `config.toml`'s `[cache]`, overriding it on this machine only. |
 | `[keyboard]`, `[record]` | defaults | The GUI's recording keys and options ([gui.md](gui.md#recording)). |

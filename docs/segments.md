@@ -73,7 +73,7 @@ end-hash: 71ee…
 | `start-hash` | no | State hash at frame 0, before any input ([state hashes](playback.md#state-hashes)). |
 | `end-hash` | no | State hash after the last frame. |
 | `checkpoint` | no | Repeatable: `checkpoint: <frame> <hash>`. The state hash at the start of frame `<frame>`, before that frame's lines apply (so `checkpoint: 0` would equal `start-hash`). Narrows down where a run diverged. Editors check checkpoints while playing and keep the ones before an edit. |
-| `tags` | no | Space-separated free tags (`boss`, `rng-forced`, …). |
+| `tags` | no | Space-separated free tags (`boss`, `rng-forced`, …). The GUI sets them in Properties and filters the tree by them. |
 
 A root segment with neither `snapshot` nor `sram` is a cold boot with no save data.
 

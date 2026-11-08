@@ -162,8 +162,10 @@ struct App {
     job: Option<Job>,
     texture: Option<egui::TextureHandle>,
     tree_closed: HashSet<String>,
-    /// Tree filter text: matches title, id or tags.
+    /// Tree filter text: matches title, id or tags; `#tag` matches that tag exactly.
     filter: String,
+    /// While filtering, also show everything below each match.
+    filter_below: bool,
     /// Which list the left sidebar shows.
     side_tab: SideTab,
     /// The Coverage tab and live coverage.
@@ -271,7 +273,7 @@ struct App {
     /// Real-time recording: playback was running when rewind was pressed, so it carries on
     /// forward when rewind is let go.
     rec_resume: bool,
-    /// Input > Keyboard mapping…
+    /// File > Keyboard mapping…
     mapping: Option<record::MappingDialog>,
     /// The comparison core (docs/gui.md#comparison-cores), if one is selected and loaded.
     compare: Option<Comparison>,
@@ -391,6 +393,8 @@ struct NodeDialog {
     id: String,
     title: String,
     frames: u64,
+    /// Space-separated tags.
+    tags: String,
     /// A root segment: it may start from a snapshot and a save file.
     root: bool,
     /// The save file (`sram:`) and the snapshot (`snapshot:`) a root segment starts from.
@@ -446,6 +450,7 @@ impl Default for App {
             texture: None,
             tree_closed: HashSet::new(),
             filter: String::new(),
+            filter_below: false,
             side_tab: SideTab::Segments,
             cov: cov::CovState::default(),
             marker_filter: String::new(),
@@ -684,6 +689,19 @@ fn trim_snapshots(snaps: &mut BTreeMap<u64, Vec<u8>>, at: u64, budget: u64) {
             total -= v.len() as u64;
         }
     }
+}
+
+/// `id` and every segment below it, borrowed from the collection.
+fn subtree_ids<'a>(col: &'a Collection, id: &str) -> Vec<&'a str> {
+    let Some((k, _)) = col.replays.get_key_value(id) else { return vec![] };
+    let mut out = vec![k.as_str()];
+    let mut i = 0;
+    while i < out.len() {
+        let kids = col.children(Some(out[i]));
+        out.extend(kids);
+        i += 1;
+    }
+    out
 }
 
 fn subtree(col: &Collection, id: &str) -> Vec<String> {
@@ -1815,6 +1833,32 @@ impl App {
         })
     }
 
+    /// Replay everything: ordinary playback in List mode from frame 0 of the first segment in
+    /// tree order (the focused segment, if the tree is focused), so it can be paused and watched.
+    fn replay_everything(&mut self) {
+        let Some(col) = &self.col else { return };
+        let first = match self.hoist.as_deref().filter(|h| col.replays.contains_key(*h)) {
+            Some(h) => Some(h.to_string()),
+            None => col.tree_order().first().map(|(id, _)| id.to_string()),
+        };
+        let Some(first) = first else {
+            self.info("No segments to replay");
+            return;
+        };
+        self.end_mode = EndMode::List;
+        self.route.clear();
+        self.route_target = None;
+        if self.selected.as_deref() != Some(first.as_str()) {
+            self.select(&first);
+        }
+        self.seek(0);
+        self.roll.follow_to(0);
+        self.playing = true;
+        self.clock = 0.0;
+        let what = if self.hoist.is_some() { "the focused branch" } else { "every segment" };
+        self.info(format!("Replaying {what} in List mode at {}: pause with Space, or pick MAX speed to go fastest. Changed endings are marked !.", SPEEDS[self.speed].1));
+    }
+
     /// List mode, at the end of a segment: go on to the next segment in tree order (within
     /// the focused branch, if the tree is focused), straight on into it when it is a child of
     /// this one, otherwise from its parent's end state.
@@ -2853,7 +2897,7 @@ impl App {
         col.replays.insert(id.clone(), r);
         self.edited.insert(id.clone());
         self.hoist = None;
-        self.info("Added a 600-frame root segment that starts from power-on. Change its title, length and save file with Segment > Properties.");
+        self.info("Added a 600-frame root segment that starts from power-on. Change its title, length and save file with Edit > Properties….");
         self.select(&id);
         self.open_node_dialog(&id);
     }
@@ -2923,7 +2967,7 @@ impl App {
         col.replays.insert(id.clone(), r);
         self.edited.insert(id.clone());
         self.tree_closed.remove(parent);
-        self.info("Added a 600-frame segment. Change its title and length with Segment > Properties.");
+        self.info("Added a 600-frame segment. Change its title and length with Edit > Properties….");
         self.select(&id);
         self.open_node_dialog(&id);
     }
@@ -3003,6 +3047,7 @@ impl App {
             id: id.to_string(),
             title: r.title().to_string(),
             frames: r.frames().unwrap_or(0),
+            tags: r.get("tags").unwrap_or_default().to_string(),
             root: r.parent().is_none(),
             sram: StartFile::of(r, "sram"),
             snapshot: StartFile::of(r, "snapshot"),
@@ -3026,7 +3071,10 @@ impl App {
         let changed: Vec<(&str, &StartFile, Option<String>)> =
             starts.iter().filter(|_| d.root).map(|(f, sf)| (*f, *sf, sf.blob_after())).filter(|(f, _, b)| b.as_deref() != r.get(f)).collect();
         let start_changed = !changed.is_empty();
-        if d.title.trim() == r.title() && d.frames == old_frames && !start_changed {
+        let mut seen = HashSet::new();
+        let tags = d.tags.split_whitespace().filter(|t| seen.insert(t.to_lowercase())).collect::<Vec<_>>().join(" ");
+        let tags_changed = tags != r.get("tags").unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");
+        if d.title.trim() == r.title() && d.frames == old_frames && !start_changed && !tags_changed {
             return Ok(());
         }
         if !self.remember("Segment properties", &[&d.id]) {
@@ -3040,6 +3088,14 @@ impl App {
         }
         let r = col.replays.get_mut(&d.id).ok_or_else(|| anyhow!("segment is gone"))?;
         r.set("title", d.title.trim());
+        if tags_changed {
+            // Tags change no state: nothing to replay.
+            if tags.is_empty() {
+                r.remove_all("tags");
+            } else {
+                r.set("tags", &tags);
+            }
+        }
         self.edited.insert(d.id.clone());
         if start_changed {
             // A new start state: nothing recorded for this segment holds any more, from its
@@ -3194,7 +3250,7 @@ impl App {
                 self.discard_dialog = Some(what);
             }
         }
-        // One confirmation for Segment > Delete and the tree's right-click Delete.
+        // One confirmation for Edit > Delete and the tree's right-click Delete.
         if let Some(ask) = self.save_dialog.take() {
             let mut open = true;
             let (mut clean, mut save, mut close) = (false, false, false);
@@ -3397,6 +3453,10 @@ impl App {
                     ui.label("Title");
                     ui.add(egui::TextEdit::singleline(&mut d.title).desired_width(320.0));
                     ui.end_row();
+                    ui.label("Tags");
+                    ui.add(egui::TextEdit::singleline(&mut d.tags).hint_text("space-separated, e.g. chapter-2 town").desired_width(320.0))
+                        .on_hover_text("Free tags, separated by spaces. Filter the tree by one with #tag in the filter box, or the tag menu beside it");
+                    ui.end_row();
                     ui.label("Frames");
                     ui.add(egui::DragValue::new(&mut d.frames).range(1..=10_000_000).speed(10.0));
                     ui.end_row();
@@ -3542,6 +3602,11 @@ impl App {
                     self.discard_guard(Discard::Reload);
                 }
                 ui.separator();
+                ui.add_enabled(false, egui::Button::new("Options…")).on_disabled_hover_text("Coming: your GUI preferences from .local/local.toml in one window");
+                if ui.button("Keyboard mapping…").on_hover_text("Keys for recording inputs from the keyboard").clicked() {
+                    self.mapping = Some(record::MappingDialog::new(&self.bindings));
+                }
+                ui.separator();
                 if ui.button("Quit").clicked() {
                     self.discard_guard(Discard::Quit);
                 }
@@ -3573,60 +3638,7 @@ impl App {
                 if ui.add_enabled(self.selected.is_some(), egui::Button::new("Select all").shortcut_text(sc(Modifiers::COMMAND, Key::A))).on_hover_text("Select every press of the selected segment in the piano roll").clicked() {
                     self.roll.select_all();
                 }
-            }));
-            bar.push(ui.menu_button("Emulation", |ui| {
-                let has = self.pb.is_some();
-                if ui.add_enabled(has, egui::Button::new(if self.playing { "Pause" } else { "Play" }).shortcut_text("Space")).clicked() {
-                    self.toggle_play();
-                }
-                if ui.add_enabled(has, egui::Button::new("Step forward").shortcut_text("Right arrow")).clicked() {
-                    self.step_by(1);
-                }
-                if ui.add_enabled(has, egui::Button::new("Step back").shortcut_text("Left arrow")).clicked() {
-                    self.step_by(-1);
-                }
-                if ui.add_enabled(has, egui::Button::new("Go to start").shortcut_text("Home")).clicked() {
-                    self.playing = false;
-                    self.seek(0);
-                    self.roll.follow_to(0);
-                }
-                if ui.add_enabled(has, egui::Button::new("Go to end").shortcut_text("End")).clicked() {
-                    self.playing = false;
-                    let end = self.pb.as_ref().map_or(0, |p| p.frames.saturating_sub(1));
-                    self.seek(end);
-                    self.roll.follow_to(end);
-                }
                 ui.separator();
-                ui.separator();
-                let idle = self.hydrating.is_none();
-                let mut use_db = self.col.as_ref().and_then(|c| c.settings().ok()).and_then(|l| l.database).unwrap_or(true);
-                if ui.add_enabled(self.col.is_some() && idle, egui::Checkbox::new(&mut use_db, "Use the local database")).keep_open().on_hover_text("Off: play from power-on and keep snapshots only in memory, as before the database existed").changed() {
-                    self.set_database(use_db);
-                }
-                // Clicking the submenu's own button leaves the menu open, as egui does by default.
-                ui.menu_button(format!("Snapshot memory: {} MB", self.max_memory_mb), |ui| {
-                    for mb in [128, 256, 512, 1024, 2048, 4096] {
-                        if ui.radio(self.max_memory_mb == mb, format!("{mb} MB")).clicked() {
-                            self.set_max_memory(mb);
-                        }
-                    }
-                })
-                .response
-                .keep_open();
-                ui.separator();
-                let has_col = self.col.is_some();
-                if ui.add_enabled(has_col, egui::Button::new("Set ROM…")).clicked() {
-                    if let Some(f) = rfd::FileDialog::new().set_title("Choose the ROM").pick_file() {
-                        self.set_local(Some(f), None);
-                    }
-                }
-                if ui.add_enabled(has_col, egui::Button::new("Set core…")).clicked() {
-                    if let Some(f) = rfd::FileDialog::new().set_title("Choose the libretro core").add_filter("libretro core", &["so", "dylib", "dll"]).pick_file() {
-                        self.set_local(None, Some(f));
-                    }
-                }
-            }));
-            bar.push(ui.menu_button("Segment", |ui| {
                 let sel = self.selected.clone();
                 let has = sel.is_some() && self.pb.is_some();
                 if ui.add_enabled(has, egui::Button::new("New child at end")).on_hover_text("A new empty segment that starts where this one ends").clicked() {
@@ -3668,31 +3680,6 @@ impl App {
                 if ui.add_enabled(sel.is_some(), egui::Button::new("Delete…")).on_hover_text("Delete this segment and everything below it").clicked() {
                     self.delete_dialog = sel.clone();
                 }
-                ui.separator();
-                let db_on = self.session.as_ref().is_some_and(|s| s.cache.is_some());
-                let idle = self.hydrating.is_none();
-                if ui
-                    .add_enabled(db_on && idle, egui::Button::new("Clean all segments"))
-                    .on_hover_text("Play, top down, every segment that isn't clean or whose content isn't in the local database yet, and record the hashes it reaches (as reaching a segment's end does). Changed endings are marked ! for you to check. Results are unsaved changes.")
-                    .on_disabled_hover_text("Needs the local database")
-                    .clicked()
-                {
-                    self.start_verify(None, Clean::Fill);
-                }
-                if ui
-                    .add_enabled(db_on && idle, egui::Button::new("Replay everything"))
-                    .on_hover_text("Clean all segments, but play every segment again, even those the local database has stored: a check that they still end as recorded (after a core update, say)")
-                    .on_disabled_hover_text("Needs the local database")
-                    .clicked()
-                {
-                    self.start_verify(None, Clean::Everything);
-                }
-            }));
-            bar.push(ui.menu_button("MCP", |ui| self.agent_menu(ui)));
-            bar.push(ui.menu_button("Input", |ui| {
-                if ui.button("Keyboard mapping…").on_hover_text("Keys for recording inputs from the keyboard").clicked() {
-                    self.mapping = Some(record::MappingDialog::new(&self.bindings));
-                }
             }));
             bar.push(ui.menu_button("View", |ui| {
                 if ui.button("Zoom in").clicked() {
@@ -3705,6 +3692,79 @@ impl App {
                 ui.checkbox(&mut self.return_to_edit, "Return to the edit").keep_open().on_hover_text("Any edit pauses playback and shows the earliest frame edited since you last played or moved the playhead. Off: the frame you were on is redrawn.");
                 ui.checkbox(&mut self.roll.all_buttons, "Show every joypad button").keep_open();
             }));
+            bar.push(ui.menu_button("Project", |ui| {
+                let db_on = self.session.as_ref().is_some_and(|s| s.cache.is_some());
+                let idle = self.hydrating.is_none();
+                if ui
+                    .add_enabled(db_on && idle, egui::Button::new("Clean all segments"))
+                    .on_hover_text("Play, top down, every segment that isn't clean or whose content isn't in the local database yet, and record the hashes it reaches (as reaching a segment's end does). Changed endings are marked ! for you to check. Results are unsaved changes.")
+                    .on_disabled_hover_text("Needs the local database")
+                    .clicked()
+                {
+                    self.start_verify(None, Clean::Fill);
+                }
+                if ui
+                    .add_enabled(self.col.is_some() && idle, egui::Button::new("Replay everything"))
+                    .on_hover_text("Play every segment again from frame 0 of the first root segment (or of the focused segment), in List mode, as ordinary playback you can pause, watch and speed up: a check that they still end as recorded (after a core update, say). Changed endings are marked !")
+                    .clicked()
+                {
+                    self.replay_everything();
+                }
+                ui.separator();
+                let mut use_db = self.col.as_ref().and_then(|c| c.settings().ok()).and_then(|l| l.database).unwrap_or(true);
+                if ui.add_enabled(self.col.is_some() && idle, egui::Checkbox::new(&mut use_db, "Use the local database")).keep_open().on_hover_text("Off: play from power-on and keep snapshots only in memory, as before the database existed").changed() {
+                    self.set_database(use_db);
+                }
+                self.compare_menu(ui);
+                ui.separator();
+                let has_col = self.col.is_some();
+                if ui.add_enabled(has_col, egui::Button::new("Set ROM…")).clicked() {
+                    if let Some(f) = rfd::FileDialog::new().set_title("Choose the ROM").pick_file() {
+                        self.set_local(Some(f), None);
+                    }
+                }
+                if ui.add_enabled(has_col, egui::Button::new("Set core…")).clicked() {
+                    if let Some(f) = rfd::FileDialog::new().set_title("Choose the libretro core").add_filter("libretro core", &["so", "dylib", "dll"]).pick_file() {
+                        self.set_local(None, Some(f));
+                    }
+                }
+                ui.add_enabled(false, egui::Button::new("Project settings…")).on_disabled_hover_text("Coming: edit the project's config.toml and its local.toml settings here");
+            }));
+            bar.push(ui.menu_button("Emulation", |ui| {
+                let has = self.pb.is_some();
+                if ui.add_enabled(has, egui::Button::new(if self.playing { "Pause" } else { "Play" }).shortcut_text("Space")).clicked() {
+                    self.toggle_play();
+                }
+                if ui.add_enabled(has, egui::Button::new("Step forward").shortcut_text("Right arrow")).clicked() {
+                    self.step_by(1);
+                }
+                if ui.add_enabled(has, egui::Button::new("Step back").shortcut_text("Left arrow")).clicked() {
+                    self.step_by(-1);
+                }
+                if ui.add_enabled(has, egui::Button::new("Go to start").shortcut_text("Home")).clicked() {
+                    self.playing = false;
+                    self.seek(0);
+                    self.roll.follow_to(0);
+                }
+                if ui.add_enabled(has, egui::Button::new("Go to end").shortcut_text("End")).clicked() {
+                    self.playing = false;
+                    let end = self.pb.as_ref().map_or(0, |p| p.frames.saturating_sub(1));
+                    self.seek(end);
+                    self.roll.follow_to(end);
+                }
+                ui.separator();
+                // Clicking the submenu's own button leaves the menu open, as egui does by default.
+                ui.menu_button(format!("Snapshot memory: {} MB", self.max_memory_mb), |ui| {
+                    for mb in [128, 256, 512, 1024, 2048, 4096] {
+                        if ui.radio(self.max_memory_mb == mb, format!("{mb} MB")).clicked() {
+                            self.set_max_memory(mb);
+                        }
+                    }
+                })
+                .response
+                .keep_open();
+            }));
+            bar.push(ui.menu_button("MCP", |ui| self.agent_menu(ui)));
         });
         let open = bar.iter().any(|r| r.inner.is_some());
         let on_bar = bar.iter().any(|r| r.response.clicked());
@@ -3734,7 +3794,7 @@ impl App {
             let hint = if parent_clean {
                 "Stale: its parent's end state changed. Play it to the end to record its new hashes (a changed ending gets a !)."
             } else {
-                "Stale: a segment above it changed and isn't clean yet. Clean that one first (or use Segment > Clean all segments)."
+                "Stale: a segment above it changed and isn't clean yet. Clean that one first (or use Project > Clean all segments)."
             };
             return Some(roll::DirtyBand { from: 0, color, hint: hint.to_string() });
         }
@@ -3743,7 +3803,7 @@ impl App {
         let hint = if parent_clean {
             format!("Unrecorded from frame {from} on: its hashes aren't recorded. Play to the end to record them.")
         } else {
-            format!("Unrecorded from frame {from} on, and its parent isn't clean: clean that first, or use Segment > Clean all segments.")
+            format!("Unrecorded from frame {from} on, and its parent isn't clean: clean that first, or use Project > Clean all segments.")
         };
         Some(roll::DirtyBand { from, color, hint })
     }
@@ -3873,11 +3933,34 @@ impl App {
                 fold = Some(true);
             }
             ui.add_space(2.0);
+            let mut all_tags: BTreeMap<String, usize> = BTreeMap::new();
+            for r in col.replays.values() {
+                // Case-insensitive, like the filter: "Town" and "town" are one tag, counted once a segment.
+                let mine: BTreeSet<String> = r.get("tags").unwrap_or_default().split_whitespace().map(str::to_lowercase).collect();
+                for t in mine {
+                    *all_tags.entry(t).or_default() += 1;
+                }
+            }
+            let tag_btn = egui::Button::new(RichText::new("#").strong()).min_size(egui::vec2(20.0, 20.0)).selected(self.filter.trim().starts_with('#') || self.filter_below);
+            egui::containers::menu::MenuButton::from_button(tag_btn).ui(ui, |ui| {
+                if all_tags.is_empty() {
+                    ui.label(RichText::new("No tags yet. Add them in a segment's Properties.").weak());
+                }
+                for (t, n) in &all_tags {
+                    let on = self.filter.trim().eq_ignore_ascii_case(&format!("#{t}"));
+                    if ui.selectable_label(on, format!("#{t}  ({n})")).clicked() {
+                        self.filter = if on { String::new() } else { format!("#{t}") };
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                ui.checkbox(&mut self.filter_below, "Show what's below the matches").on_hover_text("While filtering, also show every segment below each match, not only the path down to it");
+            }).0.on_hover_text("Filter by tag");
             if !self.filter.is_empty() && ui.small_button("✖").on_hover_text("Clear the filter").clicked() {
                 self.filter.clear();
             }
             let w = ui.available_width();
-            ui.add(egui::TextEdit::singleline(&mut self.filter).id_salt("tree_filter").hint_text("Filter: title, id or tag").desired_width(w));
+            ui.add(egui::TextEdit::singleline(&mut self.filter).id_salt("tree_filter").hint_text("Filter: title, id, tag or #tag").desired_width(w));
         });
         match fold {
             // Collapse every segment that has children, below the focused segment if there is one,
@@ -3901,10 +3984,13 @@ impl App {
         } else {
             let mut m = HashSet::new();
             let mut sh = HashSet::new();
+            let tag = needle.strip_prefix('#');
             for (id, r) in &col.replays {
-                let hit = r.title().to_lowercase().contains(&needle)
-                    || id.to_lowercase().starts_with(&needle)
-                    || r.get("tags").is_some_and(|t| t.split_whitespace().any(|t| t.to_lowercase().contains(&needle)));
+                let mut tags = r.get("tags").unwrap_or_default().split_whitespace().map(str::to_lowercase);
+                let hit = match tag {
+                    Some(t) => tags.any(|x| x == t),
+                    None => r.title().to_lowercase().contains(&needle) || id.to_lowercase().starts_with(&needle) || tags.any(|x| x.contains(&needle)),
+                };
                 let chain = col.chain(id).unwrap_or_default();
                 if hit && hoist.is_none_or(|h| chain.contains(&h)) {
                     m.insert(id.as_str());
@@ -3912,6 +3998,10 @@ impl App {
                         sh.insert(a);
                     }
                 }
+            }
+            if self.filter_below {
+                let below: Vec<&str> = m.iter().flat_map(|id| subtree_ids(col, id)).collect();
+                sh.extend(below);
             }
             (m, sh)
         };
@@ -3991,7 +4081,7 @@ impl App {
                         ui.label(RichText::new("!").strong().color(CHANGED)).on_hover_text("Its ending changed since it was last saved. Save to keep it, or undo.");
                     }
                     let mut title = RichText::new(r.title());
-                    if filtering && !matches.contains(id) {
+                    if filtering && !matches.contains(id) && !(self.filter_below && col.chain(id).is_ok_and(|c| c.iter().any(|a| matches.contains(a)))) {
                         title = title.weak();
                     }
                     let is_draft = col.is_draft(id);
@@ -4106,6 +4196,16 @@ impl App {
                         if ui.button("Properties…").clicked() {
                             context = Some((id.to_string(), "props"));
                         }
+                        let my_tags: BTreeSet<String> = r.get("tags").unwrap_or_default().split_whitespace().map(str::to_lowercase).collect();
+                        if !my_tags.is_empty() {
+                            ui.menu_button("Filter by tag", |ui| {
+                                for t in &my_tags {
+                                    if ui.button(format!("#{t}")).clicked() {
+                                        context = Some((format!("#{t}"), "tagfilter"));
+                                    }
+                                }
+                            });
+                        }
                         let (save_why, revert_why) = one_why.get(id as &str).copied().unwrap_or(none_why);
                         if ui.add_enabled(save_why.is_none(), egui::Button::new("Save")).on_hover_text("Write only this segment's file; other unsaved edits stay unsaved").on_disabled_hover_text(save_why.unwrap_or("")).clicked() {
                             context = Some((id.to_string(), "saveone"));
@@ -4211,6 +4311,7 @@ impl App {
             Some((_, "root")) => self.new_root(),
             Some((id, "joinchain")) => self.chain_dialog = Some((id, true)),
             Some((id, "dup")) => self.ask_duplicate(&id),
+            Some((tag, "tagfilter")) => self.filter = tag,
             Some((id, "saveone")) => self.save_one(&id),
             Some((id, "revert")) => self.revert_one(&id),
             Some((id, "child")) => {
@@ -4683,7 +4784,7 @@ impl App {
     fn start_verify(&mut self, scope: Option<String>, how: Clean) {
         let Some(col) = &self.col else { return };
         if self.session.as_ref().is_none_or(|s| s.cache.is_none()) {
-            self.error("Cleaning needs the local database (Emulation > Use the local database).");
+            self.error("Cleaning needs the local database (Project > Use the local database).");
             return;
         }
         let what = match &scope {
@@ -5038,6 +5139,31 @@ impl App {
                 });
             }
         });
+    }
+
+    /// Project > Comparison core: the same choice as the Compare dropdown.
+    fn compare_menu(&mut self, ui: &mut egui::Ui) {
+        let names: Vec<String> = self.col.as_ref().map(|c| c.config.compare.iter().map(|e| e.name.clone()).collect()).unwrap_or_default();
+        let busy = self.hydrating.is_some() || self.job.is_some();
+        let cur = self.compare.as_ref().map(|c| c.name.clone());
+        let mut pick = None;
+        ui.add_enabled_ui(!names.is_empty() && !busy, |ui| {
+            ui.menu_button(format!("Comparison core: {}", cur.as_deref().unwrap_or("none")), |ui| {
+                if ui.radio(cur.is_none(), "None").clicked() && cur.is_some() {
+                    pick = Some(None);
+                }
+                for n in &names {
+                    if ui.radio(cur.as_ref() == Some(n), n).clicked() && cur.as_ref() != Some(n) {
+                        pick = Some(Some(n.clone()));
+                    }
+                }
+            })
+            .response
+            .on_disabled_hover_text(if names.is_empty() { "The project has no [[compare]] entries" } else { "Busy: wait for the clean or seek to finish" });
+        });
+        if let Some(p) = pick {
+            self.select_compare(p);
+        }
     }
 
     /// Compare (pick a comparison core) and Run comparison. Nothing when the project has no

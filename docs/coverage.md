@@ -127,13 +127,14 @@ is clean and saved.
 **Coverage tab.** The project's coverage from the local database, the same numbers as
 `dj report`, and a function list that sorts by ROM order, most uncovered, least covered or
 name. Click a row (or a square on the map) to see the function's uncovered blocks and the
-segments where it first runs; click one of those to go to that segment and frame. Only the
-best one shows at first (clean before dirty, then the shallowest segment, then the earliest
-frame, the order `xref` uses); "and N more" opens the rest in a scrolling list, with a
+segments where it runs, each with the first frame it runs there; click one to go to that
+segment and frame. The line reads "Runs in N segments; nearest the top: <segment>, from
+frame F", naming the best one (clean before dirty, then the shallowest segment, then the
+earliest frame, the order `xref` uses); "All N" opens every one in a scrolling list, with a
 filter by segment title when there are more than 20. The
 report reads the segments in the editor, saved or not, so deleting an unsaved segment takes
 its coverage with it. It is rebuilt after any edit, undo, save, finished pass or clean, which takes milliseconds at NES
-sizes. Coverage needs the local database to be on (Emulation > Use the local database).
+sizes. Coverage needs the local database to be on (Project > Use the local database).
 
 **Tree badges.** In the Segments tab, "+N" after a segment is how many instructions only
 that segment runs.

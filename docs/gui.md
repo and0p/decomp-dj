@@ -42,11 +42,11 @@ they add. File > Save moves them into `segments/` with any edits you made, excep
 still open in an agent session; Delete removes one (its file goes when you save). Right-click
 a draft that is open in a session to follow it.
 
-- Click a segment to go to it; double-click to play it. Right-click for the [Segment menu](editing.md#segment-menu) and **Clean this and below**.
-- The filter box at the top matches titles, id prefixes and tags, and shows each match with the path down to it (the path is dimmed).
+- Click a segment to go to it; double-click to play it. Right-click for the [segment editing menu](editing.md#segment-editing) and **Clean this and below**.
+- The filter box at the top matches titles, id prefixes and tags, and shows each match with the path down to it (the path is dimmed). `#tag` matches only segments with exactly that tag. The **#** button beside it lists every tag with its count (click one to filter by it) and has **Show what's below the matches**, which also shows every segment below each match. Right-click a tagged segment for **Filter by tag**. Tags are set in a segment's Properties (space-separated, any segment, roots included).
 - Indentation only steps in where a segment has more than one child. An only child stays in its parent's column, joined to it by a short line, so a long chain stays one column however deep it goes. The third icon (a stepped tree) switches to indenting every level, which reads better for small trees. The two icons before it collapse or expand every segment; Collapse all keeps the focused segment open.
 - **Sticky segments**: the tree remembers the deepest segment you've been in. Going back up its chain highlights the chain above the selection, and the segments below it that lead back to the deepest one are highlighted faintly with faded titles. Next and the end button follow those even where a segment has several children. Selecting a segment off that chain starts a new one.
-- **+ New root segment** below the tree, or right-click on its empty space, adds a segment with no parent ([editing.md](editing.md#segment-menu)).
+- **+ New root segment** below the tree, or right-click on its empty space, adds a segment with no parent ([editing.md](editing.md#segment-editing)).
 - Right-click > **Focus here** shows only that segment and what is below it. A breadcrumb bar above the filter shows the path to it (long paths fold the middle into a "… N" menu); click any crumb to focus there, or **All** for the whole tree. The filter searches inside the focused part only.
 
 ## Markers tab
@@ -74,7 +74,7 @@ Below the picture, left to right:
 
 Record mode writes what you hold on the keyboard into the piano roll. It is a mode you switch on and off with the record button (or Escape to stop), separate from playing or paused: switching it on doesn't start playback. While it is on, the button is red with a white circle, the transport and the roll's ruler are tinted red and the picture has a red frame. It is off on an agent's read-only draft.
 
-**Keys.** Input > Keyboard mapping… (also in the ▾ menu) sets a key for each button of the controller being recorded, and the two recording keys, Commit (frame by frame only) and Rewind. Click a key, then press the new one. The defaults are WASD for the d-pad, J = B, K = A, U = Select, I = Start, Space = Commit and Backspace = Rewind; X, Y, L and R have no key until you give them one. The keys are saved per machine in `[keyboard]` in `.local/local.toml`. While recording, these keys go to the game: the GUI's own single-key shortcuts (arrows, Home, End, E, Enter, the roll's Delete) are off, and only Escape, Space as play/pause in real time, and Ctrl/Cmd shortcuts such as undo and save stay live.
+**Keys.** File > Keyboard mapping… (also in the ▾ menu) sets a key for each button of the controller being recorded, and the two recording keys, Commit (frame by frame only) and Rewind. Click a key, then press the new one. The defaults are WASD for the d-pad, J = B, K = A, U = Select, I = Start, Space = Commit and Backspace = Rewind; X, Y, L and R have no key until you give them one. The keys are saved per machine in `[keyboard]` in `.local/local.toml`. While recording, these keys go to the game: the GUI's own single-key shortcuts (arrows, Home, End, E, Enter, the roll's Delete) are off, and only Escape, Space as play/pause in real time, and Ctrl/Cmd shortcuts such as undo and save stay live.
 
 **Options** (the ▾ beside the record button, saved in `[record]` in `.local/local.toml`):
 
@@ -118,13 +118,12 @@ lines. The project lists them as `[[compare]]` entries ([config.md](config.md#co
 
 | Menu | Holds |
 | --- | --- |
-| File | Open project…, Save (Ctrl/Cmd+S): writes every unsaved segment and moves drafts into `segments/`; when that would leave segments dirty it offers **Clean, then save** or **Save anyway**. Clean, then save saves at once only if the clean changed no ending; otherwise it stops with the changed endings marked **!** and offers **Save**, **Save anyway** or **Review first**, so nothing unreviewed is saved without asking. Save selected segment (writes only that segment's file), Revert selected segment (drops only its unsaved changes and puts back its file; undo brings them back), Reload all from disk (every segment, dropping all unsaved edits), Quit. With unsaved edits, Open, Reload all and Quit (also the window's close button) ask first: **Save and …**, **Discard and …** or **Cancel**. Drafts nobody edited here don't count: they stay in `.local/drafts/`. |
-| Edit | Undo, Redo, Cut, Copy, Paste at play cursor ([editing.md](editing.md#undo-cut-copy-and-paste)), Select all (Ctrl/Cmd+A: every press in the piano roll) |
-| MCP | Enable MCP (off by default), Show agent drafts, follow an agent session, Stop following, Share my view with agents ([mcp.md](mcp.md#the-gui)) |
-| Emulation | Play/pause, step, go to start or end, Use the local database, Snapshot memory, Set ROM…, Set core… ([database.md](database.md#in-the-gui)) |
-| Segment | Tree edits and Add event at playhead (E) ([editing.md](editing.md#segment-menu)); at the end, Clean all segments and Replay everything ([database.md](database.md#in-the-gui)) |
-| Input | Keyboard mapping… ([below](#recording)) |
+| File | Open project…, Save (Ctrl/Cmd+S): writes every unsaved segment and moves drafts into `segments/`; when that would leave segments dirty it offers **Clean, then save** or **Save anyway**. Clean, then save saves at once only if the clean changed no ending; otherwise it stops with the changed endings marked **!** and offers **Save**, **Save anyway** or **Review first**, so nothing unreviewed is saved without asking. Save selected segment (writes only that segment's file), Revert selected segment (drops only its unsaved changes and puts back its file; undo brings them back), Reload all from disk (every segment, dropping all unsaved edits), Options… (not yet: GUI preferences), Keyboard mapping… ([below](#recording)), Quit. With unsaved edits, Open, Reload all and Quit (also the window's close button) ask first: **Save and …**, **Discard and …** or **Cancel**. Drafts nobody edited here don't count: they stay in `.local/drafts/`. |
+| Edit | Undo, Redo, Cut, Copy, Paste at play cursor ([editing.md](editing.md#undo-cut-copy-and-paste)), Select all (Ctrl/Cmd+A: every press in the piano roll); then the segment edits and Add event at playhead (E) ([editing.md](editing.md#segment-editing)) |
 | View | Zoom in, Zoom out, Follow playhead, Return to the edit ([editing.md](editing.md#return-to-the-edit)), Show every joypad button |
+| Project | Clean all segments, Replay everything, Use the local database ([database.md](database.md#in-the-gui)), Comparison core (the same choice as the Compare dropdown), Set ROM…, Set core…, Project settings… (not yet) |
+| Emulation | Play/pause, step, go to start or end, Snapshot memory |
+| MCP | Enable MCP (off by default), Show agent drafts, follow an agent session, Stop following, Share my view with agents ([mcp.md](mcp.md#the-gui)) |
 
 ## Limits
 

@@ -165,7 +165,7 @@ pub enum Slot {
     Rewind,
 }
 
-/// Input > Keyboard mapping…: edits a copy of the bindings.
+/// File > Keyboard mapping…: edits a copy of the bindings.
 pub struct MappingDialog {
     pub draft: Bindings,
     /// The slot waiting for a key press.

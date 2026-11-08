@@ -59,14 +59,16 @@ saved yet aren't in it.
 
 ## In the GUI
 
-The end of the Segment menu has **Clean all segments** and **Replay everything**. Cleaning
+The Project menu has **Clean all segments** and **Replay everything**. Cleaning
 plays, top down, the segments that aren't clean or whose content isn't stored yet, and
 [records their hashes](playback.md#recording-hashes) as unsaved changes (so it works with
 edits open, and Save keeps the result). A clean segment whose content is stored is passed
 over without playing. It carries on down the tree through changed endings, marking each
 with **!**; segments below one that couldn't be cleaned are skipped. Drafts are cleaned
 too, except those still open in an agent session. **Replay everything** plays every
-segment again, stored or not: a check after a core update, say.
+segment again, stored or not, as a check after a core update, say. It is ordinary playback
+in **List** end mode from frame 0 of the first root segment (or of the focused segment), so
+it can be paused, watched and sped up (MAX is fastest); changed endings are marked **!**.
 Right-click in the tree for **Clean this and below**. A clean shows every 4th frame in the
 picture, with a progress bar and **Pause** and **Stop** in the status bar. Selecting,
 seeking and playing wait until it ends. Segments finished before a stop stay stored.

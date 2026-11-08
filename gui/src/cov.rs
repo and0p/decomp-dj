@@ -216,7 +216,7 @@ impl CovState {
         self.hits = None;
         let Some(c) = &s.cache else {
             self.report = None;
-            self.error = Some("Coverage needs the local database (Emulation > Use the local database).".into());
+            self.error = Some("Coverage needs the local database (Project > Use the local database).".into());
             return;
         };
         if self.rom.as_ref().is_none_or(|(p, _)| *p != s.rom_path) {
@@ -239,7 +239,7 @@ impl CovState {
                 self.unique.clear();
                 let msg = format!("{e:#}");
                 self.error = Some(if msg.contains("run `dj clean`") {
-                    "No coverage recorded yet. Clean the project (Segment > Clean all segments) to record which code each segment runs.".into()
+                    "No coverage recorded yet. Clean the project (Project > Clean all segments) to record which code each segment runs.".into()
                 } else {
                     msg
                 });
@@ -664,7 +664,7 @@ impl App {
                     }
                     if t.if_cleaned > 0 {
                         ui.label(RichText::new(format!("+{} if cleaned", t.if_cleaned)).small().color(DIRTY_ONLY.gamma_multiply(1.6)))
-                            .on_hover_text("Code only dirty segments ran, the last time each played. It counts once they are clean again (Segment > Clean all segments), if they still run it.");
+                            .on_hover_text("Code only dirty segments ran, the last time each played. It counts once they are clean again (Project > Clean all segments), if they still run it.");
                     }
                 });
             }
@@ -737,17 +737,18 @@ impl App {
                         let link = |ui: &mut egui::Ui, h: &FirstHit, lead: &str| -> bool {
                             let title = crate::col_title(col, &h.id);
                             let dirty = if h.status == decomp_dj::collection::Status::Dirty { "  (dirty)" } else { "" };
-                            ui.link(RichText::new(format!("{lead}{title}, frame {}{dirty}", h.frame)).small())
-                                .on_hover_text(format!("Go to this segment at that frame (depth {})", h.depth))
+                            ui.link(RichText::new(format!("{lead}{title}, from frame {}{dirty}", h.frame)).small())
+                                .on_hover_text(format!("Go to the first frame of this segment where it runs (depth {} in the tree)", h.depth))
                                 .clicked()
                         };
                         let first = &hits[0];
-                        if link(ui, first, "First runs in ") {
+                        let lead = if hits.len() == 1 { "Runs in ".to_string() } else { format!("Runs in {} segments; nearest the top: ", hits.len()) };
+                        if link(ui, first, &lead) {
                             go = Some(FirstHit { id: first.id.clone(), frame: first.frame, offset: first.offset, status: first.status, depth: first.depth });
                         }
-                        let rest = &hits[1..];
-                        if !rest.is_empty() {
-                            egui::CollapsingHeader::new(RichText::new(format!("and {} more", rest.len())).small())
+                        let rest = &hits[..];
+                        if hits.len() > 1 {
+                            egui::CollapsingHeader::new(RichText::new(format!("All {}", rest.len())).small())
                                 .id_salt(("first_hits_more", i))
                                 .default_open(false)
                                 .show(ui, |ui| {

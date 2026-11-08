@@ -71,9 +71,9 @@ Edits stay in memory until File > Save (Ctrl/Cmd+S). Edited segments show in yel
 italics in the tree until then. Open, Reload and Quit ask before they drop unsaved edits,
 offering to save them first.
 
-### Segment menu
+### Segment editing
 
-The Segment menu, and right-click in the tree, offer:
+The Edit menu (below Undo, Cut, Copy, Paste and Select all), and right-click in the tree, offer:
 
 - **Play to here** (right-click only): plays through to the end of that segment, on from the playhead if the current segment is on the way, otherwise from the first segment below where the two paths meet.
 - **New child at end**.
@@ -104,10 +104,10 @@ their controller's header.
 - Click or drag on the ruler to seek.
 - **Neighbours.** Left of frame 0 the roll shows the end of the parent segment, and past the last frame the start of the next one (the sticky segment, or the only child), faded and read-only, with their titles in the marker lane and their own frame numbers on the ruler. Clicking or dragging there does nothing. Only stepping (the arrow keys or the step buttons), playing on, or the start and end buttons cross the boundary, and that switches over fully: the other segment becomes the selected one, so it can be edited. The view stays put as you cross. No edit ever spans two segments.
 - There is one editing mode (hover the ⓘ in the roll's toolbar for a summary):
-    - Click an empty cell to add a press as long as the last press made or resized (4 frames to begin with).
+    - Click an empty cell to add a press as long as the last press made or resized (4 frames to begin with), or drag from an empty cell to draw a press as long as the drag.
     - Drag a press to move it in time, and drag either edge to lengthen or shorten it (only while at most one press is selected; the grab zone is a thin strip on the edge). Plain drags never change rows.
     - Transpose (move presses to another button row of the same controller) only on purpose: hold Alt (Option on a Mac) while dragging, or press Alt+Up / Alt+Down with presses selected.
-    - Click selects a press; Shift+click adds or removes it. Drag on empty space to select an area (with Shift it adds, with Shift+Alt it removes).
+    - Click selects a press; Shift+click adds or removes it. To select an area, Ctrl/Cmd+drag (anywhere), or Shift+drag from empty space to add to the selection (Shift+Alt+drag removes); a drag on a controller's header row or past the last frame selects too.
     - Right-click a press, or press Delete, to remove it. Escape clears the selection, and Cmd+A (Ctrl+A elsewhere, also Edit > Select all) selects every press of the segment, unless a text field has focus. Presses that end up overlapping merge into one. Holding a drag near either end of the roll scrolls it.
 
 ### Return to the edit

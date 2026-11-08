@@ -1,10 +1,12 @@
-# The libretro core: the port (../port) plus this wrapper.
+# The libretro core: the decomp (../decomp), drawn by the 3D port (../port),
+# plus this wrapper.
 #
-#   make                 builds tetris_libretro.so (.dylib on macOS, .dll on
-#                        Windows) in ../../build/decomp, i.e. examples/tetris/build/decomp
+#   make                 builds tetris_decomp_libretro.so (.dylib on macOS,
+#                        .dll on Windows) in ../../build/decomp, that is
+#                        examples/tetris/build/decomp
 #   make BUILD=dir       builds in dir instead
 #
-# Needs a C99 compiler and pthreads.
+# Needs a C11 compiler.
 
 CC ?= cc
 CFLAGS ?= -O2
@@ -22,25 +24,30 @@ else
   SHARED := -shared
 endif
 
-CORE := $(BUILD)/tetris_libretro.$(EXT)
-PORT_LIB := $(BUILD)/port/libtetris.a
-WRAP_CFLAGS := $(CFLAGS) -std=c99 -Wall -Wextra -fPIC -fvisibility=hidden -I../port/include -D_POSIX_C_SOURCE=200809L
+ABS := $(abspath $(BUILD))
+CORE := $(BUILD)/tetris_decomp_libretro.$(EXT)
+DECOMP_LIB := $(BUILD)/decomp/libtetris.a
+PORT_LIB := $(BUILD)/port/libtetris_port.a
+WRAP_CFLAGS := $(CFLAGS) -std=c11 -Wall -Wextra -fPIC -fvisibility=hidden -I../port/include -I../decomp/include
 
-$(CORE): $(BUILD)/tetris_libretro.o $(BUILD)/nes.o $(PORT_LIB)
-	$(CC) $(SHARED) -o $@ $^ -lpthread -lm
+$(CORE): $(BUILD)/tetris_libretro.o $(PORT_LIB) $(DECOMP_LIB)
+	$(CC) $(SHARED) -o $@ $^ -lm
 
-$(BUILD)/%.o: %.c nes.h libretro_api.h ../port/include/tetris/port.h ../port/include/tetris/hw.h | $(BUILD)
+$(BUILD)/tetris_libretro.o: tetris_libretro.c libretro_api.h $(wildcard ../port/include/tetris/*.h ../decomp/include/tetris/*.h) | $(BUILD)
 	$(CC) $(WRAP_CFLAGS) -c $< -o $@
 
-# The port is built by its own Makefile, with position-independent code for the shared library.
+# The libraries are built by their own Makefiles, position-independent for the shared library.
+$(DECOMP_LIB): FORCE | $(BUILD)
+	$(MAKE) -C ../decomp BUILD=$(ABS)/decomp CFLAGS="$(CFLAGS) -fPIC -fvisibility=hidden"
+
 $(PORT_LIB): FORCE | $(BUILD)
-	$(MAKE) -C ../port BUILD=$(abspath $(BUILD))/port CFLAGS="$(CFLAGS) -fPIC"
+	$(MAKE) -C ../port BUILD=$(ABS)/port CFLAGS="$(CFLAGS) -fPIC -fvisibility=hidden" $(ABS)/port/libtetris_port.a
 
 $(BUILD):
 	mkdir -p $@
 
 clean:
-	rm -rf $(BUILD)/port $(BUILD)/*.o $(CORE)
+	rm -rf $(BUILD)/decomp $(BUILD)/port $(BUILD)/*.o $(CORE)
 
 FORCE:
 .PHONY: clean FORCE

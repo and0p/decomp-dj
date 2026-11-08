@@ -41,7 +41,12 @@
 #define RETRO_ENVIRONMENT_EXPERIMENTAL 0x10000
 #define RETRO_ENVIRONMENT_SET_PIXEL_FORMAT 10
 #define RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS 11
+#define RETRO_ENVIRONMENT_GET_VARIABLE 15
+#define RETRO_ENVIRONMENT_SET_VARIABLES 16
+#define RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE 17
+#define RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME 18
 #define RETRO_ENVIRONMENT_GET_LOG_INTERFACE 27
+#define RETRO_ENVIRONMENT_SET_GEOMETRY 37
 #define RETRO_ENVIRONMENT_SET_MEMORY_MAPS (36 | RETRO_ENVIRONMENT_EXPERIMENTAL)
 #define RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS 44
 
@@ -56,6 +61,11 @@ enum retro_log_level { RETRO_LOG_DEBUG = 0, RETRO_LOG_INFO, RETRO_LOG_WARN, RETR
 typedef void (*retro_log_printf_t)(enum retro_log_level level, const char *fmt, ...);
 struct retro_log_callback {
     retro_log_printf_t log;
+};
+
+struct retro_variable {
+    const char *key;
+    const char *value;
 };
 
 struct retro_input_descriptor {

@@ -43,3 +43,8 @@ device = "JOYPAD"
 [hash]
 algorithm = "blake3"
 regions = ["RAM"]
+
+[[compare]]
+name = "decomp (3D)"
+sync = "dj_sync"
+content = false

@@ -209,6 +209,17 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   Next: Vulkan (the negotiation interface, `ash`, MoltenVK on macOS), then maybe OpenGL ES
   through EGL, Windows (WGL), and asynchronous readback (PBOs) or showing the texture
   directly if readback costs too much at high internal resolutions.
+- **Portable `[[compare]]` entries.** config.toml is shared and may be published, but a
+  comparison core's `path` names one machine's file (`cores/foo.dylib`), and the same core
+  is `.so` on Linux and `.dll` on Windows. Keep machine-specific parts out of the shared
+  entry: config.toml carries `name`, `sync`, `options`, `build` and `sha256`, and each
+  machine's `.local/local.toml` adds `path` (entries already merge by `name`). Options: a
+  `path` without an extension, with the platform's suffix added (`cores/foo` finds
+  `foo_libretro.dylib`/`.so`/`.dll`); per-platform paths (`path.macos`, `path.linux`); and
+  `sha256` per platform, since builds differ. `dj` could warn when config.toml holds an
+  absolute or platform-specific path, and an entry with no `path` here would show in the
+  Compare dropdown as "not set up on this machine" instead of failing on pick. The same
+  applies to `[core] path`.
 - **Later:** the comparison core in the CLI and MCP (`dj parity`), its coverage, sound
   (an A|B toggle), and more than one comparison core at a time.
 - **To discuss: emulator vs decomp mismatches.** When the decomp core and the

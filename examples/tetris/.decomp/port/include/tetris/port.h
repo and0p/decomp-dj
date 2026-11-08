@@ -1,41 +1,33 @@
 /*
- * The Tetris (NES) port: what a frontend sees.
+ * The port: draws the decomp's game in 3D, at any resolution.
  *
- * The port is the game's logic in C. It owns the game's 2 KB of RAM, laid out
- * exactly as on the NES, and talks to hardware only through the functions in
- * hw.h, which a frontend provides. A frontend (the libretro core in
- * ../../libretro, or anything else) supplies the PRG ROM, runs tetris_reset()
- * on a thread or coroutine of its own, and calls tetris_nmi() at the start of
- * each vertical blank while NMIs are enabled (PPUCTRL bit 7, which the game
- * writes through hw_write).
+ * The playfield's squares and the pieces are bevelled cubes, the walls
+ * around the playfield are boxes as deep as the cubes, and the text of every
+ * screen floats where the original shows it, as letters a little deep. The
+ * blocks take the original's colours for the level. Backgrounds and the
+ * menus' pictures are left out, and there is no sound.
+ *
+ *     tetris_port_draw(&game, pixels, 640, 480, 640);
+ *
+ * draws the state in `game` (as tetris_tick left it) into 32-bit 0x00RRGGBB
+ * pixels, `pitch` pixels apart from row to row. Any size up to
+ * TETRIS_PORT_MAX_PIXELS works; the picture keeps square pixels and fits the
+ * NES screen's 4:3 area in the middle.
  */
 #ifndef TETRIS_PORT_H
 #define TETRIS_PORT_H
 
 #include <stdint.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include "tetris/scene.h"
+#include "tetris/tetris.h"
 
-/* The game's RAM ($0000-$07FF), byte for byte as on the NES. */
-extern uint8_t tetris_ram[0x800];
+#define TETRIS_PORT_MAX_PIXELS (1280 * 960)
 
-/* Give the port the 32 KB of PRG ROM (CPU $8000-$FFFF) from the player's own
- * dump. The port reads its tables, nametables and music from it; the C source
- * carries no ROM data. Must be called before tetris_reset(). */
-void tetris_set_prg(const uint8_t *prg32k);
+/* Returns 0, or 1 when the size is out of range (nothing is drawn). */
+int tetris_port_draw(const struct tetris *t, uint32_t *pixels, int width, int height, int pitch);
 
-/* The reset vector: boots the game and runs its main loop. Never returns.
- * Whenever the game waits for time to pass it calls hw_idle(). */
-void tetris_reset(void);
-
-/* The NMI vector, run at the start of vertical blanking when PPUCTRL bit 7
- * is set: renders, steps the RNG and reads the controllers. */
-void tetris_nmi(void);
-
-#ifdef __cplusplus
-}
-#endif
+/* Draws an already built scene (the software rasteriser). */
+int tetris_port_draw_scene(const struct tetris_scene *s, uint32_t *pixels, int width, int height, int pitch);
 
 #endif

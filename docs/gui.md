@@ -66,17 +66,17 @@ Below the picture, left to right:
 - **●▶** goes to the next marker in this segment. Both marker buttons are off when there is no marker that way.
 - **⏭** (end) goes to the last frame; pressed again at the end, it goes on into a child segment, carrying straight on from the current state: the sticky segment, or the only child, or, with several, it opens the list. The ▾ beside it lists every child at any time (faint when there is only one). At the end of a segment with no children it is off.
 - The **end-of-segment dropdown** picks what playback does at the end of a segment. **Stop** stops. **Loop** plays the segment again from frame 0. **Next** (the default) carries on into the sticky segment or the only child, saved or not, unless an agent session has it open. **List** carries on down the segment list in tree order (whether folded or filtered out) to the end of the list, or to the end of the focused branch, so playing a root segment in List mode plays the whole tree. Each option has a tooltip. Below them, **Stop at a changed ending** (off by default) pauses at the end of a segment whose end hash just came out different from its saved file (**!**), before the segments below replay, so the edit can be undone; play again to go on. It stops only at the first one in a run, not at every segment below it.
-- **● Rec** turns [record mode](#recording) on and off; the ▾ beside it holds the recording options.
+- The **record button** (a red circle) turns [record mode](#recording) on and off; the ▾ beside it holds the recording options.
 - Speed: a dropdown of 0.1×, 0.25×, 0.5×, 1×, 2×, 4×, 8× and MAX, with − and + beside it.
 - Reaching a segment's last frame [records its hashes](playback.md#recording-hashes) as an unsaved change. A pass that runs from frame 0 to the end without a jump or an edit also fills the local database, as cleaning does: snapshots, previews, coverage and first hits. A pass broken by a jump or an edit keeps the snapshots it took. The label beside the transport says the segment's status.
 
 ## Recording
 
-Record mode writes what you hold on the keyboard into the piano roll. It is a mode you switch on and off with **● Rec** (or Escape to stop), separate from playing or paused: switching it on doesn't start playback. While it is on, the button is red, the transport and the roll's ruler are tinted red and the picture has a red frame. It is off on an agent's read-only draft.
+Record mode writes what you hold on the keyboard into the piano roll. It is a mode you switch on and off with the record button (or Escape to stop), separate from playing or paused: switching it on doesn't start playback. While it is on, the button is red with a white circle, the transport and the roll's ruler are tinted red and the picture has a red frame. It is off on an agent's read-only draft.
 
-**Keys.** Input > Keyboard mapping… (also in the ▾ menu) sets a key for each button of the controller being recorded, and the two frame-by-frame keys, Commit and Rewind. Click a key, then press the new one. The defaults are WASD for the d-pad, J = B, K = A, U = Select, I = Start, Space = Commit and Backspace = Rewind; X, Y, L and R have no key until you give them one. The keys are saved per machine in `[keyboard]` in `.local/local.toml`. While recording, these keys go to the game: the GUI's own single-key shortcuts (arrows, Home, End, E, Enter, the roll's Delete) are off, and only Escape, Space as play/pause in real time, and Ctrl/Cmd shortcuts such as undo and save stay live.
+**Keys.** Input > Keyboard mapping… (also in the ▾ menu) sets a key for each button of the controller being recorded, and the two recording keys, Commit (frame by frame only) and Rewind. Click a key, then press the new one. The defaults are WASD for the d-pad, J = B, K = A, U = Select, I = Start, Space = Commit and Backspace = Rewind; X, Y, L and R have no key until you give them one. The keys are saved per machine in `[keyboard]` in `.local/local.toml`. While recording, these keys go to the game: the GUI's own single-key shortcuts (arrows, Home, End, E, Enter, the roll's Delete) are off, and only Escape, Space as play/pause in real time, and Ctrl/Cmd shortcuts such as undo and save stay live.
 
-**Options** (the ▾ beside **● Rec**, saved in `[record]` in `.local/local.toml`):
+**Options** (the ▾ beside the record button, saved in `[record]` in `.local/local.toml`):
 
 | Option | Default | What it does |
 | --- | --- | --- |
@@ -88,7 +88,9 @@ Record mode writes what you hold on the keyboard into the piano roll. It is a mo
 
 **Frame by frame.** Commit writes the buttons held to the next frame and steps to it; held, it keeps committing at the playback speed after a short delay (0.1× is there for this). Rewind steps back one frame without changing anything, unless it clears (above); held, it keeps going back.
 
-**Undo and hashes.** One recording pass is one undo step: from Record on to off in real time, or one press or hold of Commit or Rewind frame by frame. Recording is an edit like any other: the segment loses its end hash and later checkpoints, and turns dirty until it is played to its end. Playback isn't paused for it ([return to the edit](editing.md#return-to-the-edit) doesn't apply while recording).
+**Rewind in real time.** Rewind works the same way while recording in real time: it pauses, steps back one frame (or keeps going back at the playback speed while held), clearing as it goes if set, and when it is let go recording carries on forward from there if it was playing.
+
+**Undo and hashes.** One recording pass is one undo step: from Record on to off in real time (a rewind starts a new step), or one press or hold of Commit or Rewind frame by frame. Recording is an edit like any other: the segment loses its end hash and later checkpoints, and turns dirty until it is played to its end. Playback isn't paused for it ([return to the edit](editing.md#return-to-the-edit) doesn't apply while recording).
 
 ## Comparison cores
 
@@ -116,7 +118,7 @@ lines. The project lists them as `[[compare]]` entries ([config.md](config.md#co
 
 | Menu | Holds |
 | --- | --- |
-| File | Open project…, Save (Ctrl/Cmd+S): writes every unsaved segment and moves drafts into `segments/`; when that would leave segments dirty it offers **Clean, then save** or **Save anyway**. Clean, then save saves at once only if the clean changed no ending; otherwise it stops with the changed endings marked **!** and offers **Save**, **Save anyway** or **Review first**, so nothing unreviewed is saved without asking. Reload from disk, Quit. With unsaved edits, Open, Reload and Quit (also the window's close button) ask first: **Save and …**, **Discard and …** or **Cancel**. Drafts nobody edited here don't count: they stay in `.local/drafts/`. |
+| File | Open project…, Save (Ctrl/Cmd+S): writes every unsaved segment and moves drafts into `segments/`; when that would leave segments dirty it offers **Clean, then save** or **Save anyway**. Clean, then save saves at once only if the clean changed no ending; otherwise it stops with the changed endings marked **!** and offers **Save**, **Save anyway** or **Review first**, so nothing unreviewed is saved without asking. Save selected segment (writes only that segment's file), Revert selected segment (drops only its unsaved changes and puts back its file; undo brings them back), Reload all from disk (every segment, dropping all unsaved edits), Quit. With unsaved edits, Open, Reload all and Quit (also the window's close button) ask first: **Save and …**, **Discard and …** or **Cancel**. Drafts nobody edited here don't count: they stay in `.local/drafts/`. |
 | Edit | Undo, Redo, Cut, Copy, Paste at play cursor ([editing.md](editing.md#undo-cut-copy-and-paste)), Select all (Ctrl/Cmd+A: every press in the piano roll) |
 | MCP | Enable MCP (off by default), Show agent drafts, follow an agent session, Stop following, Share my view with agents ([mcp.md](mcp.md#the-gui)) |
 | Emulation | Play/pause, step, go to start or end, Use the local database, Snapshot memory, Set ROM…, Set core… ([database.md](database.md#in-the-gui)) |

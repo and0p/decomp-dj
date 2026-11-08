@@ -127,7 +127,7 @@ impl Discard {
     fn verb(&self) -> &'static str {
         match self {
             Discard::Open(_) => "open the other project",
-            Discard::Reload => "reload",
+            Discard::Reload => "reload every segment from disk",
             Discard::Quit => "quit",
         }
     }
@@ -135,7 +135,7 @@ impl Discard {
     fn button(&self) -> &'static str {
         match self {
             Discard::Open(_) => "Open",
-            Discard::Reload => "Reload",
+            Discard::Reload => "Reload all",
             Discard::Quit => "Quit",
         }
     }
@@ -268,6 +268,9 @@ struct App {
     /// Commit (true) or rewind held in frame-by-frame mode: seconds held, and the clock
     /// that paces repeats.
     rec_hold: Option<(bool, f64, f64)>,
+    /// Real-time recording: playback was running when rewind was pressed, so it carries on
+    /// forward when rewind is let go.
+    rec_resume: bool,
     /// Input > Keyboard mapping…
     mapping: Option<record::MappingDialog>,
     /// The comparison core (docs/gui.md#comparison-cores), if one is selected and loaded.
@@ -388,12 +391,34 @@ struct NodeDialog {
     id: String,
     title: String,
     frames: u64,
-    /// A root segment: it may start from a save file.
+    /// A root segment: it may start from a snapshot and a save file.
     root: bool,
-    /// The save file's blob id (`sram:`), as the dialog has it now.
-    sram: Option<String>,
+    /// The save file (`sram:`) and the snapshot (`snapshot:`) a root segment starts from.
+    sram: StartFile,
+    snapshot: StartFile,
+}
+
+/// A start blob of a root segment, as the properties dialog has it now.
+#[derive(Default)]
+struct StartFile {
+    /// Its blob id.
+    blob: Option<String>,
     /// A file picked in the dialog, not written to blobs/ until Apply: (path, bytes).
-    sram_pick: Option<(PathBuf, Vec<u8>)>,
+    pick: Option<(PathBuf, Vec<u8>)>,
+}
+
+impl StartFile {
+    fn of(r: &decomp_dj::format::Replay, field: &str) -> StartFile {
+        StartFile { blob: r.get(field).map(String::from), pick: None }
+    }
+
+    /// The blob id it names after Apply.
+    fn blob_after(&self) -> Option<String> {
+        match &self.pick {
+            Some((_, data)) => Some(decomp_dj::collection::blob_id(data)),
+            None => self.blob.clone(),
+        }
+    }
 }
 
 struct FrameDialog {
@@ -475,6 +500,7 @@ impl Default for App {
             rec_pass: false,
             rec_live: false,
             rec_hold: None,
+            rec_resume: false,
             mapping: None,
             compare: None,
             compare_at: None,
@@ -1018,6 +1044,93 @@ impl App {
         } else {
             self.info(format!("Saved {n} segment(s)"));
         }
+    }
+
+    /// Why the segment `id` can't be saved on its own, if it can't.
+    fn save_one_blocked(&self, id: &str) -> Option<&'static str> {
+        let col = self.col.as_ref()?;
+        if !col.replays.contains_key(id) || !self.unsaved().contains(id) {
+            return Some("No unsaved changes in this segment");
+        }
+        if self.agent_owned(id) {
+            return Some("An agent session has this draft open");
+        }
+        let parent = col.replays[id].parent()?;
+        let parent_on_disk = col.paths.get(parent).is_some_and(|p| p.exists()) && !col.is_draft(parent);
+        (!parent_on_disk).then_some("Its parent has never been saved: save that one first (or everything)")
+    }
+
+    /// Saves only `id`: its file, or a draft moved into segments/. Other edits stay unsaved.
+    fn save_one(&mut self, id: &str) {
+        if let Some(why) = self.save_one_blocked(id) {
+            self.error(why);
+            return;
+        }
+        let Some(col) = &mut self.col else { return };
+        let res = if col.is_draft(id) { col.draft_to_segment(id) } else { col.save_replay(id) };
+        if let Err(e) = res {
+            self.error(format!("Saving {id}: {e:#}"));
+            return;
+        }
+        self.edited.remove(id);
+        self.drafts_fp = agent::drafts_fingerprint(&col.root);
+        self.segments_fp = agent::segments_fingerprint(&col.root);
+        let dirty = col.tree_status(id) == Status::Dirty;
+        self.note_saved(&[id.to_string()]);
+        self.coverage_stale();
+        let title = col_title(self.col.as_ref(), id);
+        let left = self.unsaved().len();
+        let mut msg = format!("Saved \"{title}\".");
+        if dirty {
+            msg.push_str(" It is dirty: play it to its end (or clean it) and save again to keep its hashes.");
+        }
+        if left > 0 {
+            msg.push_str(&format!(" {left} other unsaved change{} left.", if left == 1 { "" } else { "s" }));
+        }
+        self.info(msg);
+    }
+
+    /// Why the segment `id` can't be reverted to its file, if it can't.
+    fn revert_blocked(&self, id: &str) -> Option<&'static str> {
+        let col = self.col.as_ref()?;
+        if !self.edited.contains(id) || !col.replays.contains_key(id) {
+            return Some("No unsaved changes in this segment");
+        }
+        if self.agent_owned(id) {
+            return Some("An agent session has this draft open");
+        }
+        if !col.paths.get(id).is_some_and(|p| p.exists()) {
+            return Some("Never saved, so there is no file to go back to (Delete removes it)");
+        }
+        None
+    }
+
+    /// Puts back the saved file of `id`, dropping its unsaved changes (one undo step brings
+    /// them back). Other segments keep their edits.
+    fn revert_one(&mut self, id: &str) {
+        if let Some(why) = self.revert_blocked(id) {
+            self.error(why);
+            return;
+        }
+        let Some(path) = self.col.as_ref().and_then(|c| c.paths.get(id)).cloned() else { return };
+        let disk = match decomp_dj::format::Replay::load(&path) {
+            Ok(r) => r,
+            Err(e) => {
+                self.error(format!("{e:#}"));
+                return;
+            }
+        };
+        self.rec_pass = false;
+        let step = UndoStep { label: "Revert".to_string(), segments: vec![(id.to_string(), Some(disk))], selected: self.selected.clone(), frame: self.playhead() };
+        let back = self.restore(step);
+        self.undo.push(back);
+        if self.undo.len() > UNDO_LIMIT {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+        self.edited.remove(id);
+        let title = col_title(self.col.as_ref(), id);
+        self.info(format!("Reverted \"{title}\" to its saved file. Undo brings the changes back."));
     }
 
     /// Records the end hashes `ids` have on disk now (just loaded or saved).
@@ -1897,6 +2010,7 @@ impl App {
         self.rec_pass = false;
         self.rec_live = false;
         self.rec_hold = None;
+        self.rec_resume = false;
     }
 
     /// Real-time recording past the last frame makes the segment longer.
@@ -2044,25 +2158,33 @@ impl App {
         }
         if ctx.egui_wants_keyboard_input() || self.mapping.is_some() {
             self.rec_hold = None;
+            self.rec_resume = false;
             return;
         }
         // A focused button would take Space or Enter as a click.
         if let Some(id) = ctx.memory(|m| m.focused()) {
             ctx.memory_mut(|m| m.surrender_focus(id));
         }
-        if !self.rec_cfg.frame_by_frame {
-            return;
-        }
-        let (commit, rewind, shift) = ctx.input(|i| (self.bindings.commit.is_some_and(|k| i.key_down(k)), self.bindings.rewind.is_some_and(|k| i.key_down(k)), i.modifiers.shift));
+        // In real time the commit key plays and pauses (elsewhere); rewind steps back here
+        // in both modes.
+        let fbf = self.rec_cfg.frame_by_frame;
+        let (commit, rewind, shift) = ctx.input(|i| (fbf && self.bindings.commit.is_some_and(|k| i.key_down(k)), self.bindings.rewind.is_some_and(|k| i.key_down(k)), i.modifiers.shift));
         let which = if commit { Some(true) } else if rewind { Some(false) } else { None };
         let Some(c) = which else {
             // A held commit or rewind is one pass, and one undo step.
             if self.rec_hold.take().is_some() {
                 self.rec_pass = false;
                 self.rec_live = false;
+                // Real time: recording carries on forward from where rewind was let go.
+                if !fbf && std::mem::take(&mut self.rec_resume) {
+                    self.playing = true;
+                }
             }
             return;
         };
+        if !fbf && self.rec_hold.is_none() {
+            self.rec_resume = self.playing;
+        }
         let steps = match &mut self.rec_hold {
             Some((was, held, clock)) if *was == c => {
                 *held += dt;
@@ -2136,7 +2258,7 @@ impl App {
         true
     }
 
-    /// The ● Rec button and its options, in the transport.
+    /// The record button (a red circle, as wide as play) and its options, in the transport.
     fn record_button(&mut self, ui: &mut egui::Ui, icon: egui::Vec2) {
         let blocked = self.record_blocked();
         let mut changed = false;
@@ -2146,8 +2268,7 @@ impl App {
             let cr = ui.visuals().widgets.inactive.corner_radius;
             let left = egui::CornerRadius { nw: cr.nw, sw: cr.sw, ne: 0, se: 0 };
             let right = egui::CornerRadius { nw: 0, sw: 0, ne: cr.ne, se: cr.se };
-            let text = if self.recording { RichText::new("● Rec").color(Color32::WHITE).strong() } else { RichText::new("● Rec").color(REC_RED) };
-            let mut b = egui::Button::new(text).min_size(egui::vec2(48.0, icon.y)).corner_radius(left);
+            let mut b = egui::Button::new("").min_size(egui::vec2(34.0, icon.y)).corner_radius(left);
             if self.recording {
                 b = b.fill(REC_RED);
             }
@@ -2157,6 +2278,14 @@ impl App {
                 format!("Record inputs from the keyboard into player {} ({})", self.rec_cfg.port + 1, if self.rec_cfg.frame_by_frame { "frame by frame" } else { "real time" })
             };
             let r = ui.add_enabled(self.recording || blocked.is_none(), b).on_hover_text(tip).on_disabled_hover_text(blocked.unwrap_or(""));
+            let dot = if self.recording {
+                Color32::WHITE
+            } else if r.enabled() {
+                REC_RED
+            } else {
+                REC_RED.gamma_multiply(0.4)
+            };
+            ui.painter().circle_filled(r.rect.center(), 5.5, dot);
             if r.clicked() {
                 self.set_recording(!self.recording);
             }
@@ -2191,6 +2320,7 @@ impl App {
         });
         if changed {
             self.rec_hold = None;
+            self.rec_resume = false;
             self.rec_pass = false;
             self.save_record_settings();
         }
@@ -2874,8 +3004,8 @@ impl App {
             title: r.title().to_string(),
             frames: r.frames().unwrap_or(0),
             root: r.parent().is_none(),
-            sram: r.get("sram").map(String::from),
-            sram_pick: None,
+            sram: StartFile::of(r, "sram"),
+            snapshot: StartFile::of(r, "snapshot"),
         });
     }
 
@@ -2891,33 +3021,34 @@ impl App {
         if d.frames == 0 {
             return Err(anyhow!("a segment needs at least one frame"));
         }
-        // The save file a root segment starts from: a picked file becomes a blob on Apply.
-        let new_sram = match &d.sram_pick {
-            Some((_, data)) => Some(decomp_dj::collection::blob_id(data)),
-            None => d.sram.clone(),
-        };
-        let sram_changed = d.root && new_sram.as_deref() != r.get("sram");
-        if d.title.trim() == r.title() && d.frames == old_frames && !sram_changed {
+        // What a root segment starts from: a picked file becomes a blob on Apply.
+        let starts = [("snapshot", &d.snapshot), ("sram", &d.sram)];
+        let changed: Vec<(&str, &StartFile, Option<String>)> =
+            starts.iter().filter(|_| d.root).map(|(f, sf)| (*f, *sf, sf.blob_after())).filter(|(f, _, b)| b.as_deref() != r.get(f)).collect();
+        let start_changed = !changed.is_empty();
+        if d.title.trim() == r.title() && d.frames == old_frames && !start_changed {
             return Ok(());
         }
         if !self.remember("Segment properties", &[&d.id]) {
             return Ok(());
         }
         let Some(col) = &mut self.col else { return Ok(()) };
-        if sram_changed {
-            if let Some((path, data)) = &d.sram_pick {
-                col.write_blob(data, "sram").map_err(|e| anyhow!("copying {} into blobs/: {e:#}", path.display()))?;
+        for (field, sf, _) in &changed {
+            if let Some((path, data)) = &sf.pick {
+                col.write_blob(data, field).map_err(|e| anyhow!("copying {} into blobs/: {e:#}", path.display()))?;
             }
         }
         let r = col.replays.get_mut(&d.id).ok_or_else(|| anyhow!("segment is gone"))?;
         r.set("title", d.title.trim());
         self.edited.insert(d.id.clone());
-        if sram_changed {
+        if start_changed {
             // A new start state: nothing recorded for this segment holds any more, from its
             // start hash on, and everything below turns dirty.
-            match &new_sram {
-                Some(b) => r.set("sram", b),
-                None => r.remove_all("sram"),
+            for (field, _, blob) in &changed {
+                match blob {
+                    Some(b) => r.set(field, b),
+                    None => r.remove_all(field),
+                }
             }
             r.remove_all("start-hash");
             r.remove_all("checkpoint");
@@ -2929,10 +3060,15 @@ impl App {
             if self.selected.as_deref() == Some(d.id.as_str()) {
                 self.select(&d.id.clone());
             }
-            self.info(match &new_sram {
-                Some(_) => "Save file set: the segment starts from it now. It and everything below are dirty until cleaned.",
-                None => "Save file cleared: the segment starts with no save data. It and everything below are dirty until cleaned.",
-            });
+            let what: Vec<&str> = changed.iter().map(|(f, _, b)| match (*f, b.is_some()) {
+                ("sram", true) => "save file set",
+                ("sram", false) => "save file cleared",
+                (_, true) => "snapshot set",
+                (_, false) => "snapshot cleared",
+            }).collect();
+            let what = what.join(", ");
+            let what = what[..1].to_uppercase() + &what[1..];
+            self.info(format!("{what}: the segment starts differently now. It and everything below are dirty until cleaned."));
             if d.frames == old_frames {
                 return Ok(());
             }
@@ -3268,32 +3404,38 @@ impl App {
                     ui.label(RichText::new(format!("{:.1} s at {:.2} fps", d.frames as f64 / self.fps, self.fps)).weak());
                     ui.end_row();
                     if d.root {
-                        ui.label("Save file");
-                        ui.horizontal(|ui| {
-                            let shown = match (&d.sram_pick, &d.sram) {
-                                (Some((p, data)), _) => format!("{} ({} bytes, not applied yet)", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), data.len()),
-                                (None, Some(b)) => format!("blob {}…", &b[..b.len().min(12)]),
-                                (None, None) => "none (power-on with no save data)".into(),
-                            };
-                            ui.label(shown);
-                            if ui.button("Choose…").on_hover_text("Battery-backed save RAM to load before frame 0 (an .srm, or the core's save file). It is copied into blobs/.").clicked() {
-                                if let Some(f) = rfd::FileDialog::new().set_title("Choose a save file (SRAM)").pick_file() {
-                                    match std::fs::read(&f) {
-                                        Ok(data) => d.sram_pick = Some((f, data)),
-                                        Err(e) => self.error(format!("Reading {}: {e}", f.display())),
+                        let rows = [
+                            ("Snapshot", "none (power-on)", "A save state of this core to start from instead of power-on. It is copied into blobs/.", "Choose a snapshot (save state)", &mut d.snapshot),
+                            ("Save file", "none (no save data)", "Battery-backed save RAM to load before frame 0 (an .srm, or the core's save file), after the snapshot if there is one. It is copied into blobs/.", "Choose a save file (SRAM)", &mut d.sram),
+                        ];
+                        for (label, none, tip, pick_title, sf) in rows {
+                            ui.label(label);
+                            ui.horizontal(|ui| {
+                                let shown = match (&sf.pick, &sf.blob) {
+                                    (Some((p, data)), _) => format!("{} ({} bytes, not applied yet)", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), data.len()),
+                                    (None, Some(b)) => format!("blob {}…", &b[..b.len().min(12)]),
+                                    (None, None) => none.into(),
+                                };
+                                ui.label(shown);
+                                if ui.button("Choose…").on_hover_text(tip).clicked() {
+                                    if let Some(f) = rfd::FileDialog::new().set_title(pick_title).pick_file() {
+                                        match std::fs::read(&f) {
+                                            Ok(data) => sf.pick = Some((f, data)),
+                                            Err(e) => self.message = Some((format!("Reading {}: {e}", f.display()), true)),
+                                        }
                                     }
                                 }
-                            }
-                            if ui.add_enabled(d.sram.is_some() || d.sram_pick.is_some(), egui::Button::new("Clear")).clicked() {
-                                d.sram = None;
-                                d.sram_pick = None;
-                            }
-                        });
-                        ui.end_row();
+                                if ui.add_enabled(sf.blob.is_some() || sf.pick.is_some(), egui::Button::new("Clear")).clicked() {
+                                    sf.blob = None;
+                                    sf.pick = None;
+                                }
+                            });
+                            ui.end_row();
+                        }
                     }
                 });
                 if d.root {
-                    ui.label(RichText::new("Changing the save file changes how the segment starts: it and everything below turn dirty.").weak().small());
+                    ui.label(RichText::new("Changing the snapshot or save file changes how the segment starts: it and everything below turn dirty.").weak().small());
                 }
                 ui.label(RichText::new(format!("id {}", d.id)).weak().small());
                 ui.horizontal(|ui| {
@@ -3387,7 +3529,16 @@ impl App {
                 if ui.add_enabled(n > 0, egui::Button::new(format!("Save ({n} unsaved)")).shortcut_text("Ctrl+S")).on_hover_text("Write every changed segment, and move drafts into segments/").clicked() {
                     self.save();
                 }
-                if ui.add_enabled(self.col.is_some(), egui::Button::new("Reload from disk")).on_hover_text("Read the project's files again, dropping unsaved edits (it asks first)").clicked() {
+                let sel = self.selected.clone().unwrap_or_default();
+                let blocked = if self.selected.is_some() { self.save_one_blocked(&sel) } else { Some("No segment selected") };
+                if ui.add_enabled(blocked.is_none(), egui::Button::new("Save selected segment")).on_hover_text("Write only this segment's file; other unsaved edits stay unsaved").on_disabled_hover_text(blocked.unwrap_or("")).clicked() {
+                    self.save_one(&sel);
+                }
+                let blocked = if self.selected.is_some() { self.revert_blocked(&sel) } else { Some("No segment selected") };
+                if ui.add_enabled(blocked.is_none(), egui::Button::new("Revert selected segment")).on_hover_text("Drop this segment's unsaved changes and put back its saved file; other edits are kept. Undo brings the changes back").on_disabled_hover_text(blocked.unwrap_or("")).clicked() {
+                    self.revert_one(&sel);
+                }
+                if ui.add_enabled(self.col.is_some(), egui::Button::new("Reload all from disk")).on_hover_text("Read every segment's file again, dropping the unsaved edits of every segment (it asks first when there are any). To drop one segment's edits, use Revert selected segment").clicked() {
                     self.discard_guard(Discard::Reload);
                 }
                 ui.separator();
@@ -3598,6 +3749,10 @@ impl App {
     }
 
     fn tree(&mut self, ui: &mut egui::Ui) {
+        // Save and Revert on right-click: why each is off, for the segments with unsaved edits.
+        let one_why: HashMap<String, (Option<&'static str>, Option<&'static str>)> =
+            self.unsaved().into_iter().map(|id| { let w = (self.save_one_blocked(&id), self.revert_blocked(&id)); (id, w) }).collect();
+        let none_why = (Some("No unsaved changes in this segment"), Some("No unsaved changes in this segment"));
         let Some(col) = &self.col else {
             ui.add_space(8.0);
             ui.label("No project open.");
@@ -3951,6 +4106,13 @@ impl App {
                         if ui.button("Properties…").clicked() {
                             context = Some((id.to_string(), "props"));
                         }
+                        let (save_why, revert_why) = one_why.get(id as &str).copied().unwrap_or(none_why);
+                        if ui.add_enabled(save_why.is_none(), egui::Button::new("Save")).on_hover_text("Write only this segment's file; other unsaved edits stay unsaved").on_disabled_hover_text(save_why.unwrap_or("")).clicked() {
+                            context = Some((id.to_string(), "saveone"));
+                        }
+                        if ui.add_enabled(revert_why.is_none(), egui::Button::new("Revert")).on_hover_text("Drop this segment's unsaved changes and put back its saved file. Undo brings them back").on_disabled_hover_text(revert_why.unwrap_or("")).clicked() {
+                            context = Some((id.to_string(), "revert"));
+                        }
                         let joinable = r.parent().is_some_and(|p| col.children(Some(p)).len() == 1);
                         if ui.add_enabled(joinable, egui::Button::new("Join with parent")).on_hover_text(JOIN_TIP).on_disabled_hover_text("Only for a segment whose parent has no other children").clicked() {
                             context = Some((id.to_string(), "join"));
@@ -4049,6 +4211,8 @@ impl App {
             Some((_, "root")) => self.new_root(),
             Some((id, "joinchain")) => self.chain_dialog = Some((id, true)),
             Some((id, "dup")) => self.ask_duplicate(&id),
+            Some((id, "saveone")) => self.save_one(&id),
+            Some((id, "revert")) => self.revert_one(&id),
             Some((id, "child")) => {
                 if self.selected.as_deref() != Some(id.as_str()) {
                     self.select(&id);
@@ -4356,7 +4520,7 @@ impl App {
         self.coverage_stale();
         if !conflicts.is_empty() {
             let names: Vec<String> = conflicts.iter().map(|id| format!("\"{}\"", col_title(self.col.as_ref(), id))).collect();
-            self.error(format!("Changed on disk while you have unsaved edits: {}. Saving overwrites those files; File > Reload from disk takes the disk's version.", names.join(", ")));
+            self.error(format!("Changed on disk while you have unsaved edits: {}. Saving overwrites those files; File > Reload all from disk takes the disk's version.", names.join(", ")));
         } else {
             self.info(format!("Picked up {} segment file(s) changed on disk", changed.len()));
         }

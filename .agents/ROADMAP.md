@@ -12,12 +12,6 @@ When one ships, its user-facing description moves into `docs/` and the entry her
 - `exclude` in `[cache]` is recorded but not applied to snapshots yet.
 
 ## GUI
-- **Backspace in real-time recording.** Today the rewind key (Backspace) only works in
-  frame-by-frame recording: `record_keys` returns before reading it when frame-by-frame is
-  off. In real-time mode it should also step back while held, at the playback speed, and
-  erase the input on the frames it leaves when "rewind clears" is on (Shift for the
-  opposite), as it does frame by frame. Recording carries on forward from wherever it's
-  released.
 - **A console in the app.** A panel (View > Console, or clicking the status bar's message)
   with a scrolling, filterable log of everything that's now only a passing status message
   or stderr: errors and warnings, info messages, jobs (cleans, hydrates, seeks), comparison
@@ -75,16 +69,6 @@ When one ships, its user-facing description moves into `docs/` and the entry her
 - **Instead of deleting,** merge a segment into its children, or move its children up to the
   grandparent, which turns everything below dirty.
 - **Moving segments** to another parent from the GUI.
-- **Choosing a snapshot in a root segment's properties,** the way the save file (`sram`)
-  can be chosen now.
-- **Record button as an icon.** Make **● Rec** a circle icon, a little wider than tall like
-  the play button, instead of the text label.
-- **Revert one segment.** Throw away the unsaved changes to a single segment and put back
-  its saved file, without File > Reload dropping every other edit. In the File menu (for the
-  selected segment) and on right-click in the tree. One undo step; a reverted segment with
-  an unsaved parent or children may need a word in the confirmation.
-- **Save one segment.** Write only the selected segment's file, leaving other edits unsaved.
-  In the File menu and on right-click in the tree.
 - **Back and forward, like a browser.** A history of where you've been, as segment and
   frame: selecting another segment (in the tree, the Coverage tab's "First runs in", a
   marker, a search), or a seek far enough to count as a jump, pushes the place you left.

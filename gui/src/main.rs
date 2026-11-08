@@ -115,6 +115,32 @@ enum Clean {
     Everything,
 }
 
+/// What waits on "discard unsaved edits?" (Open, Reload or Quit with edits not saved).
+#[derive(Clone)]
+enum Discard {
+    Open(PathBuf),
+    Reload,
+    Quit,
+}
+
+impl Discard {
+    fn verb(&self) -> &'static str {
+        match self {
+            Discard::Open(_) => "open the other project",
+            Discard::Reload => "reload",
+            Discard::Quit => "quit",
+        }
+    }
+
+    fn button(&self) -> &'static str {
+        match self {
+            Discard::Open(_) => "Open",
+            Discard::Reload => "Reload",
+            Discard::Quit => "Quit",
+        }
+    }
+}
+
 enum SaveAsk {
     /// Saving would leave this many segments dirty: clean first?
     Dirty(usize),
@@ -175,6 +201,10 @@ struct App {
     delete_dialog: Option<String>,
     /// Save was asked for while it would leave this many segments dirty: offer to clean first.
     save_dialog: Option<SaveAsk>,
+    /// Open, Reload or Quit asked for with unsaved edits: waiting on "discard them?".
+    discard_dialog: Option<Discard>,
+    /// Quit was confirmed (or nothing was unsaved): let the window close.
+    quit_ok: bool,
     /// Save once the cleaning started from the save dialog finishes.
     save_after_clean: bool,
     /// Join with parent, waiting on its confirmation: (segment id, leave a marker, marker text).
@@ -338,6 +368,7 @@ struct UndoStep {
 const UNDO_LIMIT: usize = 200;
 
 const JOIN_TIP: &str = "Merge this segment into its parent: the parent keeps its name and grows by this segment's frames. Only for a segment with no siblings.";
+const JOIN_CHILD_TIP: &str = "Merge this segment's only child into it: this segment keeps its name and grows by the child's frames. Only for a segment with exactly one child.";
 
 /// Copied notes: button, start relative to the leftmost copied note, and length.
 struct Clip {
@@ -395,6 +426,8 @@ impl Default for App {
             renaming: None,
             delete_dialog: None,
             save_dialog: None,
+            discard_dialog: None,
+            quit_ok: false,
             save_after_clean: false,
             join_dialog: None,
             undo: vec![],
@@ -848,6 +881,34 @@ impl App {
         // A draft an agent session has open is the agent's work, not the person's.
         out.retain(|id| !self.agent_owned(id));
         out
+    }
+
+    /// Edits that Open, Reload or Quit would lose: everything unsaved except drafts nobody
+    /// edited here, which stay in `.local/drafts/` and come back on the next open.
+    fn unsaved_edits(&self) -> usize {
+        self.edited.iter().filter(|id| !self.agent_owned(id)).count()
+    }
+
+    /// Runs `what` now when nothing would be lost; otherwise asks first.
+    fn discard_guard(&mut self, what: Discard) {
+        if self.unsaved_edits() == 0 {
+            self.discard_go(what);
+        } else {
+            self.discard_dialog = Some(what);
+        }
+    }
+
+    fn discard_go(&mut self, what: Discard) {
+        match what {
+            Discard::Open(dir) => self.open_collection(&dir),
+            Discard::Reload => self.reload(),
+            Discard::Quit => {
+                self.quit_ok = true;
+                if let Some(ctx) = CTX.with(|c| c.borrow().clone()) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
     }
 
     /// Segments that saving now would leave dirty: the unsaved ones and everything below them.
@@ -2448,6 +2509,12 @@ impl App {
         col.replays.get(id).and_then(|r| r.parent()).is_some_and(|p| col.children(Some(p)).len() == 1)
     }
 
+    /// The only child of `id`, when it has exactly one: joining it is "Join with only child".
+    fn only_child(&self, id: &str) -> Option<String> {
+        let kids = self.col.as_ref()?.children(Some(id));
+        (kids.len() == 1).then(|| kids[0].to_string())
+    }
+
     /// The reverse of a split: appends `id` to its parent, which keeps its id and title and
     /// grows by `id`'s frames. The same frames run with the same inputs, so no state changes:
     /// the parent takes `id`'s end hash, and `id`'s children move up to the parent.
@@ -2756,6 +2823,38 @@ impl App {
                 self.compare_dialog = None;
             }
         }
+        if let Some(what) = self.discard_dialog.take() {
+            let n = self.unsaved_edits();
+            let mut open = true;
+            let (mut save, mut discard, mut cancel) = (false, false, false);
+            egui::Window::new("Unsaved edits").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).show(ctx, |ui| {
+                ui.label(RichText::new(format!("{n} segment{} {} unsaved edits.", if n == 1 { "" } else { "s" }, if n == 1 { "has" } else { "have" })).strong());
+                ui.label(format!("Save them before you {}, or discard them? Undo can't bring discarded edits back.", what.verb()));
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    save = ui.button(format!("Save and {}", what.button().to_lowercase())).clicked();
+                    discard = ui.button(format!("Discard and {}", what.button().to_lowercase())).clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    cancel = true;
+                }
+            });
+            if n == 0 || discard {
+                self.discard_go(what);
+            } else if save {
+                // Saving may ask first (segments it would leave dirty): then the save dialog takes
+                // over, and the person repeats Open, Reload or Quit once it's done.
+                self.save();
+                if self.unsaved_edits() == 0 {
+                    self.discard_go(what);
+                } else if self.save_dialog.is_some() {
+                    self.info(format!("Saving first: {} again once it's saved.", what.button()));
+                }
+            } else if !cancel && open {
+                self.discard_dialog = Some(what);
+            }
+        }
         // One confirmation for Segment > Delete and the tree's right-click Delete.
         if let Some(ask) = self.save_dialog.take() {
             let mut open = true;
@@ -2989,19 +3088,19 @@ impl App {
             bar.push(ui.menu_button("File", |ui| {
                 if ui.button("Open project…").clicked() {
                     if let Some(dir) = rfd::FileDialog::new().set_title("Open a project folder").pick_folder() {
-                        self.open_collection(&dir);
+                        self.discard_guard(Discard::Open(dir));
                     }
                 }
                 let n = self.unsaved().len();
                 if ui.add_enabled(n > 0, egui::Button::new(format!("Save ({n} unsaved)")).shortcut_text("Ctrl+S")).on_hover_text("Write every changed segment, and move drafts into segments/").clicked() {
                     self.save();
                 }
-                if ui.add_enabled(self.col.is_some(), egui::Button::new("Reload from disk")).on_hover_text("Discards unsaved edits").clicked() {
-                    self.reload();
+                if ui.add_enabled(self.col.is_some(), egui::Button::new("Reload from disk")).on_hover_text("Read the project's files again, dropping unsaved edits (it asks first)").clicked() {
+                    self.discard_guard(Discard::Reload);
                 }
                 ui.separator();
                 if ui.button("Quit").clicked() {
-                    ui.send_viewport_cmd(egui::ViewportCommand::Close);
+                    self.discard_guard(Discard::Quit);
                 }
             }));
             bar.push(ui.menu_button("Edit", |ui| {
@@ -3026,6 +3125,10 @@ impl App {
                 }
                 if ui.add_enabled(self.clip.is_some() && self.pb.is_some(), egui::Button::new("Paste at play cursor").shortcut_text(sc(Modifiers::COMMAND, Key::V))).clicked() {
                     self.paste();
+                }
+                ui.separator();
+                if ui.add_enabled(self.selected.is_some(), egui::Button::new("Select all").shortcut_text(sc(Modifiers::COMMAND, Key::A))).on_hover_text("Select every press of the selected segment in the piano roll").clicked() {
+                    self.roll.select_all();
                 }
             }));
             bar.push(ui.menu_button("Emulation", |ui| {
@@ -3103,6 +3206,10 @@ impl App {
                 let joinable = sel.as_deref().is_some_and(|s| self.can_join(s));
                 if ui.add_enabled(joinable, egui::Button::new("Join with parent")).on_hover_text(JOIN_TIP).on_disabled_hover_text("Only for a segment whose parent has no other children").clicked() {
                     self.join_with_parent(&sel.clone().unwrap());
+                }
+                let only = sel.as_deref().and_then(|s| self.only_child(s));
+                if ui.add_enabled(only.is_some(), egui::Button::new("Join with only child")).on_hover_text(JOIN_CHILD_TIP).on_disabled_hover_text("Only for a segment with exactly one child").clicked() {
+                    self.join_with_parent(&only.unwrap());
                 }
                 ui.separator();
                 if ui.add_enabled(sel.is_some(), egui::Button::new("Delete…")).on_hover_text("Delete this segment and everything below it").clicked() {
@@ -3543,6 +3650,10 @@ impl App {
                         if ui.add_enabled(joinable, egui::Button::new("Join with parent")).on_hover_text(JOIN_TIP).on_disabled_hover_text("Only for a segment whose parent has no other children").clicked() {
                             context = Some((id.to_string(), "join"));
                         }
+                        let one_child = col.children(Some(id)).len() == 1;
+                        if ui.add_enabled(one_child, egui::Button::new("Join with only child")).on_hover_text(JOIN_CHILD_TIP).on_disabled_hover_text("Only for a segment with exactly one child").clicked() {
+                            context = Some((id.to_string(), "joinchild"));
+                        }
                         if ui.button("Delete…").on_hover_text("Delete this segment and everything below it").clicked() {
                             context = Some((id.to_string(), "delete"));
                         }
@@ -3624,6 +3735,11 @@ impl App {
             Some((_, "unhoist")) => self.hoist = None,
             Some((id, "delete")) => self.delete_dialog = Some(id),
             Some((id, "join")) => self.join_with_parent(&id),
+            Some((id, "joinchild")) => {
+                if let Some(c) = self.only_child(&id) {
+                    self.join_with_parent(&c);
+                }
+            }
             Some((id, "verify")) => self.start_verify(Some(id), Clean::Fill),
             Some((id, "takeover")) => self.take_over(&id),
             Some((id, "follow")) => {
@@ -4726,6 +4842,11 @@ impl App {
         if paste {
             self.paste();
         }
+        // Cmd+A selects every press in the piano roll. Bare A may be a recording key, but
+        // Cmd+A never is; a focused text field keeps Cmd+A (shortcuts() returns early then).
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::A)) && self.selected.is_some() {
+            self.roll.select_all();
+        }
         let rename = plain && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter) || i.consume_key(Modifiers::NONE, Key::F2));
         if rename && self.node_dialog.is_none() && self.frame_dialog.is_none() && self.renaming.is_none() {
             if let (Some(id), Some(col)) = (&self.selected, &self.col) {
@@ -4794,6 +4915,11 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));
+        // Closing the window (its close button, Cmd+Q) with unsaved edits asks first.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.quit_ok && self.unsaved_edits() > 0 {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.discard_dialog = Some(Discard::Quit);
+        }
         self.shortcuts(&ctx);
         if let Some(t) = self.ctx_copy.take() {
             ctx.copy_text(t);

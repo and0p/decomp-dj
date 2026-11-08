@@ -12,10 +12,6 @@ When one ships, its user-facing description moves into `docs/` and the entry her
 - `exclude` in `[cache]` is recorded but not applied to snapshots yet.
 
 ## GUI
-- **Select all.** Cmd+A (Ctrl+A elsewhere) selects the whole timeline of the selected
-  segment in the piano roll: every input span on every row, ready for cut, copy, delete or
-  a drag. Only when no text field has focus, so it still selects text there. Bare A is a
-  recording key (B button by default), but Cmd+A isn't.
 - **Backspace in real-time recording.** Today the rewind key (Backspace) only works in
   frame-by-frame recording: `record_keys` returns before reading it when frame-by-frame is
   off. In real-time mode it should also step back while held, at the playback speed, and
@@ -77,17 +73,45 @@ When one ships, its user-facing description moves into `docs/` and the entry her
 - **Audio playback (GUI).** Play the core's audio while a segment plays, with a volume
   slider and a mute button in the playback toolbar. When more than one core is running
   (side-by-side comparison), an A|B toggle picks which core you hear.
-- **More ways to join.** Join with only child (the same operation, offered on the parent);
-  merge into children (copy the parent's frames onto the front of every child, then remove
+- **More ways to join.** Merge into children (copy the parent's frames onto the front of every child, then remove
   the parent: no hash changes, but the frames are duplicated); and join a chain (select a run
   of only-children and join them all at once).
 - **Instead of deleting,** merge a segment into its children, or move its children up to the
   grandparent, which turns everything below dirty.
 - **Moving segments** to another parent from the GUI.
+- **Duplicate a segment.** Segment menu and right-click > Duplicate: a copy of the segment's
+  lines under the same parent, with a new id and "(copy)" after the title, so a variation can
+  start from the same inputs. It plays the same as the original until edited, so it can keep
+  the original's hashes and start clean. Open: whether to offer copying the whole subtree
+  too, and whether the copy goes right after the original in the tree.
+- **New root segment from the GUI.** Today a root segment (formerly "trunk") can only be
+  made with `dj new` without `--parent`; the GUI has no way at all. Offer it from the
+  Segment menu, the project's right-click menu on empty space in the tree, and a **+**
+  below the last segment in the tree. It starts as an empty cold boot, ready for a title,
+  a length and, through its properties, a start state (below).
+- **Choosing SRAM in a root segment's properties.** Pick a save file (`.srm` or the core's
+  battery file) for a root segment, or clear it. The file is copied into `blobs/` under its
+  content hash and named by `sram:` in the segment ([segments.md](../docs/segments.md)). It
+  changes the start state, so the segment and everything below it turn dirty, as any edit
+  before their frames would. Possibly also choosing a `snapshot` blob the same way.
+- **Back and forward, like a browser.** A history of where you've been, as segment and
+  frame: selecting another segment (in the tree, the Coverage tab's "First runs in", a
+  marker, a search), or a seek far enough to count as a jump, pushes the place you left.
+  Back returns to that segment *and* frame (500 frames into the first segment brings you
+  back to frame 500, not frame 0); Forward redoes it. Buttons in the transport (or toolbar),
+  the mouse's back and forward buttons, and keys: Backspace for back and Shift+Backspace
+  for forward. Backspace already means two other things: delete the selected presses in
+  the piano roll, and rewind while recording. Keep those where they apply (presses
+  selected, or record mode on), or move all deleting to the Delete key alone so Backspace
+  is only back. Mac laptops have no separate Delete key (their "delete" is Backspace; forward
+  delete is Fn+delete), so the second choice makes deleting awkward there. Open: which seeks count as a jump (clicking the ruler, Home and End, a
+  first-hit link) and which don't (stepping, playback); whether history survives an edit
+  that removes a segment (skip entries that no longer exist); and whether it's kept per
+  session only.
 - **Markers tab:** group repeated texts, follow the tree's Focus here, and list a marker's
   "first frame where a watched value differs" once that exists.
-- **A warning before losing unsaved edits** on Open, Reload or Quit, and cancelling a long
-  load without selecting another segment. MAX speed off the UI thread.
+- **Cancelling a long load** without selecting another segment, and MAX speed off the UI
+  thread.
 
 ## Coverage
 - **Shipped: annotations.toml.** `[[unreachable]]`, `[[data]]` and `[[function]]` entries
@@ -147,12 +171,13 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   after a save or Verify ("−14 instructions in `doStateNewLevel`"), and in `dj report`
   against the last committed report. Pairs with the committed report above, whose diff
   would show it in review.
-- **"First runs in" needs its own view.** The function details in the Coverage tab list
-  every segment where the function first runs (capped at six today). For code that runs
-  every tick (the NMI handler, the main loop) that is every segment in the project, so
-  the list is noise. Move it into a separate view built for large result sets, for
-  example a searchable table of segment, frame and depth, grouped by root segment, or
-  just "earliest, shallowest, and N more", with the full list one click away.
+- **"First runs in" may need its own view.** The function details now show the best first
+  hit and open the rest in a filterable list ([coverage.md](../docs/coverage.md#in-the-gui)).
+  If that proves too small for code that runs in every segment (the NMI handler, the main
+  loop), move it into a separate view: a searchable table of segment, frame and depth,
+  grouped by root segment. Also open: "earliest" compares frames inside each segment, not
+  frames since power-on (a frame plus the lengths of the segments above it), which would
+  be the fairer order across branches; `xref` and the MCP tools share the sort.
 - **Symbol maps during active decompilation.** Symbol maps in the formats a decomp already
   keeps are supported ([coverage.md](../docs/coverage.md#symbol-maps)), so the decomp stays the source of truth. Still to do:
   let `.local/local.toml` point a `[[symbols]]` entry at a file in the decomp's own
@@ -240,7 +265,7 @@ When one ships, its user-facing description moves into `docs/` and the entry her
     `dj mcp` would append events to a log in `.local/mcp/` (or send them over the socket,
     once there is one) and the GUI would tail it, with filters by level and session and a
     way to copy lines into a bug report.
-  - Stable SQL views (`v_first_hits`, `v_function_coverage`) so agents can query the database without knowing its tables.
+  - More stable SQL views: `v_function_coverage` (covered and total instructions and blocks per function). Unlike `v_first_hits` ([database.md](../docs/database.md#views)) it needs the symbol maps, which aren't in the database, so the tools would have to write the functions into a table first.
 
 ## Comparison and parity
 

@@ -115,8 +115,8 @@ lines. The project lists them as `[[compare]]` entries ([config.md](config.md#co
 
 | Menu | Holds |
 | --- | --- |
-| File | Open project…, Save (Ctrl/Cmd+S): writes every unsaved segment and moves drafts into `segments/`; when that would leave segments dirty it offers **Clean, then save** or **Save anyway**. Clean, then save saves at once only if the clean changed no ending; otherwise it stops with the changed endings marked **!** and offers **Save**, **Save anyway** or **Review first**, so nothing unreviewed is saved without asking. Reload from disk (discards unsaved edits), Quit |
-| Edit | Undo, Redo, Cut, Copy, Paste at play cursor ([editing.md](editing.md#undo-cut-copy-and-paste)) |
+| File | Open project…, Save (Ctrl/Cmd+S): writes every unsaved segment and moves drafts into `segments/`; when that would leave segments dirty it offers **Clean, then save** or **Save anyway**. Clean, then save saves at once only if the clean changed no ending; otherwise it stops with the changed endings marked **!** and offers **Save**, **Save anyway** or **Review first**, so nothing unreviewed is saved without asking. Reload from disk, Quit. With unsaved edits, Open, Reload and Quit (also the window's close button) ask first: **Save and …**, **Discard and …** or **Cancel**. Drafts nobody edited here don't count: they stay in `.local/drafts/`. |
+| Edit | Undo, Redo, Cut, Copy, Paste at play cursor ([editing.md](editing.md#undo-cut-copy-and-paste)), Select all (Ctrl/Cmd+A: every press in the piano roll) |
 | MCP | Enable MCP (off by default), Show agent drafts, follow an agent session, Stop following, Share my view with agents ([mcp.md](mcp.md#the-gui)) |
 | Emulation | Play/pause, step, go to start or end, Use the local database, Snapshot memory, Set ROM…, Set core… ([database.md](database.md#in-the-gui)) |
 | Segment | Tree edits and Add event at playhead (E) ([editing.md](editing.md#segment-menu)); at the end, Clean all segments and Replay everything ([database.md](database.md#in-the-gui)) |
@@ -128,6 +128,5 @@ lines. The project lists them as `[[compare]]` entries ([config.md](config.md#co
 - Only button inputs get piano roll rows (no analog, lightgun or pointer rows yet).
 - Recording uses the keyboard only (no gamepads yet), for one controller at a time, and the default keys don't cover X, Y, L or R.
 - One comparison core at a time, and it has no sound. Same-file copies (a comparison core that is the baseline's own library) are tested on Linux only.
-- There is no warning before unsaved edits are lost on Open, Reload or Quit.
 - MAX speed runs on the UI thread.
 - Tested on Linux and macOS; Windows has not been tried.

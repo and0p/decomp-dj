@@ -61,8 +61,8 @@ lines changes no state, so it keeps every hash.
 ## In the GUI
 
 Edits stay in memory until File > Save (Ctrl/Cmd+S). Edited segments show in yellow
-italics in the tree until then. There is no warning yet before unsaved edits are lost on
-Open, Reload or Quit.
+italics in the tree until then. Open, Reload and Quit ask before they drop unsaved edits,
+offering to save them first.
 
 ### Segment menu
 
@@ -74,6 +74,7 @@ The Segment menu, and right-click in the tree, offer:
 - **Split at playhead**: just the split. The first part becomes "(first N frames)" in the old place.
 - **Properties**: title and length.
 - **Join with parent** (only for a segment with no siblings): the confirmation has "Leave a marker", on by default, with an editable text that starts as the child's title. An event at the join frame keeps whatever moment made the author split there ("menu fully open", "victory pose finished").
+- **Join with only child** (only for a segment with exactly one child): the same join, offered on the parent. It opens the same confirmation.
 - **Delete…**: removes the segment and everything below it, after a confirmation that names the segment, says how many segments go with it and gives the total frames. The files are removed on Save. If the segment being shown was deleted, its parent is shown.
 
 In the tree, Enter (or F2) renames the selected segment in place; Enter or clicking away
@@ -96,7 +97,7 @@ their controller's header.
     - Drag a press to move it in time, and drag either edge to lengthen or shorten it (only while at most one press is selected; the grab zone is a thin strip on the edge). Plain drags never change rows.
     - Transpose (move presses to another button row of the same controller) only on purpose: hold Alt (Option on a Mac) while dragging, or press Alt+Up / Alt+Down with presses selected.
     - Click selects a press; Shift+click adds or removes it. Drag on empty space to select an area (with Shift it adds, with Shift+Alt it removes).
-    - Right-click a press, or press Delete, to remove it. Escape clears the selection. Presses that end up overlapping merge into one. Holding a drag near either end of the roll scrolls it.
+    - Right-click a press, or press Delete, to remove it. Escape clears the selection, and Cmd+A (Ctrl+A elsewhere, also Edit > Select all) selects every press of the segment, unless a text field has focus. Presses that end up overlapping merge into one. Holding a drag near either end of the roll scrolls it.
 
 ### Return to the edit
 

@@ -730,16 +730,50 @@ impl App {
                         ui.label(RichText::new("No current segment runs this yet.").small().weak());
                     }
                     Some(Ok(hits)) => {
-                        ui.label(RichText::new("First runs in:").small());
-                        for h in hits.iter().take(6) {
-                            let title = crate::col_title(self.col.as_ref(), &h.id);
+                        // Code that runs every frame (the NMI handler, the main loop) first runs in
+                        // every segment, so show the best hit (clean, shallowest, earliest: the
+                        // order first_hits_in sorts by) and keep the rest in a list that opens.
+                        let col = self.col.as_ref();
+                        let link = |ui: &mut egui::Ui, h: &FirstHit, lead: &str| -> bool {
+                            let title = crate::col_title(col, &h.id);
                             let dirty = if h.status == decomp_dj::collection::Status::Dirty { "  (dirty)" } else { "" };
-                            if ui.link(RichText::new(format!("{title}, frame {}{dirty}", h.frame)).small()).on_hover_text("Go to this segment at that frame").clicked() {
-                                go = Some(FirstHit { id: h.id.clone(), frame: h.frame, offset: h.offset, status: h.status, depth: h.depth });
-                            }
+                            ui.link(RichText::new(format!("{lead}{title}, frame {}{dirty}", h.frame)).small())
+                                .on_hover_text(format!("Go to this segment at that frame (depth {})", h.depth))
+                                .clicked()
+                        };
+                        let first = &hits[0];
+                        if link(ui, first, "First runs in ") {
+                            go = Some(FirstHit { id: first.id.clone(), frame: first.frame, offset: first.offset, status: first.status, depth: first.depth });
                         }
-                        if hits.len() > 6 {
-                            ui.label(RichText::new(format!("and {} more", hits.len() - 6)).small().weak());
+                        let rest = &hits[1..];
+                        if !rest.is_empty() {
+                            egui::CollapsingHeader::new(RichText::new(format!("and {} more", rest.len())).small())
+                                .id_salt(("first_hits_more", i))
+                                .default_open(false)
+                                .show(ui, |ui| {
+                                    let fid = egui::Id::unique(("first_hits_filter", i));
+                                    let mut q: String = ui.data_mut(|d| d.get_temp(fid)).unwrap_or_default();
+                                    if rest.len() > 20 {
+                                        ui.add(egui::TextEdit::singleline(&mut q).hint_text("Filter by segment title").desired_width(ui.available_width()));
+                                        ui.data_mut(|d| d.insert_temp(fid, q.clone()));
+                                    }
+                                    let ql = q.trim().to_lowercase();
+                                    egui::ScrollArea::vertical().id_salt(("first_hits_list", i)).max_height(180.0).auto_shrink([false, true]).show(ui, |ui| {
+                                        let mut shown = 0;
+                                        for h in rest {
+                                            if !ql.is_empty() && !crate::col_title(col, &h.id).to_lowercase().contains(&ql) {
+                                                continue;
+                                            }
+                                            shown += 1;
+                                            if link(ui, h, "") {
+                                                go = Some(FirstHit { id: h.id.clone(), frame: h.frame, offset: h.offset, status: h.status, depth: h.depth });
+                                            }
+                                        }
+                                        if shown == 0 {
+                                            ui.label(RichText::new("No segment title matches.").small().weak());
+                                        }
+                                    });
+                                });
                         }
                     }
                     Some(Err(e)) => {

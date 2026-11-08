@@ -40,6 +40,23 @@ dj sql <dir> "SELECT ..."                                    # query it directly
 - `cache gc` deletes contents that no current segment uses (and snapshots of passes that never finished, for content no segment has now), then unused snapshots and pages, and compacts the file. It refuses while a dj-gui has the project open, since an unsaved edit's snapshots belong to content no saved segment has yet (the GUI keeps a `gui-<pid>.open` file in `.local/` while open); `--force` runs it anyway.
 - Every command that plays takes `--no-db` to run without the database.
 
+### Views
+
+The tables can change between versions. Queries from scripts and agents should use the
+views, whose columns stay:
+
+| View | One row per | Columns |
+| --- | --- | --- |
+| `v_first_hits` | ROM offset first run in a current segment | `segment_id`, `status` (`clean` or `dirty`), `region`, `rom_offset`, `frame` (the first frame of that segment where it ran), `content` (the content key) |
+
+```sh
+dj sql <dir> "SELECT segment_id, status, frame FROM v_first_hits WHERE region = 'PRG' AND rom_offset = 0x1C3A ORDER BY status, frame"
+```
+
+"Current" means the saved segment files. `dj sql` brings the list up to date before each
+query; `sqlite3` sees it as of the last time `dj` or the GUI opened the project. Edits not
+saved yet aren't in it.
+
 ## In the GUI
 
 The end of the Segment menu has **Clean all segments** and **Replay everything**. Cleaning

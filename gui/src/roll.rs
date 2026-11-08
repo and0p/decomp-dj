@@ -384,6 +384,14 @@ impl RollState {
             .collect()
     }
 
+    /// Selects every press on every row of the segment the roll last drew. Returns how
+    /// many presses are selected.
+    pub fn select_all(&mut self) -> usize {
+        let Some(m) = &self.model else { return 0 };
+        self.sel = m.groups.iter().flat_map(|g| g.rows.iter().flat_map(|row| row.spans.iter().map(move |sp| (row.key, sp.0)))).collect();
+        self.sel.len()
+    }
+
     /// Replaces the selection (notes named by button and first frame).
     pub fn set_selection(&mut self, notes: impl IntoIterator<Item = (InputKey, u64)>) {
         self.sel = notes.into_iter().collect();

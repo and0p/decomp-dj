@@ -127,7 +127,10 @@ is clean and saved.
 **Coverage tab.** The project's coverage from the local database, the same numbers as
 `dj report`, and a function list that sorts by ROM order, most uncovered, least covered or
 name. Click a row (or a square on the map) to see the function's uncovered blocks and the
-segments where it first runs; click one of those to go to that segment and frame. The
+segments where it first runs; click one of those to go to that segment and frame. Only the
+best one shows at first (clean before dirty, then the shallowest segment, then the earliest
+frame, the order `xref` uses); "and N more" opens the rest in a scrolling list, with a
+filter by segment title when there are more than 20. The
 report reads the segments in the editor, saved or not, so deleting an unsaved segment takes
 its coverage with it. It is rebuilt after any edit, undo, save, finished pass or clean, which takes milliseconds at NES
 sizes. Coverage needs the local database to be on (Emulation > Use the local database).

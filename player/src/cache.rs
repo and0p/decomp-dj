@@ -437,14 +437,7 @@ impl Cache {
 
     /// Rebuilds `segments_now`: the content key of each segment as the collection is now.
     pub fn refresh_now(&mut self, col: &Collection) -> Result<()> {
-        let keys = current_keys(&self.conn, col, &self.setup)?;
-        let tx = self.write_tx()?;
-        tx.execute("DELETE FROM segments_now", [])?;
-        for (id, (key, status)) in &keys {
-            tx.execute("INSERT INTO segments_now(segment_id, content, status) VALUES (?1,?2,?3)", params![id, key, status.label()])?;
-        }
-        tx.commit()?;
-        Ok(())
+        refresh_segments_now(&mut self.conn, col, &self.setup)
     }
 
     // -- size and cleanup --
@@ -586,6 +579,20 @@ pub fn current_keys(conn: &Connection, col: &Collection, setup: &str) -> Result<
     Ok(out)
 }
 
+/// Rebuilds `segments_now` (and so the views built on it) for `setup`, from the segment
+/// files as they are now. `dj sql` calls it with the setup played last, so its queries see
+/// the current files without opening a core.
+pub fn refresh_segments_now(conn: &mut Connection, col: &Collection, setup: &str) -> Result<()> {
+    let keys = current_keys(conn, col, setup)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    tx.execute("DELETE FROM segments_now", [])?;
+    for (id, (key, status)) in &keys {
+        tx.execute("INSERT INTO segments_now(segment_id, content, status) VALUES (?1,?2,?3)", params![id, key, status.label()])?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS setups(id TEXT PRIMARY KEY, info TEXT);
 CREATE TABLE IF NOT EXISTS contents(
@@ -606,6 +613,11 @@ DROP TABLE IF EXISTS unreachable;
 CREATE TABLE IF NOT EXISTS annotation(kind TEXT NOT NULL, region TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, name TEXT, why TEXT);
 CREATE TABLE IF NOT EXISTS runs(id INTEGER PRIMARY KEY, created INTEGER NOT NULL, setup TEXT NOT NULL, core TEXT NOT NULL, kind TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS run_results(run_id INTEGER NOT NULL, segment_id TEXT NOT NULL, content TEXT, outcome TEXT, PRIMARY KEY(run_id, segment_id));
+-- Stable views for agents and `dj sql` (docs/database.md#views). Their columns are a promise:
+-- add columns at the end, and drop and recreate a view only together with a note in the docs.
+CREATE VIEW IF NOT EXISTS v_first_hits AS
+    SELECT s.segment_id, s.status, h.region, h.rom_offset, h.frame, h.content
+    FROM first_hits h JOIN segments_now s ON s.content = h.content;
 ";
 
 /// Reads a content's coverage flags, region by region.
@@ -667,6 +679,22 @@ mod tests {
 
     fn open(col: &Collection) -> Cache {
         Cache::open(col, "setup", &[], CacheSettings::resolve(None, None).unwrap()).unwrap()
+    }
+
+    /// v_first_hits joins first_hits to the segments as they are now.
+    #[test]
+    fn first_hits_view() {
+        let (dir, col) = project("view");
+        let c = open(&col);
+        c.conn.execute_batch(
+            "INSERT INTO segments_now VALUES ('a', 'ka', 'clean'), ('b', 'kb', 'dirty'), ('c', NULL, 'clean');
+             INSERT INTO first_hits VALUES ('ka', 'PRG', 16, 3), ('kb', 'PRG', 16, 40), ('old', 'PRG', 16, 1);",
+        )
+        .unwrap();
+        let mut st = c.conn.prepare("SELECT segment_id, status, frame FROM v_first_hits WHERE region = 'PRG' AND rom_offset = 16 ORDER BY frame").unwrap();
+        let rows: Vec<(String, String, i64)> = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        assert_eq!(rows, vec![("a".into(), "clean".into(), 3), ("b".into(), "dirty".into(), 40)]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `record` and `put_snapshot` read before they write. While another connection holds the

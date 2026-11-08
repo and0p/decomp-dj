@@ -737,7 +737,15 @@ fn snapshot_cmd(dir: &Path, segment: &str, frame: u64, out: &Path, local: &Local
 
 fn sql(dir: &Path, query: &str) -> Result<()> {
     let col = Collection::open(dir)?;
-    let conn = cache::Cache::open_readonly(&col)?;
+    let mut conn = cache::Cache::open_readonly(&col)?;
+    // Bring segments_now (and the v_ views on it) up to date with the segment files, for the
+    // setup played last. A database nothing has been played into yet has no setup to use.
+    let setup: Option<String> = rusqlite::OptionalExtension::optional(conn.query_row("SELECT setup FROM contents ORDER BY played_at DESC LIMIT 1", [], |r| r.get(0)))?;
+    if let Some(setup) = setup {
+        if let Err(e) = cache::refresh_segments_now(&mut conn, &col, &setup) {
+            eprintln!("warning: couldn't bring segments_now up to date ({e:#}); the views show the segments as of the last play");
+        }
+    }
     let mut st = conn.prepare(query)?;
     let names: Vec<String> = st.column_names().iter().map(|s| s.to_string()).collect();
     println!("{}", names.join("\t"));

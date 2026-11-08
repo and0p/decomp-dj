@@ -102,7 +102,8 @@ and calls are real code, so start there. With more than 32 KB of PRG, CPU addres
 unknown without the bank: results use `PRG:` offsets, and calls aren't followed.
 
 Agents can also read the project directly: segment files, `config.toml`, symbol maps and
-`report/` are plain text, and `dj sql` or `sqlite3` read `.local/cache.db`. Writing the
+`report/` are plain text, and `dj sql` or `sqlite3` read `.local/cache.db` (query its
+[views](database.md#views), whose columns stay, rather than its tables). Writing the
 database directly isn't safe; everything in it can be rebuilt by cleaning.
 
 ## Traces

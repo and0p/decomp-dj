@@ -4492,6 +4492,12 @@ impl App {
             if let Err(e) = self.continue_into(child) {
                 self.playing = false;
                 self.error(e);
+                return;
+            }
+            // Paused (a step or ⏭): run and show the child's frame 0, so the playhead has a
+            // frame to stand on. Playing on, the next tick runs it.
+            if !self.playing {
+                self.seek(0);
             }
             return;
         }

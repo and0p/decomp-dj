@@ -12,6 +12,15 @@ When one ships, its user-facing description moves into `docs/` and the entry her
 - `exclude` in `[cache]` is recorded but not applied to snapshots yet.
 
 ## GUI
+- **A-B loop.** Loop a chosen stretch of frames, like VLC's A-B repeat: set A and B at the
+  playhead (buttons in the transport and keys, or drag a range on the frame ruler), and
+  playback jumps back to A on reaching B until the loop is cleared. Shown as a band on the
+  ruler with handles to adjust it. Open: whether a loop may cross segment boundaries (from a
+  parent into a child, say) or stays in one segment; how it relates to the Loop end mode
+  (which loops the whole segment); whether it's per segment and remembered (in the local
+  database or `.local/`) or just for the session; and how it works while recording (likely
+  re-recording over the loop each pass, with overwrite on). Jumping back to A uses the
+  nearest snapshot, so the comparison core re-syncs at A each pass.
 - **Replay everything as a pausable list play.** Segment > Replay everything runs as a
   one-off job today. Make it ordinary playback in **List** end mode, started from frame 0 of
   the first root segment (the first branch in tree order), so it can be paused, resumed and

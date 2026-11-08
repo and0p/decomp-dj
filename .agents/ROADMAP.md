@@ -194,13 +194,18 @@ When one ships, its user-facing description moves into `docs/` and the entry her
 
 ## Comparison and parity
 
-- **Comparison cores in the project.** The baseline stays fixed, but a project
-  can list several comparison cores (for example two decomps, or a decomp and
-  another emulator) in `config.toml`, in version control, each with a name and
-  the core it uses. Parity is tracked per comparison core.
-- **Side-by-side comparison** with a second libretro instance, namely a decompilation
-  built as a core. Its video output may or may not match. The same inputs drive both,
-  and the GUI compares state hashes and video.
+- **Shipped: comparison cores, phase 1.** `[[compare]]` entries, the GUI's Compare
+  dropdown and Run toggle, `dj_sync` (with `DJ_SYNC_BOOT`) or save-state sync after
+  jumps, `dj_write` for `[WRITE]` lines, and the pictures side by side
+  ([gui.md](../docs/gui.md#comparison-cores), [connectors.md](../docs/connectors.md#comparison-cores)).
+  GUI only; the comparison core's coverage hooks are ignored.
+- **Next: parity (phase 2).** `int dj_check_parity(baseline, frame, char *reason, size_t)`
+  returning MATCH, MISMATCH, SKIP or ERROR with a reason, called after each frame both
+  cores ran (redundant right after a sync). A **Check parity** checkbox, off at launch and
+  kept for the app session (not saved), and a **Pause on first parity failure** option.
+  Parity is tracked per comparison core.
+- **Later:** the comparison core in the CLI and MCP (`dj parity`), its coverage, sound
+  (an A|B toggle), and more than one comparison core at a time.
 - **To discuss: emulator vs decomp mismatches.** When the decomp core and the
   emulator disagree (state hash, RAM, or video), the comparison should stop ticking
   and report the first difference it caught: the frame, the regions or addresses

@@ -1,9 +1,10 @@
 //! A minimal headless libretro frontend: loads a core, feeds it input, reads memory,
 //! saves and loads states, captures video frames, and talks to a decomp-dj coverage connector.
 //!
-//! libretro cores keep global state and call back into plain C functions, so only
-//! one `Core` may exist per process. The callbacks reach the frontend's state
-//! through a thread-local.
+//! libretro cores keep global state and call back into plain C functions with no context
+//! pointer. Each `Core` therefore sits in a slot (the baseline, and one comparison core):
+//! every slot has its own frontend state in a thread-local and its own copies of the
+//! callbacks, and one core library may be loaded into each slot.
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::cell::RefCell;
@@ -176,14 +177,21 @@ struct Host {
     av_info: SystemAvInfo,
 }
 
+/// How many cores may be loaded at once.
+pub const SLOTS: usize = 2;
+/// The slot of the project's own core.
+pub const BASELINE: usize = 0;
+/// The slot of a comparison core.
+pub const COMPARISON: usize = 1;
+
 thread_local! {
-    static HOST: RefCell<Option<Host>> = const { RefCell::new(None) };
+    static HOST: RefCell<[Option<Host>; SLOTS]> = const { RefCell::new([None, None]) };
 }
 
-static CORE_LOADED: AtomicBool = AtomicBool::new(false);
+static CORE_LOADED: [AtomicBool; SLOTS] = [AtomicBool::new(false), AtomicBool::new(false)];
 
-fn with_host<R>(f: impl FnOnce(&mut Host) -> R) -> Option<R> {
-    HOST.with(|h| h.borrow_mut().as_mut().map(f))
+fn with_host<R>(slot: usize, f: impl FnOnce(&mut Host) -> R) -> Option<R> {
+    HOST.with(|h| h.borrow_mut()[slot].as_mut().map(f))
 }
 
 /// Parses a v0 core option string: "Description; default|other|other".
@@ -193,13 +201,13 @@ fn parse_option_values(v: &str) -> (String, Vec<String>) {
     (values.first().cloned().unwrap_or_default(), values)
 }
 
-unsafe extern "C" fn env_cb(cmd: u32, data: *mut c_void) -> bool {
+unsafe extern "C" fn env_cb<const S: usize>(cmd: u32, data: *mut c_void) -> bool {
     match cmd {
         ENV_GET_CAN_DUPE => {
             *(data as *mut bool) = true;
             true
         }
-        ENV_GET_SYSTEM_DIRECTORY | ENV_GET_SAVE_DIRECTORY => with_host(|h| {
+        ENV_GET_SYSTEM_DIRECTORY | ENV_GET_SAVE_DIRECTORY => with_host(S, |h| {
             let p = if cmd == ENV_GET_SYSTEM_DIRECTORY { h.system_dir.as_ptr() } else { h.save_dir.as_ptr() };
             *(data as *mut *const c_char) = p;
             true
@@ -212,12 +220,12 @@ unsafe extern "C" fn env_cb(cmd: u32, data: *mut c_void) -> bool {
                 2 => PixelFormat::Rgb565,
                 _ => return false,
             };
-            with_host(|h| h.pixel_format = f);
+            with_host(S, |h| h.pixel_format = f);
             true
         }
         ENV_SET_VARIABLES => {
             let mut v = data as *const Variable;
-            with_host(|h| {
+            with_host(S, |h| {
                 while !(*v).key.is_null() {
                     let key = CStr::from_ptr((*v).key).to_string_lossy().into_owned();
                     let val = CStr::from_ptr((*v).value).to_string_lossy().into_owned();
@@ -233,7 +241,7 @@ unsafe extern "C" fn env_cb(cmd: u32, data: *mut c_void) -> bool {
                 return false;
             }
             let key = CStr::from_ptr(var.key).to_string_lossy().into_owned();
-            with_host(|h| {
+            with_host(S, |h| {
                 let value = h.option_overrides.get(&key).cloned().or_else(|| h.option_defs.get(&key).map(|d| d.0.clone()));
                 match value {
                     Some(v) => {
@@ -253,7 +261,7 @@ unsafe extern "C" fn env_cb(cmd: u32, data: *mut c_void) -> bool {
             .unwrap_or(false)
         }
         ENV_GET_VARIABLE_UPDATE => {
-            let dirty = with_host(|h| std::mem::replace(&mut h.options_dirty, false)).unwrap_or(false);
+            let dirty = with_host(S, |h| std::mem::replace(&mut h.options_dirty, false)).unwrap_or(false);
             *(data as *mut bool) = dirty;
             true
         }
@@ -264,7 +272,7 @@ unsafe extern "C" fn env_cb(cmd: u32, data: *mut c_void) -> bool {
         }
         ENV_SET_PROC_ADDRESS_CALLBACK => {
             let iface = &*(data as *const GetProcAddressInterface);
-            with_host(|h| h.proc_iface = iface.get_proc_address);
+            with_host(S, |h| h.proc_iface = iface.get_proc_address);
             true
         }
         ENV_SET_MEMORY_MAPS => {
@@ -281,17 +289,17 @@ unsafe extern "C" fn env_cb(cmd: u32, data: *mut c_void) -> bool {
                     offset: d.offset,
                 });
             }
-            with_host(|h| h.bus = ranges);
+            with_host(S, |h| h.bus = ranges);
             true
         }
         ENV_SET_SYSTEM_AV_INFO => {
             let av = *(data as *const SystemAvInfo);
-            with_host(|h| h.av_info = av);
+            with_host(S, |h| h.av_info = av);
             true
         }
         ENV_SET_GEOMETRY => {
             let g = *(data as *const GameGeometry);
-            with_host(|h| h.av_info.geometry = g);
+            with_host(S, |h| h.av_info.geometry = g);
             true
         }
         ENV_GET_LANGUAGE => {
@@ -317,8 +325,8 @@ unsafe extern "C" fn env_cb(cmd: u32, data: *mut c_void) -> bool {
     }
 }
 
-unsafe extern "C" fn video_cb(data: *const c_void, width: u32, height: u32, pitch: usize) {
-    with_host(|h| {
+unsafe extern "C" fn video_cb<const S: usize>(data: *const c_void, width: u32, height: u32, pitch: usize) {
+    with_host(S, |h| {
         if !h.capture_next_frame || data.is_null() {
             return;
         }
@@ -354,9 +362,9 @@ unsafe extern "C" fn audio_batch_cb(_data: *const i16, frames: usize) -> usize {
 }
 unsafe extern "C" fn input_poll_cb() {}
 
-unsafe extern "C" fn input_state_cb(port: u32, device: u32, index: u32, id: u32) -> i16 {
+unsafe extern "C" fn input_state_cb<const S: usize>(port: u32, device: u32, index: u32, id: u32) -> i16 {
     let base = device & 0xff;
-    with_host(|h| {
+    with_host(S, |h| {
         if base == DEVICE_JOYPAD && id == DEVICE_ID_JOYPAD_MASK {
             let mut mask = 0i16;
             for b in 0..16u32 {
@@ -437,6 +445,8 @@ pub struct CoverageRegion {
 
 pub struct Core {
     _lib: libloading::Library,
+    /// Which slot this core is in (BASELINE or COMPARISON).
+    pub slot: usize,
     api: Api,
     pub library_name: String,
     pub library_version: String,
@@ -445,16 +455,35 @@ pub struct Core {
 }
 
 impl Core {
+    /// Loads the project's core, into the baseline slot.
     pub fn load(core_path: &Path, work_dir: &Path, options: &BTreeMap<String, String>) -> Result<Core> {
-        if CORE_LOADED.swap(true, Ordering::SeqCst) {
-            bail!("only one libretro core can be loaded per process");
+        Self::load_in(BASELINE, core_path, work_dir, options)
+    }
+
+    /// Loads a core into `slot`. Two slots must not hold the same library file: a library
+    /// is only loaded once per process, so the second would share the first one's globals.
+    pub fn load_in(slot: usize, core_path: &Path, work_dir: &Path, options: &BTreeMap<String, String>) -> Result<Core> {
+        if slot >= SLOTS {
+            bail!("no core slot {slot}");
         }
+        if CORE_LOADED[slot].swap(true, Ordering::SeqCst) {
+            bail!("a libretro core is already loaded in slot {slot}");
+        }
+        let r = Self::load_unchecked(slot, core_path, work_dir, options);
+        if r.is_err() {
+            HOST.with(|h| h.borrow_mut()[slot] = None);
+            CORE_LOADED[slot].store(false, Ordering::SeqCst);
+        }
+        r
+    }
+
+    fn load_unchecked(slot: usize, core_path: &Path, work_dir: &Path, options: &BTreeMap<String, String>) -> Result<Core> {
         let system_dir = work_dir.join("system");
         let save_dir = work_dir.join("saves");
         std::fs::create_dir_all(&system_dir)?;
         std::fs::create_dir_all(&save_dir)?;
         HOST.with(|h| {
-            *h.borrow_mut() = Some(Host {
+            h.borrow_mut()[slot] = Some(Host {
                 system_dir: CString::new(system_dir.to_string_lossy().as_bytes()).unwrap(),
                 save_dir: CString::new(save_dir.to_string_lossy().as_bytes()).unwrap(),
                 pixel_format: PixelFormat::Rgb1555,
@@ -507,15 +536,20 @@ impl Core {
             let library_version = cstr(info.library_version);
 
             // Same order as RetroArch: some cores (Mesen) only build their state in retro_init.
-            set_environment(env_cb);
+            // Each slot has its own copies of the callbacks, which reach its own Host.
+            let (env, video, state): (EnvFn, VideoFn, StateFn) = match slot {
+                BASELINE => (env_cb::<0>, video_cb::<0>, input_state_cb::<0>),
+                _ => (env_cb::<1>, video_cb::<1>, input_state_cb::<1>),
+            };
+            set_environment(env);
             init();
-            set_video(video_cb);
+            set_video(video);
             set_audio(audio_cb);
             set_audio_batch(audio_batch_cb);
             set_poll(input_poll_cb);
-            set_state(input_state_cb);
+            set_state(state);
 
-            let unknown: Vec<String> = with_host(|h| {
+            let unknown: Vec<String> = with_host(slot, |h| {
                 h.option_overrides.keys().filter(|k| !h.option_defs.contains_key(*k)).cloned().collect()
             })
             .unwrap_or_default();
@@ -523,7 +557,7 @@ impl Core {
                 eprintln!("warning: core does not declare these options: {}", unknown.join(", "));
             }
 
-            let connector = with_host(|h| h.proc_iface).flatten().and_then(|gpa| {
+            let connector = with_host(slot, |h| h.proc_iface).flatten().and_then(|gpa| {
                 let get = |name: &str| -> ProcAddress {
                     let c = CString::new(name).unwrap();
                     gpa(c.as_ptr())
@@ -549,13 +583,13 @@ impl Core {
                 })
             });
 
-            Ok(Core { _lib: lib, api, library_name, library_version, connector, game_loaded: false })
+            Ok(Core { _lib: lib, slot, api, library_name, library_version, connector, game_loaded: false })
         }
     }
 
     /// Effective value of every option the core declared.
     pub fn effective_options(&self) -> BTreeMap<String, String> {
-        with_host(|h| {
+        with_host(self.slot, |h| {
             h.option_defs
                 .iter()
                 .map(|(k, (def, _))| (k.clone(), h.option_overrides.get(k).cloned().unwrap_or_else(|| def.clone())))
@@ -576,9 +610,31 @@ impl Core {
         Ok(())
     }
 
+    /// Starts the core with no content (for cores that need none).
+    pub fn load_no_game(&mut self) -> Result<()> {
+        let ok = unsafe { (self.api.load_game)(std::ptr::null()) };
+        if !ok {
+            bail!("core refused to start without content");
+        }
+        self.game_loaded = true;
+        Ok(())
+    }
+
+    /// A function or symbol of the core: through its proc address callback first
+    /// (where connectors put their `dj_*` functions), then the library's exports.
+    pub fn proc(&self, name: &str) -> *mut c_void {
+        let Ok(c) = CString::new(name) else { return std::ptr::null_mut() };
+        if let Some(gpa) = with_host(self.slot, |h| h.proc_iface).flatten() {
+            if let Some(f) = unsafe { gpa(c.as_ptr()) } {
+                return f as *mut c_void;
+            }
+        }
+        unsafe { self._lib.get::<*mut c_void>(c.as_bytes_with_nul()).map(|s| *s).unwrap_or(std::ptr::null_mut()) }
+    }
+
     /// Frames per second the core reports, and its preferred display aspect ratio (0 if unset).
     pub fn timing(&self) -> (f64, f32) {
-        with_host(|h| (h.av_info.timing.fps, h.av_info.geometry.aspect_ratio)).unwrap_or((0.0, 0.0))
+        with_host(self.slot, |h| (h.av_info.timing.fps, h.av_info.geometry.aspect_ratio)).unwrap_or((0.0, 0.0))
     }
 
     pub fn has_connector(&self) -> bool {
@@ -586,7 +642,7 @@ impl Core {
     }
 
     pub fn run_frame(&mut self, capture: bool) -> Option<Frame> {
-        with_host(|h| {
+        with_host(self.slot, |h| {
             h.capture_next_frame = capture;
             if capture {
                 h.last_frame = None;
@@ -594,7 +650,7 @@ impl Core {
         });
         unsafe { (self.api.run)() };
         if capture {
-            with_host(|h| {
+            with_host(self.slot, |h| {
                 h.capture_next_frame = false;
                 h.last_frame.take()
             })
@@ -609,7 +665,7 @@ impl Core {
     }
 
     pub fn set_input(&mut self, key: InputKey, value: i16) {
-        with_host(|h| {
+        with_host(self.slot, |h| {
             if value == 0 {
                 h.inputs.remove(&key);
             } else {
@@ -619,7 +675,7 @@ impl Core {
     }
 
     pub fn clear_inputs(&mut self) {
-        with_host(|h| h.inputs.clear());
+        with_host(self.slot, |h| h.inputs.clear());
     }
 
     pub fn set_port_device(&mut self, port: u32, device: u32) {
@@ -662,7 +718,7 @@ impl Core {
 
     /// Resolves an emulated bus address through the core's memory maps.
     pub fn bus_byte(&mut self, addr: usize) -> Option<*mut u8> {
-        with_host(|h| {
+        with_host(self.slot, |h| {
             for d in &h.bus {
                 if d.ptr == 0 {
                     continue;
@@ -793,8 +849,8 @@ impl Drop for Core {
             }
             (self.api.deinit)();
         }
-        HOST.with(|h| *h.borrow_mut() = None);
-        CORE_LOADED.store(false, Ordering::SeqCst);
+        HOST.with(|h| h.borrow_mut()[self.slot] = None);
+        CORE_LOADED[self.slot].store(false, Ordering::SeqCst);
     }
 }
 

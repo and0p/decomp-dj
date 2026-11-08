@@ -430,21 +430,7 @@ impl Session {
     }
 
     pub fn write(&mut self, region: &str, address: u64, bytes: &[u8]) -> Result<()> {
-        if region == "BUS" {
-            for (i, b) in bytes.iter().enumerate() {
-                let p = self.core.bus_byte(address as usize + i).ok_or_else(|| anyhow!("BUS address {:#x} is not mapped", address as usize + i))?;
-                unsafe { *p = *b };
-            }
-            return Ok(());
-        }
-        let id = region_memory_id(region).ok_or_else(|| anyhow!("unknown region {region}"))?;
-        let mem = self.core.memory(id).ok_or_else(|| anyhow!("core exposes no {region}"))?;
-        let a = address as usize;
-        if a + bytes.len() > mem.len() {
-            bail!("[WRITE] {region} {address:#x} runs past the end ({} bytes)", mem.len());
-        }
-        mem[a..a + bytes.len()].copy_from_slice(bytes);
-        Ok(())
+        write_memory(&mut self.core, region, address, bytes)
     }
 
     /// Plays every replay in tree order. `from_scratch` replays each chain from its
@@ -547,21 +533,7 @@ impl Session {
     /// frame `frame` of `id` (before that frame's lines apply). Needed after
     /// loading a mid-replay snapshot, because input state is not part of a save state.
     pub fn restore_inputs(&mut self, col: &Collection, id: &str, frame: u64) -> Result<()> {
-        let mut devs = self.devices_at_start(col, id)?;
-        self.core.clear_inputs();
-        for l in col.replays[id].lines.iter().take_while(|l| l.frame < frame) {
-            match &l.command {
-                Command::Input { key, value, impulse: false } => self.core.set_input(*key, *value),
-                Command::Device { port, device } => {
-                    devs.insert(*port, *device);
-                }
-                _ => {}
-            }
-        }
-        for (port, dev) in devs {
-            self.core.set_port_device(port, dev);
-        }
-        Ok(())
+        restore_inputs_on(&mut self.core, col, id, frame)
     }
 
     /// Applies frame `frame`'s lines of `id` and runs that frame.
@@ -607,6 +579,45 @@ impl Session {
             None => Ok(None),
         }
     }
+}
+
+/// `[WRITE]`: writes `bytes` into a core's memory region (or its bus, for `BUS`).
+pub fn write_memory(core: &mut Core, region: &str, address: u64, bytes: &[u8]) -> Result<()> {
+    if region == "BUS" {
+        for (i, b) in bytes.iter().enumerate() {
+            let p = core.bus_byte(address as usize + i).ok_or_else(|| anyhow!("BUS address {:#x} is not mapped", address as usize + i))?;
+            unsafe { *p = *b };
+        }
+        return Ok(());
+    }
+    let id = region_memory_id(region).ok_or_else(|| anyhow!("unknown region {region}"))?;
+    let mem = core.memory(id).ok_or_else(|| anyhow!("core exposes no {region}"))?;
+    let a = address as usize;
+    if a + bytes.len() > mem.len() {
+        bail!("[WRITE] {region} {address:#x} runs past the end ({} bytes)", mem.len());
+    }
+    mem[a..a + bytes.len()].copy_from_slice(bytes);
+    Ok(())
+}
+
+/// Sets a core's port devices and held inputs to what they are at the start of frame
+/// `frame` of `id` (input state is not part of a save state).
+pub fn restore_inputs_on(core: &mut Core, col: &Collection, id: &str, frame: u64) -> Result<()> {
+    let mut devs = devices_at_start(col, id)?;
+    core.clear_inputs();
+    for l in col.replays[id].lines.iter().take_while(|l| l.frame < frame) {
+        match &l.command {
+            Command::Input { key, value, impulse: false } => core.set_input(*key, *value),
+            Command::Device { port, device } => {
+                devs.insert(*port, *device);
+            }
+            _ => {}
+        }
+    }
+    for (port, dev) in devs {
+        core.set_port_device(port, dev);
+    }
+    Ok(())
 }
 
 pub fn trunk_start_frame(r: &Replay) -> u64 {

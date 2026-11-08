@@ -89,6 +89,28 @@ Record mode writes what you hold on the keyboard into the piano roll. It is a mo
 
 **Undo and hashes.** One recording pass is one undo step: from Record on to off in real time, or one press or hold of Commit or Rewind frame by frame. Recording is an edit like any other: the segment loses its end hash and later checkpoints, and turns dirty until it is played to its end. Playback isn't paused for it ([return to the edit](editing.md#return-to-the-edit) doesn't apply while recording).
 
+## Comparison cores
+
+A comparison core is another libretro core (a decomp built as a core, or the same emulator
+in another build or with other options) that runs beside the baseline on the same input
+lines. The project lists them as `[[compare]]` entries ([config.md](config.md#compare-optional-repeatable)).
+
+- **Compare** (in the transport, when the project has entries) picks one, or None. A core
+  loads when you pick it and unloads when you pick another or None; only one is loaded at a
+  time, and none is when the app starts. If it fails to load, a dialog says why and only the
+  baseline shows.
+- **Run** pauses a loaded comparison core without unloading it. Turned back on, it syncs.
+- The pictures sit side by side under their names, with the comparison core's state beside
+  its name: **in step**, **paused**, **waiting to sync** or **out of sync** (with the reason
+  over its picture). Drag the divider between them to resize; double-click it for an even
+  split.
+- Each frame the baseline runs, the comparison core runs the same frame with the same input
+  lines, on saved, unsaved and dirty segments alike. After a jump the comparison core is
+  synced to the baseline before the next frame shown ([connectors.md](connectors.md#comparison-cores)):
+  when you're paused, the frame shown is re-run so both pictures show it. **Sync now** tries
+  again after a failed sync.
+- Parity checks aren't there yet: for now you compare by eye.
+
 ## Menus
 
 | Menu | Holds |
@@ -99,13 +121,13 @@ Record mode writes what you hold on the keyboard into the piano roll. It is a mo
 | Emulation | Play/pause, step, go to start or end, Use the local database, Snapshot memory, Set ROM…, Set core… ([database.md](database.md#in-the-gui)) |
 | Segment | Tree edits and Add event at playhead (E) ([editing.md](editing.md#segment-menu)); at the end, Clean all segments and Replay everything ([database.md](database.md#in-the-gui)) |
 | Input | Keyboard mapping… ([below](#recording)) |
-| View | Zoom in, Zoom out, Follow playhead, Return to the edit ([editing.md](editing.md#return-to-the-edit)), Show every joypad button, Second core side by side (coming later) |
+| View | Zoom in, Zoom out, Follow playhead, Return to the edit ([editing.md](editing.md#return-to-the-edit)), Show every joypad button |
 
 ## Limits
 
 - Only button inputs get piano roll rows (no analog, lightgun or pointer rows yet).
 - Recording uses the keyboard only (no gamepads yet), for one controller at a time, and the default keys don't cover X, Y, L or R.
-- Only one core runs at a time. Two cores side by side will need a second process, because a libretro core has global state.
+- One comparison core at a time, and it has no sound. Same-file copies (a comparison core that is the baseline's own library) are tested on Linux only.
 - There is no warning before unsaved edits are lost on Open, Reload or Quit.
 - MAX speed runs on the UI thread.
 - Tested on Linux and macOS; Windows has not been tried.

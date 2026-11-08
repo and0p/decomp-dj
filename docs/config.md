@@ -142,6 +142,38 @@ Symbol maps that roll coverage up into functions and basic blocks ([coverage.md]
 
 The formats (`ca65-dbg`, `csv`, `splat`, `mesen-mlb`, `ld-map`, `elf`) and how each is read are in [coverage.md](coverage.md#symbol-maps).
 
+### `[[compare]]` (optional, repeatable)
+
+Comparison cores: other libretro cores to run beside the baseline, picked in the GUI's
+**Compare** dropdown ([gui.md](gui.md#comparison-cores)). Only one is loaded at a time, and
+none is until you pick it. Entries merge by `name` across `config.toml` and
+`.local/local.toml` ([layering](#layering)), so the shared entry can carry `name`, `sync`
+and `options` and each machine's `local.toml` adds its own `path`.
+
+```toml
+[[compare]]
+name = "decomp"
+sync = "dj_sync"          # the default
+build = "a1b2c3d"
+
+[[compare]]
+name = "mesen, other settings"
+path = "cores/mesen_libretro.dylib"
+sync = "state"
+[compare.options]
+mesen_ntsc_filter = "Composite"
+```
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `name` | yes | What the dropdown shows, and the key entries merge by. |
+| `path` | yes, on each machine | The core library. Relative paths are from the project folder. It may be the baseline's own library: it is then loaded from a private copy in `.local/compare/`, so the two don't share globals. |
+| `build` | no | A free-form id of the build, for people. |
+| `sha256` | no | Pins the library, like `[core] sha256`: a different file doesn't load. |
+| `sync` | no | How the core is brought to the baseline's state after a jump. `"dj_sync"` (the default) calls the core's own `dj_sync` ([connectors.md](connectors.md#comparison-cores)), and a core without it doesn't load. `"state"` loads the baseline's save state: only for the same emulator (or one with the same state format), to compare builds or options. |
+| `content` | no | What the core loads: `true` (the default) is the project's ROM, which a decomp may need for its assets or may ignore; `false` loads nothing; a path loads that file. |
+| `[compare.options]` | no | Core options, like `[core.options]`. |
+
 ### `[cache]` (optional)
 
 Defaults for the local database (`.local/cache.db`) that everyone on the project starts from. Any key can be overridden per machine in `.local/local.toml`.

@@ -341,6 +341,7 @@ fn init(dir: &Path, name: &str, rom: &Path, core_path: &Path, core_build: Option
         tick: None,
         symbols: syms,
         cache: None,
+        compare: vec![],
     };
     std::fs::write(dir.join("config.toml"), toml::to_string_pretty(&config)?)?;
     let col = Collection::open(dir)?;

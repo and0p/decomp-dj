@@ -4,6 +4,7 @@
 pub mod analysis;
 pub mod cache;
 pub mod collection;
+pub mod compare;
 pub mod coverage;
 pub mod format;
 pub mod hydrate;

@@ -65,6 +65,59 @@ struct dj_trace_event {      // 40 bytes
 Events past the capacity are counted in `dropped` rather than stored. Only the Mesen
 connector has the hook so far.
 
+## Comparison cores
+
+A [comparison core](gui.md#comparison-cores) (a decomp built as a libretro core, say) runs
+beside the baseline on the same input lines. These functions are optional, found by name
+like the rest: through the core's proc address callback, then its library exports.
+
+```c
+struct dj_baseline {
+    uint32_t version;                                // 1
+    void    *ctx;
+    void    *(*get_proc)(void *ctx, const char *name);
+};
+
+#define DJ_SYNC_BOOT 1
+
+// Bring this core to the baseline's state at the start of power-on frame `frame`.
+// 0: synced. 1: can't match it here (fill in `reason`). Anything else: an error.
+int dj_sync(const struct dj_baseline *baseline, uint64_t frame, uint32_t flags,
+            char *reason, size_t reason_len);
+
+// Follow a [WRITE] line: `len` bytes at `address` in the baseline's region `region`.
+// 0: done. 1: ignored on purpose. Anything else: an error (fill in `reason`).
+int dj_write(const struct dj_baseline *baseline, const char *region, uint64_t address,
+             const uint8_t *bytes, size_t len, char *reason, size_t reason_len);
+```
+
+`get_proc` returns any function of the baseline core by name: the libretro API
+(`retro_get_memory_data`, `retro_get_memory_size`, `retro_serialize`, ...) and its own
+connector functions. With them `dj_sync` reads whatever it needs from the baseline, in
+whatever way suits the port: a RAM map, a few watched values, or the save state. The handle
+is only good for the length of the call.
+
+**When the player syncs.** After every jump (a seek, a step back, choosing a segment,
+switching the comparison on), just before the first frame it shows. While the playhead is
+held (dragging the ruler) it waits for the button to be let go. Playing straight on,
+including from a segment's end into its child, needs no sync. A failed sync is tried again
+at the next jump, or with **Sync now**.
+
+**`DJ_SYNC_BOOT`** marks a fresh power-on: frame 0 of a root segment that doesn't start from
+a snapshot. The baseline has only just booted, so a port may prefer to boot itself (read
+its own SRAM, skip a config menu) and line up from there, rather than copy the baseline.
+
+**Inputs.** Held buttons aren't part of a save state: after a sync the player sets the
+comparison core's ports and inputs as the segment has them at that frame, as it does for
+the baseline.
+
+**`[WRITE]` lines** go to `dj_write`. A core with `sync = "state"` takes them straight into
+its own memory. A `dj_sync` core without `dj_write` can't follow one, so the player syncs it
+again on the next frame shown.
+
+The comparison core's coverage functions are ignored for now. A test core with these
+functions is in `player/tests/testcore/`.
+
 ## Writing one for another core
 
 1. Find where the core fetches an instruction byte, and where it can turn a CPU address into a ROM offset (Mesen's mappers already do: `BaseMapper::GetAbsoluteAddressAndType`).

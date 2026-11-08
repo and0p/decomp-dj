@@ -7,6 +7,7 @@
 use anyhow::{anyhow, Result};
 use eframe::egui::{self, Color32, RichText};
 use decomp_dj::collection::{Collection, LocalConfig, Status};
+use decomp_dj::compare::{Comparison, SyncOutcome};
 use decomp_dj::format::{Command, InputKey};
 use decomp_dj::hydrate::Hydrator;
 use decomp_dj::player::{trunk_start_frame, PlayOptions, Recorder, Session};
@@ -233,6 +234,29 @@ struct App {
     rec_hold: Option<(bool, f64, f64)>,
     /// Input > Keyboard mapping…
     mapping: Option<record::MappingDialog>,
+    /// The comparison core (docs/gui.md#comparison-cores), if one is selected and loaded.
+    compare: Option<Comparison>,
+    /// Where the comparison core is in step with the baseline: the segment and the next
+    /// frame it runs. None: out of sync.
+    compare_at: Option<(String, u64)>,
+    /// Run comparison: off pauses a loaded comparison core without unloading it.
+    compare_run: bool,
+    /// Try a sync at the next chance: set by jumps, Run comparison and Sync now; cleared by
+    /// each attempt, so a failed sync is retried only at the next jump.
+    compare_need_sync: bool,
+    /// Why the comparison core is out of sync (a failed sync or step).
+    compare_problem: Option<String>,
+    compare_texture: Option<egui::TextureHandle>,
+    /// The divider between the baseline and comparison pictures, as a fraction of the width.
+    compare_split: f32,
+    /// A comparison core that failed to load: the message for its dialog.
+    compare_dialog: Option<String>,
+    /// The baseline's next frame when it last ran one: the segment and frame. Anything else
+    /// next is a jump.
+    base_next: Option<(String, u64)>,
+    /// Re-run the frame shown from the nearest snapshot (`try_seek`), to sync the comparison
+    /// core before it and draw its picture.
+    reshow: bool,
 }
 
 /// What playback does when it reaches the end of a segment.
@@ -401,6 +425,16 @@ impl Default for App {
             rec_live: false,
             rec_hold: None,
             mapping: None,
+            compare: None,
+            compare_at: None,
+            compare_run: true,
+            compare_need_sync: false,
+            compare_problem: None,
+            compare_texture: None,
+            compare_split: 0.5,
+            compare_dialog: None,
+            base_next: None,
+            reshow: false,
         }
     }
 }
@@ -718,6 +752,7 @@ impl App {
                 self.follow = None;
                 // Only one libretro core can be loaded per process, so drop the old one first.
                 self.session = None;
+                self.unload_compare();
                 { self.end_pass(); self.pb = None; }
                 self.playing = false;
                 self.texture = None;
@@ -772,6 +807,8 @@ impl App {
         };
         match Session::open(col, &rom, &core) {
             Ok(s) => {
+                self.base_next = None;
+                self.compare_need_sync = true;
                 let (fps, aspect) = s.core.timing();
                 self.fps = if fps > 1.0 { fps } else { 60.0 };
                 self.aspect = aspect;
@@ -1023,6 +1060,7 @@ impl App {
         }
         let stored = s.stored_frames(col, id, &start_hash).unwrap_or_default();
         self.pb = Some(Playback { id: id.to_string(), start_frame, frames, ran: 0, snapshots: BTreeMap::from([(0, snap)]), checkpoints, checkpoint_miss: None, checkpoints_seen: BTreeMap::new(), end_hash: None, start_hash: Some(start_hash), stored, stale_from: None, picture_stale: false, rec: Some(rec) });
+        self.base_next = None;
         self.edit_from = None;
         self.coverage_restart_live();
         Ok(())
@@ -1106,11 +1144,22 @@ impl App {
 
     /// Runs one frame of the selected replay.
     fn run_one(&mut self, capture: bool) -> Result<()> {
-        let (Some(col), Some(s), Some(pb)) = (&self.col, &mut self.session, &mut self.pb) else { return Ok(()) };
-        if pb.ran >= pb.frames {
+        let Some(pb) = &self.pb else { return Ok(()) };
+        if pb.ran >= pb.frames || self.col.is_none() || self.session.is_none() {
             return Ok(());
         }
-        let k = pb.ran;
+        let (id, k) = (pb.id.clone(), pb.ran);
+        // Anything but the frame after the last one run is a jump: the comparison core
+        // falls out of step and syncs again before the next frame shown.
+        if self.base_next.as_ref().is_none_or(|(i, f)| *i != id || *f != k) {
+            self.compare_at = None;
+            self.compare_need_sync = true;
+        }
+        if capture && self.compare_need_sync && self.compare_run && self.compare.is_some() && !egui_ctx().input(|i| i.pointer.any_down()) {
+            // Not while a button is held (dragging the ruler): that syncs once it's let go.
+            self.compare_sync(&id, k);
+        }
+        let (Some(col), Some(s), Some(pb)) = (&self.col, &mut self.session, &mut self.pb) else { return Ok(()) };
         // The pass records only while it runs straight on.
         if pb.rec.as_ref().is_some_and(|r| r.f != k) {
             s.keep_snapshots(pb.rec.take().unwrap())?;
@@ -1143,6 +1192,33 @@ impl App {
             None => s.step(col, &pb.id, k, show)?,
         };
         pb.ran += 1;
+        self.base_next = Some((id.clone(), k + 1));
+        if self.compare_run && self.compare_at.as_ref().is_some_and(|(i, f)| *i == id && *f == k) {
+            if let Some(c) = &mut self.compare {
+                match c.step(&s.core, col, &id, k, capture) {
+                    Ok(st) => {
+                        if st.needs_sync {
+                            // A [WRITE] it couldn't follow: sync again at the next frame shown.
+                            self.compare_at = None;
+                            self.compare_need_sync = true;
+                        } else {
+                            self.compare_at = Some((id.clone(), k + 1));
+                        }
+                        if let Some(f) = st.frame {
+                            let img = egui::ColorImage::from_rgb([f.width as usize, f.height as usize], &f.rgb);
+                            match &mut self.compare_texture {
+                                Some(t) => t.set(img, egui::TextureOptions::NEAREST),
+                                None => self.compare_texture = Some(egui_ctx().load_texture("compare", img, egui::TextureOptions::NEAREST)),
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.compare_at = None;
+                        self.compare_problem = Some(format!("Frame {k} failed: {e:#}"));
+                    }
+                }
+            }
+        }
         let reached_end = pb.ran == pb.frames;
         // Frames run since the edit are up to date again.
         if let Some(st) = pb.stale_from {
@@ -1257,7 +1333,7 @@ impl App {
             }
         }
         let Some(pb) = &self.pb else { return Ok(()) };
-        if want_ran != pb.ran || self.texture.is_none() {
+        if want_ran != pb.ran || self.texture.is_none() || std::mem::take(&mut self.reshow) {
             // Restart from the nearest snapshot that still leaves one frame to draw,
             // unless running on from where we are is quicker.
             let (&k, _) = pb.snapshots.range(..want_ran).next_back().ok_or_else(|| anyhow!("no snapshot"))?;
@@ -1601,6 +1677,20 @@ impl App {
     fn continue_into(&mut self, child: &str) -> Result<()> {
         let (Some(col), Some(s), Some(pb)) = (&self.col, &mut self.session, &self.pb) else { return Ok(()) };
         let start_frame = pb.start_frame + pb.frames;
+        // Straight on: the baseline (and the comparison core, if in step) carry on into the child.
+        let end = Some((pb.id.clone(), pb.frames));
+        if self.base_next == end {
+            self.base_next = Some((child.to_string(), 0));
+        }
+        if self.compare_at == end {
+            self.compare_at = None;
+            if let Some(c) = &mut self.compare {
+                match c.enter(col, child) {
+                    Ok(()) => self.compare_at = Some((child.to_string(), 0)),
+                    Err(e) => self.compare_problem = Some(format!("{e:#}")),
+                }
+            }
+        }
         let rec = start_pass(s, col, child, start_frame)?;
         let start_hash = Some(rec.start_hash.clone());
         let snap = s.snapshot()?;
@@ -1613,6 +1703,75 @@ impl App {
         self.roll.follow_to(0);
         self.coverage_restart_live();
         Ok(())
+    }
+
+    // ---- comparison cores (docs/gui.md#comparison-cores) ----
+
+    fn unload_compare(&mut self) {
+        self.compare = None;
+        self.compare_at = None;
+        self.compare_problem = None;
+        self.compare_texture = None;
+        self.compare_need_sync = false;
+    }
+
+    /// Compare: loads comparison core `name` from `[[compare]]` (unloading the one before
+    /// it first), or none.
+    fn select_compare(&mut self, name: Option<String>) {
+        self.unload_compare();
+        let (Some(name), Some(col)) = (name, &self.col) else { return };
+        let local = col.settings().unwrap_or_default();
+        let rom = local.rom.as_ref().map(|r| abs_path(&col.root, r));
+        let core = local.core.as_ref().map(|c| abs_path(&col.root, c)).unwrap_or_default();
+        match Comparison::open(col, &name, &core, rom.as_deref()) {
+            Ok(c) => {
+                self.compare = Some(c);
+                self.compare_need_sync = true;
+                self.info(format!("Loaded comparison core \"{name}\""));
+            }
+            Err(e) => self.compare_dialog = Some(format!("Could not load comparison core \"{name}\": {e:#}")),
+        }
+    }
+
+    /// Brings the comparison core to the baseline's state at frame `k` of `id` (before the
+    /// baseline runs it).
+    fn compare_sync(&mut self, id: &str, k: u64) {
+        self.compare_need_sync = false;
+        let (Some(col), Some(s), Some(pb), Some(c)) = (&self.col, &mut self.session, &self.pb, &mut self.compare) else { return };
+        // A fresh power-on: frame 0 of a root segment that doesn't start from a snapshot.
+        let r = &col.replays[id];
+        let boot = k == 0 && r.parent().is_none() && r.get("snapshot").is_none();
+        match c.sync(&mut s.core, col, id, k, pb.start_frame + k, boot) {
+            Ok(SyncOutcome::Synced) => {
+                self.compare_at = Some((id.to_string(), k));
+                self.compare_problem = None;
+            }
+            Ok(SyncOutcome::Failed(why)) => {
+                self.compare_at = None;
+                self.compare_problem = Some(format!("Couldn't sync at frame {k}: {why}"));
+            }
+            Err(e) => {
+                self.compare_at = None;
+                self.compare_problem = Some(format!("Sync at frame {k} failed: {e:#}"));
+            }
+        }
+    }
+
+    /// Paused with a sync wanted (after a jump, Run comparison or Sync now): re-run the frame
+    /// shown, syncing just before it, so both pictures show the same frame.
+    fn compare_idle(&mut self, ctx: &egui::Context) {
+        if !self.compare_need_sync || !self.compare_run || self.compare.is_none() || self.playing || self.job.is_some() || self.hydrating.is_some() {
+            return;
+        }
+        if ctx.input(|i| i.pointer.any_down()) {
+            return;
+        }
+        let Some(shown) = self.pb.as_ref().and_then(|pb| pb.shown()) else { return };
+        self.reshow = true;
+        self.seek(shown);
+        self.reshow = false;
+        // Tried once (the re-run syncs before its last frame), whatever came of it.
+        self.compare_need_sync = false;
     }
 
     // ---- editing ----
@@ -2583,6 +2742,20 @@ impl App {
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
+        if let Some(msg) = &self.compare_dialog {
+            let mut ok = false;
+            let mut open = true;
+            egui::Window::new("Comparison core").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).show(ctx, |ui| {
+                ui.set_max_width(460.0);
+                ui.label(msg);
+                ui.label(RichText::new("Only the baseline is shown. The entries are [[compare]] in config.toml, or .local/local.toml for this machine.").weak());
+                ui.add_space(4.0);
+                ok = ui.button("OK").clicked();
+            });
+            if ok || !open {
+                self.compare_dialog = None;
+            }
+        }
         // One confirmation for Segment > Delete and the tree's right-click Delete.
         if let Some(ask) = self.save_dialog.take() {
             let mut open = true;
@@ -2971,7 +3144,6 @@ impl App {
                 ui.checkbox(&mut self.roll.follow, "Follow playhead").keep_open();
                 ui.checkbox(&mut self.return_to_edit, "Return to the edit").keep_open().on_hover_text("Any edit pauses playback and shows the earliest frame edited since you last played or moved the playhead. Off: the frame you were on is redrawn.");
                 ui.checkbox(&mut self.roll.all_buttons, "Show every joypad button").keep_open();
-                ui.add_enabled(false, egui::Checkbox::new(&mut false, "Second core side by side")).on_disabled_hover_text("Coming later");
             }));
         });
         let open = bar.iter().any(|r| r.inner.is_some());
@@ -3929,6 +4101,7 @@ impl App {
                 self.job = None;
                 { self.end_pass(); self.pb = None; }
                 self.hydrating = Some(Hydrating { h, paused: false, what, before });
+                self.base_next = None;
             }
             Err(e) => self.error(e),
         }
@@ -4191,6 +4364,9 @@ impl App {
             ui.separator();
             self.record_button(ui, icon);
             ui.separator();
+            if self.compare_controls(ui) {
+                ui.separator();
+            }
 
             // Speed.
             ui.add_enabled_ui(has, |ui| {
@@ -4253,6 +4429,47 @@ impl App {
         });
     }
 
+    /// Compare (pick a comparison core) and Run comparison. Nothing when the project has no
+    /// `[[compare]]` entries; returns whether it showed anything.
+    fn compare_controls(&mut self, ui: &mut egui::Ui) -> bool {
+        let names: Vec<String> = self.col.as_ref().map(|c| c.config.compare.iter().map(|e| e.name.clone()).collect()).unwrap_or_default();
+        if names.is_empty() {
+            return false;
+        }
+        let cur = self.compare.as_ref().map(|c| c.name.clone());
+        let mut pick = None;
+        let busy = self.hydrating.is_some() || self.job.is_some();
+        ui.add_enabled_ui(!busy, |ui| {
+            egui::ComboBox::from_id_salt("compare")
+                .selected_text(cur.as_deref().map_or("Compare: none".to_string(), |n| format!("Compare: {n}")))
+                .width(140.0)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(cur.is_none(), "None").clicked() && cur.is_some() {
+                        pick = Some(None);
+                    }
+                    for n in &names {
+                        if ui.selectable_label(cur.as_ref() == Some(n), n).clicked() && cur.as_ref() != Some(n) {
+                            pick = Some(Some(n.clone()));
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("A comparison core to run beside the baseline, from [[compare]] in the project's config");
+        });
+        if let Some(p) = pick {
+            self.select_compare(p);
+        }
+        if self.compare.is_some() {
+            let was = self.compare_run;
+            ui.checkbox(&mut self.compare_run, "Run").on_hover_text("Run comparison: off pauses the comparison core without unloading it; on syncs it again");
+            if self.compare_run && !was {
+                self.compare_at = None;
+                self.compare_need_sync = true;
+            }
+        }
+        true
+    }
+
     /// Selects the parent and goes to its last frame.
     fn segment_back(&mut self, parent: &str) {
         self.playing = false;
@@ -4307,16 +4524,79 @@ impl App {
             });
             return;
         }
-        let Some(tex) = &self.texture else { return };
-        let [w, h] = tex.size();
-        let disp_w = if self.aspect > 0.1 { h as f32 * self.aspect } else { w as f32 };
-        let size = egui::vec2(disp_w, h as f32);
-        let mut scale = (avail.width() / size.x).min(avail.height() / size.y);
-        if scale >= 2.0 {
-            scale = scale.floor();
+        if self.compare.is_none() {
+            self.baseline_picture(ui, avail);
+            return;
         }
-        let rect = egui::Rect::from_center_size(avail.center(), size * scale);
-        ui.painter().image(tex.id(), rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+        // Side by side, each under a label, with a divider to drag.
+        let head = 20.0;
+        let gap = 8.0;
+        let x = avail.min.x + avail.width() * self.compare_split;
+        let left = egui::Rect::from_min_max(avail.min, egui::pos2(x - gap / 2.0, avail.max.y));
+        let right = egui::Rect::from_min_max(egui::pos2(x + gap / 2.0, avail.min.y), avail.max);
+        let div = egui::Rect::from_min_max(egui::pos2(x - gap / 2.0, avail.min.y), egui::pos2(x + gap / 2.0, avail.max.y));
+        let r = ui.interact(div, egui::Id::unique("compare_divider"), egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+        if r.dragged() {
+            if let Some(p) = r.interact_pointer_pos() {
+                self.compare_split = ((p.x - avail.min.x) / avail.width().max(1.0)).clamp(0.15, 0.85);
+            }
+        }
+        if r.double_clicked() {
+            self.compare_split = 0.5;
+        }
+        let line = if r.hovered() || r.dragged() { Color32::from_gray(140) } else { Color32::from_gray(60) };
+        ui.painter().vline(x, avail.y_range(), egui::Stroke::new(1.0, line));
+        let split = |rc: egui::Rect| (egui::Rect::from_min_max(rc.min, egui::pos2(rc.max.x, rc.min.y + head)), egui::Rect::from_min_max(egui::pos2(rc.min.x, rc.min.y + head), rc.max));
+        let (lh, lb) = split(left);
+        let (rh, rb) = split(right);
+        let base_name = self.col.as_ref().map(|c| c.config.core.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| "core".into());
+        ui.scope_builder(egui::UiBuilder::new().max_rect(lh.shrink2(egui::vec2(6.0, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+            ui.label(RichText::new("Baseline").strong());
+            ui.label(RichText::new(base_name).weak());
+        });
+        self.baseline_picture(ui, lb);
+
+        // The comparison core's state, and what's shown over its picture.
+        let name = self.compare.as_ref().map(|c| c.name.clone()).unwrap_or_default();
+        let (status, color, over) = if !self.compare_run {
+            ("paused".to_string(), Color32::from_gray(150), Some("Run comparison is off".to_string()))
+        } else if let Some(p) = &self.compare_problem {
+            ("out of sync".to_string(), Color32::from_rgb(240, 160, 60), Some(p.clone()))
+        } else if self.compare_at.is_some() {
+            ("in step".to_string(), Color32::from_rgb(120, 200, 120), None)
+        } else {
+            ("waiting to sync".to_string(), Color32::from_gray(150), Some("Syncs at the next frame shown".to_string()))
+        };
+        let mut sync_now = false;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rh.shrink2(egui::vec2(6.0, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+            ui.label(RichText::new(&name).strong());
+            ui.label(RichText::new(&status).color(color));
+            if self.compare_run && self.compare_at.is_none() {
+                let busy = self.playing || self.job.is_some() || self.hydrating.is_some();
+                sync_now = ui.add_enabled(!busy, egui::Button::new("Sync now").small()).on_hover_text("Bring the comparison core to the baseline's state at the frame shown").clicked();
+            }
+        });
+        if sync_now {
+            self.compare_problem = None;
+            self.compare_need_sync = true;
+        }
+        let aspect = self.compare.as_ref().map_or(0.0, |c| c.aspect());
+        let rect = self.compare_texture.as_ref().map(|t| fit_picture(ui, t, aspect, rb));
+        if let Some(text) = over {
+            let rc = rect.unwrap_or(rb);
+            if rect.is_some() {
+                ui.painter().rect_filled(rc, 0.0, Color32::from_black_alpha(160));
+            }
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rc.shrink(16.0)).layout(egui::Layout::top_down(egui::Align::Center)), |ui| {
+                ui.add_space((rc.height() / 2.0 - 40.0).max(0.0));
+                ui.label(RichText::new(text).color(Color32::from_gray(225)));
+            });
+        }
+    }
+
+    fn baseline_picture(&self, ui: &mut egui::Ui, avail: egui::Rect) {
+        let Some(tex) = &self.texture else { return };
+        let rect = fit_picture(ui, tex, self.aspect, avail);
         // A frame from before the latest edit, while the new one is worked out.
         if self.pb.as_ref().is_some_and(|p| p.picture_stale) {
             ui.painter().rect_filled(rect, 0.0, Color32::from_black_alpha(150));
@@ -4485,6 +4765,21 @@ thread_local! {
     static CTX: std::cell::RefCell<Option<egui::Context>> = const { std::cell::RefCell::new(None) };
 }
 
+/// Draws `tex` as large as fits in `avail` at display aspect `aspect` (0: square pixels),
+/// in whole steps once it's twice its size. Returns where it went.
+fn fit_picture(ui: &egui::Ui, tex: &egui::TextureHandle, aspect: f32, avail: egui::Rect) -> egui::Rect {
+    let [w, h] = tex.size();
+    let disp_w = if aspect > 0.1 { h as f32 * aspect } else { w as f32 };
+    let size = egui::vec2(disp_w, h as f32);
+    let mut scale = (avail.width() / size.x).min(avail.height() / size.y);
+    if scale >= 2.0 {
+        scale = scale.floor();
+    }
+    let rect = egui::Rect::from_center_size(avail.center(), size * scale);
+    ui.painter().image(tex.id(), rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+    rect
+}
+
 fn egui_ctx() -> egui::Context {
     CTX.with(|c| c.borrow().clone().expect("egui context"))
 }
@@ -4516,6 +4811,7 @@ impl eframe::App for App {
         }
         self.record_keys(&ctx, dt);
         self.tick(dt);
+        self.compare_idle(&ctx);
         if self.playing {
             ctx.request_repaint();
         }

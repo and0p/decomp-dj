@@ -23,6 +23,9 @@ pub struct Config {
     /// Thresholds for the local database (.agents/CACHE_PLAN.md).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache: Option<crate::cache::CacheConfig>,
+    /// `[[compare]]`: comparison cores that can play beside the baseline (docs/config.md).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compare: Vec<crate::compare::CompareConfig>,
 }
 
 /// `[mcp]` in .local/local.toml (docs/mcp.md).

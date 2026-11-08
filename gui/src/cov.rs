@@ -1,4 +1,4 @@
-//! The Coverage tab in the left sidebar: totals, a ROM map, a function list, and live
+//! The Functions tab in the left sidebar: totals, a ROM map, a function list, and live
 //! coverage of the segment being played (docs/coverage.md).
 //!
 //! The project's coverage comes from `decomp_dj::coverage::build_report`, the same numbers
@@ -14,11 +14,10 @@ use std::path::PathBuf;
 
 use crate::App;
 
-/// Same colors as docs/concepts.md: green covered, blue unreachable, purple data.
+/// Same colors as docs/concepts.md: green covered, blue unreachable (annotations.toml's
+/// unreachable code and data alike).
 pub const COVERED: Color32 = Color32::from_rgb(92, 184, 92);
 pub const UNREACHABLE: Color32 = Color32::from_rgb(90, 140, 230);
-/// Bytes annotations.toml says are data, not code.
-pub const DATA: Color32 = Color32::from_rgb(150, 110, 190);
 /// New code not counted yet: run by unsaved segments (drafts too) or by the segment being
 /// played, and by no saved clean segment. It counts once saved (and clean).
 pub const LIVE: Color32 = Color32::from_rgb(214, 226, 110);
@@ -30,6 +29,17 @@ const EMPTY: Color32 = Color32::from_gray(58);
 const FLASH_SECS: f64 = 1.5;
 /// How long a square glows after its code runs (new or not).
 const GLOW_SECS: f64 = 0.5;
+
+/// What the ROM map under the sidebar shows (its tabs).
+#[derive(Clone, Copy, PartialEq)]
+pub enum MapView {
+    /// Coverage, with parity's purple, orange and red over it.
+    Combined,
+    Coverage,
+    Parity,
+    /// Only the tabs.
+    Hidden,
+}
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Sort {
@@ -134,7 +144,7 @@ pub(crate) fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
 
 /// A cell's fill: grey when nothing ran, green as more of it is covered (full green only
 /// at 100%), yellow-green where unsaved segments or live play add new code, dark faded green
-/// where only dirty segments ran it, blue when it is all unreachable, purple when all data.
+/// where only dirty segments ran it, blue when it is all unreachable or data.
 fn cell_color(c: &Cell, live_new: usize) -> Color32 {
     let base = counted_color(c);
     if c.units == 0 {
@@ -152,13 +162,7 @@ fn cell_color(c: &Cell, live_new: usize) -> Color32 {
 
 fn counted_color(c: &Cell) -> Color32 {
     if c.units == 0 {
-        return if c.unreachable > 0 && c.unreachable >= c.data {
-            UNREACHABLE
-        } else if c.data > 0 {
-            DATA
-        } else {
-            EMPTY
-        };
+        return if c.unreachable + c.data > 0 { UNREACHABLE } else { EMPTY };
     }
     if c.covered == 0 {
         EMPTY
@@ -175,7 +179,7 @@ fn annotation_notes(ui: &mut egui::Ui, ann: &decomp_dj::annotations::Annotations
     for e in ann.entries.iter().filter(|e| e.region == "PRG" && e.start < c.offset + c.size.max(1) && e.end >= c.offset) {
         let (color, what) = match e.kind {
             Kind::Unreachable => (UNREACHABLE, "unreachable".to_string()),
-            Kind::Data => (DATA, "data".to_string()),
+            Kind::Data => (UNREACHABLE, "data".to_string()),
             Kind::Function if e.start == c.offset => (Color32::GRAY, format!("named {}", e.name.as_deref().unwrap_or(""))),
             Kind::Function => continue,
         };
@@ -425,9 +429,72 @@ impl CovState {
         self.parity_stale = false;
     }
 
-    /// The parity view's colour for cell `i`, if parity is shown.
-    fn parity_fill(&self, i: usize) -> Color32 {
-        crate::parity::color(self.parity_cells.get(i).unwrap_or(&[0; 4]))
+    /// Cell `i`'s colour in `view` (Hidden draws as Combined); `parity`: results are loaded.
+    pub(crate) fn fill(&self, i: usize, view: MapView, parity: bool) -> Color32 {
+        let c = &self.cells[i];
+        let live_new = self.live.new_per_cell.get(i).copied().unwrap_or(0);
+        let base = cell_color(c, live_new);
+        let pc = self.parity_cells.get(i).copied().unwrap_or_default();
+        match view {
+            _ if !parity => base,
+            MapView::Coverage => base,
+            MapView::Parity => crate::parity::color(&pc),
+            MapView::Combined | MapView::Hidden => {
+                use crate::parity::{FAILED, FAILED_OLD, PARITY};
+                if pc[0] > 0 {
+                    mix(base, FAILED, 0.85)
+                } else if pc[1] > 0 {
+                    mix(base, FAILED_OLD, 0.85)
+                } else if pc[2] > 0 {
+                    mix(base, PARITY, 0.4 + 0.5 * pc[2] as f32 / (pc[2] + pc[3]) as f32)
+                } else {
+                    base
+                }
+            }
+        }
+    }
+
+    /// The colour key for `view`: only the colours some square shows.
+    fn legend(&self, view: MapView, parity: bool) -> Vec<(Color32, &'static str)> {
+        let mut out = vec![];
+        let any = |f: &dyn Fn(usize) -> bool| (0..self.cells.len()).any(f);
+        let pc = |i: usize| self.parity_cells.get(i).copied().unwrap_or_default();
+        let with_parity = parity && view != MapView::Coverage;
+        if with_parity {
+            use crate::parity::{FAILED, FAILED_OLD, PARITY, UNTESTED};
+            for (k, color, label) in [(2, PARITY, "parity"), (0, FAILED, "failed"), (1, FAILED_OLD, "failed, older build")] {
+                if any(&|i| pc(i)[k] > 0) {
+                    out.push((color, label));
+                }
+            }
+            if view == MapView::Parity {
+                if any(&|i| pc(i)[3] > 0) {
+                    out.push((UNTESTED, "not checked"));
+                }
+                if any(&|i| pc(i).iter().sum::<usize>() == 0) {
+                    out.push((EMPTY, "never run"));
+                }
+                return out;
+            }
+        }
+        let c = &self.cells;
+        let live = |i: usize| self.live.new_per_cell.get(i).copied().unwrap_or(0);
+        if any(&|i| c[i].covered > 0) {
+            out.push((COVERED, "covered"));
+        }
+        if any(&|i| live(i) > 0) {
+            out.push((LIVE, "new, unsaved"));
+        }
+        if any(&|i| c[i].dirty > 0 && live(i) == 0) {
+            out.push((DIRTY_ONLY, "dirty only"));
+        }
+        if any(&|i| c[i].units > c[i].covered + live(i)) {
+            out.push((EMPTY, "never run"));
+        }
+        if any(&|i| c[i].units == 0 && c[i].unreachable + c[i].data > 0) {
+            out.push((UNREACHABLE, "unreachable"));
+        }
+        out
     }
 
     fn visible_cells(&self) -> Vec<usize> {
@@ -538,8 +605,37 @@ impl App {
 
     /// The ROM map at the bottom of the sidebar, shown whatever the tab: live coverage,
     /// a legend, and one square per function (or slice of PRG).
+    /// The map's tabs (Combined, Coverage, Parity, Hidden) and the recount button.
+    pub(crate) fn map_tabs(&mut self, ui: &mut egui::Ui) {
+        let mut refresh = false;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for (v, name, tip) in [
+                (MapView::Combined, "Combined", "Coverage, with parity's purple, orange and red over it"),
+                (MapView::Coverage, "Coverage", "Coverage only"),
+                (MapView::Parity, "Parity", "Parity with the comparison core only"),
+                (MapView::Hidden, "Hidden", "Hide the map"),
+            ] {
+                if ui.selectable_label(self.map_view == v, RichText::new(name).small()).on_hover_text(tip).clicked() {
+                    self.map_view = v;
+                }
+            }
+            if self.cov.report.is_some() && self.map_view != MapView::Hidden {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("⟳").on_hover_text(format!("Recount from the local database (took {} ms)", self.cov.took_ms)).clicked() {
+                        refresh = true;
+                    }
+                });
+            }
+        });
+        if refresh {
+            self.cov.stale = true;
+        }
+    }
+
     pub(crate) fn coverage_map(&mut self, ui: &mut egui::Ui) {
         ui.set_max_width(ui.available_width());
+        self.map_tabs(ui);
         let now = ui.input(|i| i.time);
         if !self.cov.live.flash.is_empty() || !self.cov.live.glow.is_empty() {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
@@ -553,32 +649,18 @@ impl App {
             ui.label(RichText::new(text).small().weak());
             return;
         }
+        let view = self.map_view;
+        let has_parity = self.parity.is_some();
+        if view == MapView::Parity && !has_parity {
+            ui.label(RichText::new("Load a comparison core (Project > Comparison core) and turn on Check parity to see which code matches.").small().weak());
+            return;
+        }
         let mut pick: Option<usize> = None;
-        let mut refresh = false;
         {
             let cov = &self.cov;
             let r = cov.report.as_ref().unwrap();
             let w = ui.available_width();
-            ui.add_space(2.0);
-            let show_parity = self.show_parity && self.parity.is_some();
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                let legend: Vec<(Color32, &str)> = if show_parity {
-                    crate::parity::legend().to_vec()
-                } else {
-                    vec![(COVERED, "covered"), (LIVE, "new, unsaved"), (DIRTY_ONLY, "dirty only"), (EMPTY, "never run"), (UNREACHABLE, "unreachable"), (DATA, "data")]
-                };
-                for (color, label) in legend {
-                    let (rr, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-                    ui.painter().rect_filled(rr, 1.0, color);
-                    ui.label(RichText::new(label).small().weak());
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("⟳").on_hover_text(format!("Recount from the local database (took {} ms)", cov.took_ms)).clicked() {
-                        refresh = true;
-                    }
-                });
-            });
+            let legend = cov.legend(view, has_parity);
 
             // Live.
             if let Some(id) = &cov.live.id {
@@ -595,23 +677,24 @@ impl App {
             let gap = 1.0;
             let avail = w;
             // Squares as big as fit in the rest of the panel, between 5 and 16 px.
-            let fit_h = (ui.available_height() - 12.0).max(30.0);
+            // Room for the colour key under the map.
+            let key_h = 34.0;
+            let fit_h = (ui.available_height() - 12.0 - key_h).max(30.0);
             let px = ((avail * fit_h / cov.cells.len().max(1) as f32).sqrt() - gap).floor().clamp(5.0, 16.0);
             let cols = ((avail + gap) / (px + gap)).floor().max(1.0) as usize;
             let rows = cov.cells.len().div_ceil(cols);
             let map_h = rows as f32 * (px + gap);
-            let max_h = ui.available_height().max(20.0);
-            egui::ScrollArea::vertical().id_salt("cov_map").max_height(max_h).auto_shrink([false, false]).show(ui, |ui| {
+            let max_h = (ui.available_height() - key_h).max(20.0);
+            egui::ScrollArea::vertical().id_salt("cov_map").max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
                 let (rect, resp) = ui.allocate_exact_size(egui::vec2(avail, map_h), egui::Sense::click());
                 let p = ui.painter_at(rect);
                 let at = |i: usize| egui::Rect::from_min_size(rect.min + egui::vec2((i % cols) as f32 * (px + gap), (i / cols) as f32 * (px + gap)), egui::vec2(px, px));
-                for (i, c) in cov.cells.iter().enumerate() {
+                for i in 0..cov.cells.len() {
                     let rr = at(i);
                     if !ui.is_rect_visible(rr) {
                         continue;
                     }
-                    let live_new = cov.live.new_per_cell.get(i).copied().unwrap_or(0);
-                    let mut fill = if show_parity { cov.parity_fill(i) } else { cell_color(c, live_new) };
+                    let mut fill = cov.fill(i, view, has_parity);
                     if let Some(t0) = cov.live.glow.get(&i) {
                         // Ran just now: brighter, fading back over GLOW_SECS.
                         fill = mix(fill, Color32::WHITE, 0.4 * (1.0 - (now - t0) / GLOW_SECS).clamp(0.0, 1.0) as f32);
@@ -649,7 +732,7 @@ impl App {
                         if live_new > 0 {
                             ui.label(RichText::new(format!("+{live_new} new, counted once saved")).color(LIVE));
                         }
-                        if show_parity {
+                        if has_parity && view != MapView::Coverage {
                             let pc = cov.parity_cells.get(i).copied().unwrap_or_default();
                             ui.label(RichText::new(crate::parity::describe(&pc)).color(crate::parity::color(&pc)));
                         }
@@ -660,7 +743,7 @@ impl App {
                             ui.label(RichText::new(format!("{} unreachable", c.unreachable)).color(UNREACHABLE));
                         }
                         if c.data > 0 {
-                            ui.label(RichText::new(format!("{} bytes of data", c.data)).color(DATA));
+                            ui.label(RichText::new(format!("{} bytes of data", c.data)).color(UNREACHABLE));
                         }
                         annotation_notes(ui, &r.detail.annotations, c);
                     });
@@ -671,11 +754,17 @@ impl App {
                     }
                 }
             });
+            // The colour key, under the map.
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                for (color, label) in legend {
+                    let (rr, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rr, 1.0, color);
+                    ui.label(RichText::new(label).small().weak());
+                }
+            });
         }
-        if refresh {
-            self.cov.stale = true;
-        }
-        // A square opens its function in the Coverage tab.
+        // A square opens its function in the Functions tab.
         if let Some(i) = pick {
             self.side_tab = crate::SideTab::Coverage;
             self.cov.selected = Some(i);
@@ -684,7 +773,7 @@ impl App {
         }
     }
 
-    /// The Coverage tab.
+    /// The Functions tab.
     pub(crate) fn coverage_tab(&mut self, ui: &mut egui::Ui) {
         // Nothing here may widen the sidebar.
         ui.set_max_width(ui.available_width());
@@ -765,7 +854,7 @@ impl App {
                         ui.label(RichText::new(format!("{} unreachable", t.unreachable_instructions)).small().color(UNREACHABLE)).on_hover_text("Inside annotations.toml's [[unreachable]] ranges, left out of the counts");
                     }
                     if t.data_bytes > 0 {
-                        ui.label(RichText::new(format!("{} data bytes", t.data_bytes)).small().color(DATA)).on_hover_text("Inside annotations.toml's [[data]] ranges: never read as code or counted");
+                        ui.label(RichText::new(format!("{} data bytes", t.data_bytes)).small().color(UNREACHABLE)).on_hover_text("Inside annotations.toml's [[data]] ranges: never read as code or counted");
                     }
                     if t.annotated_functions > 0 {
                         let names: Vec<&str> = r.detail.annotated_functions.iter().map(|f| f.name.as_str()).collect();
@@ -916,7 +1005,7 @@ impl App {
                         ui.set_height(row_h);
                         ui.spacing_mut().item_spacing.x = 6.0;
                         let (sq, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-                        let fill = if self.show_parity && self.parity.is_some() { self.cov.parity_fill(i) } else { cell_color(c, live_new) };
+                        let fill = self.cov.fill(i, self.map_view, self.parity.is_some());
                         ui.painter().rect_filled(sq, 1.0, fill);
                         let name: String = if c.name.chars().count() > 26 { format!("{}…", c.name.chars().take(25).collect::<String>()) } else { c.name.clone() };
                         let r = ui.selectable_label(sel, RichText::new(name).small().monospace());

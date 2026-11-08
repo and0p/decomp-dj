@@ -201,10 +201,6 @@ pub fn color(c: &Counts) -> Color32 {
     }
 }
 
-pub fn legend() -> [(Color32, &'static str); 5] {
-    [(PARITY, "parity"), (FAILED, "failed"), (FAILED_OLD, "failed, older build"), (UNTESTED, "not checked"), (NOT_RUN, "never run")]
-}
-
 /// One line on a cell's parity, for tooltips and the selected cell.
 pub fn describe(c: &Counts) -> String {
     let mut parts = vec![format!("{} with parity", c[2])];
@@ -431,9 +427,6 @@ impl App {
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("Parity with \"{}\"", p.core)).small().strong())
                 .on_hover_text(format!("Build {} (sha256 of the core's library). Passes count for this build only.", &p.build[..p.build.len().min(16)]));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.checkbox(&mut self.show_parity, RichText::new("Show on map").small()).on_hover_text("Colour the ROM map and the list by parity instead of coverage");
-            });
         });
         let t: Counts = self.cov.parity_cells.iter().fold([0; 4], |a, c| [a[0] + c[0], a[1] + c[1], a[2] + c[2], a[3] + c[3]]);
         ui.horizontal_wrapped(|ui| {

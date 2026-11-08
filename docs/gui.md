@@ -16,7 +16,7 @@ The ROM and core come from the project's `.local/local.toml` (written by the CLI
 
 | Area | What it holds | Details |
 | --- | --- | --- |
-| Left sidebar | Tabs for **Segments**, **Markers** and **Coverage**, with the coverage map below them. On the map, blue is unreachable code and purple is data, both from [annotations.toml](config.md#annotationstoml); hovering a square shows each entry's `why`. | Below, and [coverage.md](coverage.md#in-the-gui) |
+| Left sidebar | Tabs for **Segments**, **Markers** and **Functions**, with the coverage map below them and its own tabs: **Combined**, **Coverage**, **Parity** and **Hidden**. On the map, blue is unreachable code and data from [annotations.toml](config.md#annotationstoml); hovering a square shows each entry's `why`. The colour key sits under the map. | Below, and [coverage.md](coverage.md#in-the-gui) |
 | Top | The emulator picture, with the transport bar below it | [Transport](#transport) |
 | Bottom | The piano roll and marker lane | [editing.md](editing.md#piano-roll) |
 | Bottom edge | The status bar: messages on the left; the unsaved count, the core and the MCP state (off, or agent sessions running, following, sharing) on the right. Long seeks, loads and cleans show a progress bar there. | |
@@ -37,7 +37,7 @@ only that segment runs.
 
 With MCP > Enable MCP on, drafts written by an AI agent ([mcp.md](mcp.md#drafts)) appear
 as unsaved segments, marked `agent` (and the session that has them open). Like any unsaved
-segment they don't count towards coverage until saved, though the Coverage tab shows what
+segment they don't count towards coverage until saved, though the Functions tab shows what
 they add. File > Save moves them into `segments/` with any edits you made, except drafts
 still open in an agent session; Delete removes one (its file goes when you save). Right-click
 a draft that is open in a session to follow it.
@@ -139,13 +139,14 @@ kept in the local database, separately for each `[[compare]]` entry
   it: the build, the segment and frame the comparison core was synced at, the failing
   segment and frame, the reason, and the code that frame ran. Failed syncs aren't kept.
 
-The Coverage tab's **Parity with "core"** section counts the instructions with parity,
+The Functions tab's **Parity with "core"** section counts the instructions with parity,
 failed and not checked, and lists the failures, newest first. Click one to show its frame.
 **Re-run** syncs where it was synced and plays to its frame with Check parity on (through
 the segments in between, if it was synced in an ancestor); **Clear** forgets it. **Re-run old
 failures** re-runs every failure from an older build, one after another (**Stop** ends it),
-and the status bar says how they went. **Show on map** colours the ROM map and the function
-list by parity:
+and the status bar says how they went. The map's **Parity** tab colours the ROM map and the
+function list by parity alone; **Combined** (the default) lays purple, orange and red over
+the coverage colours:
 
 | Colour | Meaning |
 | --- | --- |

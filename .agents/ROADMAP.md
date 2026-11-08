@@ -69,7 +69,7 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   project-related settings of `config.toml` and `local.toml`). Later, View toggles to hide or
   show the major parts of the window.
 - **Back and forward, like a browser.** A history of where you've been, as segment and
-  frame: selecting another segment (in the tree, the Coverage tab's "First runs in", a
+  frame: selecting another segment (in the tree, the Functions tab's "First runs in", a
   marker, a search), or a seek far enough to count as a jump, pushes the place you left.
   Back returns to that segment *and* frame (500 frames into the first segment brings you
   back to frame 500, not frame 0); Forward redoes it. Buttons in the transport (or toolbar),
@@ -94,7 +94,7 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   lists and checks the entries. Tetris carries its unreachable two-player code and the
   seven `switch_s_plus_2a` jump tables.
 - **Editing annotations in the GUI (later phase).** Right-click a map square or a range
-  in the Coverage tab to mark it unreachable or data, or to name or resize a function, and
+  in the Functions tab to mark it unreachable or data, or to name or resize a function, and
   write the entry (with a `why` prompt) to annotations.toml. Possibly a jump-table helper
   that, given the `jsr`, works out the table's end from the words that follow.
 - **Find functions without a symbol map.** For games with no decomp or disassembly (most
@@ -133,7 +133,7 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   Open: one line per block keeps diffs readable but grows with the ROM; ranges of covered
   offsets per function would be smaller for N64-sized games. Parity columns join once
   comparison cores exist.
-- **Coverage in the GUI:** the Coverage tab ([coverage.md](../docs/coverage.md#in-the-gui)) shows the report, a ROM map
+- **Coverage in the GUI:** the Functions tab ([coverage.md](../docs/coverage.md#in-the-gui)) shows the report, a ROM map
   and live new coverage while playing. It rebuilds the whole report after every edit,
   which takes milliseconds at NES sizes. For large games, keep coverage per segment and
   per function or larger block, sum it in a cache (`coverage_sum`, [CACHE_PLAN.md](CACHE_PLAN.md)), and
@@ -157,7 +157,7 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   let `.local/local.toml` point a `[[symbols]]` entry at a file in the decomp's own
   checkout, since that path differs per machine; reload when the file changes, so a
   rename shows on the coverage map and list at once; and maybe an opt-in "Name this
-  function" action in the Coverage tab that appends a line to `symbol_addrs.txt` (or
+  function" action in the Functions tab that appends a line to `symbol_addrs.txt` (or
   the `.mlb`). Rolling up regions other than `PRG`, and a MIPS sweep for N64, come
   with the N64 connector.
 
@@ -314,9 +314,15 @@ When one ships, its user-facing description moves into `docs/` and the entry her
     "ran on a passing frame" and "ran on a failing frame" sets, if per-frame sets are too
     large). A new build keeps the old failures, which turn orange once the frame passes.
     Counts per block ("passed on X frames, failed on Y") and a link to the first failing
-    frame, like the Coverage tab's "Runs in".
+    frame, like the Functions tab's "Runs in".
   - **Shown** on the coverage map and the function list (purple, orange, red), and later
     from `dj parity` and an MCP tool.
+- **Revisit: frames that don't apply.** Many NES games aren't fully set up for the first
+  frames after power-on, and a decomp may not want parity there. For now those frames are
+  left to `dj_check_parity`'s SKIP, and the code only they run shows as "not checked". To
+  decide later: a "not applicable" colour of its own, kept out of the not-checked count; a
+  `[[compare]]` setting (say `parity_from = 60`) that skips a power-on's first frames without
+  core code; and showing skip counts so skips can't hide gaps.
 - **A Compare menu.** The comparison core gets its own entry in the menu bar, for choosing
   the core (now Project > Comparison core and the Compare dropdown), Run, Sync now, Check
   parity, Pause on first failure, the later keep-playing-after-a-failure setting, and the

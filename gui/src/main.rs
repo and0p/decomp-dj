@@ -169,7 +169,7 @@ struct App {
     filter_below: bool,
     /// Which list the left sidebar shows.
     side_tab: SideTab,
-    /// The Coverage tab and live coverage.
+    /// The Functions tab and live coverage.
     cov: cov::CovState,
     marker_filter: String,
     /// The segment the tree is focused on (hoisted): only it and its descendants show.
@@ -304,8 +304,8 @@ struct App {
     compare_synced: Option<(String, u64)>,
     /// Parity results with the loaded comparison core (docs/gui.md#parity).
     parity: Option<parity::Parity>,
-    /// Colour the coverage map and list by parity.
-    show_parity: bool,
+    /// What the coverage map shows (its tabs; Combined at launch).
+    map_view: cov::MapView,
     /// Re-running parity failures.
     rerun: Option<parity::Rerun>,
     /// Running frames to reach a seek's target: only the target frame is drawn (and syncs
@@ -540,7 +540,7 @@ impl Default for App {
             compare_failed: false,
             compare_synced: None,
             parity: None,
-            show_parity: false,
+            map_view: cov::MapView::Combined,
             rerun: None,
             seeking: false,
             base_next: None,
@@ -4142,7 +4142,7 @@ impl App {
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            for (tab, name) in [(SideTab::Segments, "Segments"), (SideTab::Markers, "Markers"), (SideTab::Coverage, "Coverage")] {
+            for (tab, name) in [(SideTab::Segments, "Segments"), (SideTab::Markers, "Markers"), (SideTab::Coverage, "Functions")] {
                 if ui.selectable_label(self.side_tab == tab, name).clicked() {
                     self.side_tab = tab;
                 }
@@ -4424,7 +4424,7 @@ impl App {
                     }
                     if let Some(n) = self.cov.unique.get(id) {
                         ui.label(RichText::new(format!("+{n}")).small().color(cov::COVERED))
-                            .on_hover_text(format!("{n} instructions that only this segment runs (Coverage tab)"));
+                            .on_hover_text(format!("{n} instructions that only this segment runs (Functions tab)"));
                     }
                     if r.is_poked() {
                         ui.label(RichText::new("poke").small().color(Color32::from_rgb(200, 120, 220))).on_hover_text("Has [WRITE] lines: memory is changed directly");
@@ -5888,7 +5888,16 @@ impl eframe::App for App {
         egui::Panel::left("tree").resizable(true).default_size(300.0).size_range(180.0..=600.0).show(ui, |ui| {
             // The coverage map stays at the bottom of the sidebar, whatever the tab.
             if self.col.is_some() && self.session.is_some() {
-                egui::Panel::bottom("cov_map").resizable(true).default_size(170.0).size_range(60.0..=600.0).show(ui, |ui| self.coverage_map(ui));
+                if self.map_view == cov::MapView::Hidden {
+                    egui::Panel::bottom("cov_map_hidden").exact_size(26.0).show(ui, |ui| self.map_tabs(ui));
+                } else {
+                    egui::Panel::bottom("cov_map").resizable(true).default_size(190.0).size_range(80.0..=600.0).show(ui, |ui| {
+                        self.coverage_map(ui);
+                        // Fill the panel: a panel shrinks to what its content uses, which
+                        // would undo a drag that made it taller.
+                        ui.allocate_space(egui::vec2(ui.available_width(), ui.available_height().max(0.0)));
+                    });
+                }
             }
             self.tree(ui)
         });

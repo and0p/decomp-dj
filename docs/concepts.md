@@ -50,8 +50,9 @@ The GUI, reports and any export use the same colors:
 | Dark, faded green | Run only by dirty segments (the last time each played). It counts once they are clean again |
 | Gray | Never run |
 | Purple | Parity |
-| Red | No parity |
-| Blue | Unreachable |
+| Red | No parity (failed with the comparison core's current build) |
+| Orange (on the map) | Failed with an older build of the comparison core |
+| Blue | Unreachable code or data (annotations.toml) |
 | Default text color | Uncovered |
 | Orange | A dirty segment |
 | Italic yellow title | An unsaved segment (edited here, or an agent's draft) |

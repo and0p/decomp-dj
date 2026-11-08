@@ -102,16 +102,20 @@ dj snapshot <dir> SEGMENT FRAME --out FILE        # the core state there, to sta
 
 **Coverage map.** Always at the bottom of the left sidebar, whatever the tab; drag its top
 edge to resize it. There is one square per function in ROM order (about 1,024 equal slices
-of PRG without a symbol map), so a square never moves as coverage grows. The colours, in order of
+of PRG without a symbol map), so a square never moves as coverage grows. Tabs over it choose
+what it shows: **Combined** (at launch: coverage, with parity's purple, orange and red over
+it once a comparison core is loaded), **Coverage**, **Parity** ([gui.md](gui.md#parity)) and
+**Hidden** (only the tabs). The colour key under the map lists only the colours some square
+shows. The function list's squares use the same colours. The coverage colours, in order of
 precedence where several segments run the same code:
 
 - **Green:** run by a clean, saved segment. Counted. A square goes from grey to green as more of the function is covered.
 - **Yellow-green:** new, not counted yet: run by an unsaved segment (your edits, hashes recorded but not saved, or an agent's draft) or by the pass being played, and by no saved clean segment. It counts once saved and clean. Unsaved code a saved segment already runs is just green.
 - **Dark, faded green:** run only by dirty segments, from the last time each played (found in the database, without playing anything). Not counted; it comes back when they are clean again.
-- **Grey:** never run. **Blue:** all of it is in `unreachable.txt`.
+- **Grey:** never run. **Blue:** all of it is unreachable or data in [annotations.toml](config.md#annotationstoml); the key calls both "unreachable".
 
 The totals show the yellow-green and faded parts apart ("+N unsaved", "+N if cleaned").
-Clicking a square opens that function in the Coverage tab.
+Clicking a square opens that function in the Functions tab.
 
 **Live coverage.** While a segment plays, every square whose code runs glows and fades over
 half a second, so code that runs every frame stays lit. Code that runs while playing but
@@ -124,7 +128,7 @@ The live part starts again when you select or edit a segment, undo or redo a cha
 and when playback continues into a child. It counts towards the project once the segment
 is clean and saved.
 
-**Coverage tab.** The project's coverage from the local database, the same numbers as
+**Functions tab.** The project's coverage from the local database, the same numbers as
 `dj report`, and a function list that sorts by ROM order, most uncovered, least covered or
 name. Click a row (or a square on the map) to see the function's uncovered blocks and the
 segments where it runs, each with the first frame it runs there; click one to go to that
@@ -143,4 +147,3 @@ that segment runs.
 
 - Only one core has a connector (Mesen, NES).
 - Block and function rollup is 6502-only, and only for `PRG`. Other CPUs get raw executed-byte counts until their disassembler is added.
-- Parity colors (purple and red) wait for comparison cores ([roadmap](../.agents/ROADMAP.md)).

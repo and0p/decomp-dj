@@ -91,7 +91,11 @@ format = "ca65-dbg"
 | `name` | yes | The libretro core's name, for example `mesen`. |
 | `build` | yes | A free-form id of the exact build, such as `mesen@<commit>+dj1`. State hashes are only meaningful for one build, so a different build is a different setup. |
 | `sha256` | no | Hash of the core library. Usually empty, because it differs per OS. |
-| `path` | no | Where the core library is, usually set in `.local/local.toml` ([layering](#layering)). |
+| `path` | no | Where the core library is, usually set in `.local/local.toml` ([layering](#layering)). It may leave out the suffix ([core paths](#core-paths)). |
+
+#### Core paths
+
+A core library's `path` (in `[core]`, `core = "path"` in `local.toml`, `--core`, and `[[compare]]`) may leave out the platform's suffix, so one path works on every OS: `cores/mesen_libretro` is `cores/mesen_libretro.dylib` on macOS, `.so` on Linux and other Unixes and `.dll` on Windows. A path that ends in `.so`, `.dylib` or `.dll`, or names a file that exists as written, is used as it is. Any other path gets the suffix added to the whole name, so `cores/foo.v2` is `cores/foo.v2.dylib` on macOS. Nothing is added to the name itself (no `_libretro`). Errors name the file looked for.
 
 ### `[core.options]`
 
@@ -167,7 +171,7 @@ mesen_ntsc_filter = "Composite"
 | Key | Required | Meaning |
 | --- | --- | --- |
 | `name` | yes | What the menu shows, and the key entries merge by. |
-| `path` | yes, on each machine | The core library. Relative paths are from the project folder. It may be the baseline's own library: it is then loaded from a private copy in `.local/compare/`, so the two don't share globals. |
+| `path` | yes, on each machine | The core library. Relative paths are from the project folder. It may leave out the suffix ([core paths](#core-paths)). It may be the baseline's own library: it is then loaded from a private copy in `.local/compare/`, so the two don't share globals. |
 | `build` | no | A free-form id of the build, for people. |
 | `sha256` | no | Pins the library, like `[core] sha256`: a different file doesn't load. |
 | `sync` | no | How the core is brought to the baseline's state after a jump. `"dj_sync"` (the default) calls the core's own `dj_sync` ([connectors.md](connectors.md#comparison-cores)), and a core without it doesn't load. `"state"` loads the baseline's save state: only for the same emulator (or one with the same state format), to compare builds or options. |

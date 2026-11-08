@@ -92,8 +92,8 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   first-hit link) and which don't (stepping, playback); whether history survives an edit
   that removes a segment (skip entries that no longer exist); and whether it's kept per
   session only.
-- **Markers tab:** group repeated texts, and list a marker's "first frame where a watched
-  value differs" once that exists. (Following Focus here is done.)
+- **Markers tab:** list a marker's "first frame where a watched value differs" once that
+  exists. (Following Focus here is done.)
 - **Cancelling a long load** without selecting another segment, and MAX speed off the UI
   thread.
 
@@ -341,17 +341,13 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   Next: Vulkan (the negotiation interface, `ash`, MoltenVK on macOS), then maybe OpenGL ES
   through EGL, Windows (WGL), and asynchronous readback (PBOs) or showing the texture
   directly if readback costs too much at high internal resolutions.
-- **Portable `[[compare]]` entries.** config.toml is shared and may be published, but a
-  comparison core's `path` names one machine's file (`cores/foo.dylib`), and the same core
-  is `.so` on Linux and `.dll` on Windows. Keep machine-specific parts out of the shared
-  entry: config.toml carries `name`, `sync`, `options`, `build` and `sha256`, and each
-  machine's `.local/local.toml` adds `path` (entries already merge by `name`). Options: a
-  `path` without an extension, with the platform's suffix added (`cores/foo` finds
-  `foo_libretro.dylib`/`.so`/`.dll`); per-platform paths (`path.macos`, `path.linux`); and
-  `sha256` per platform, since builds differ. `dj` could warn when config.toml holds an
-  absolute or platform-specific path, and an entry with no `path` here would show in the
-  Compare menu as "not set up on this machine" instead of failing on pick. The same
-  applies to `[core] path`.
+- **Portable `[[compare]]` entries.** A core `path` may now leave out the suffix
+  ([config.md](../docs/config.md#core-paths)). Still open: keeping machine-specific parts
+  out of the shared entry (config.toml carries `name`, `sync`, `options`, `build` and
+  `sha256`, and each machine's `.local/local.toml` adds `path`; entries already merge by
+  `name`); per-platform paths (`path.macos`, `path.linux`); `sha256` per platform, since
+  builds differ; and an entry with no `path` here showing in the Compare menu as "not set
+  up on this machine" instead of failing on pick. The same applies to `[core]`.
 - **Later:** the comparison core in the CLI and MCP (`dj parity`), its coverage, sound
   (an A|B toggle), and more than one comparison core at a time.
 - **Emulator vs decomp mismatches** (decided: stop at the first failing frame, no resync;
@@ -397,3 +393,9 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   [terms in concepts.md](../docs/concepts.md#terms). The code and the CLI's help still say "replay", "collection"
   and "trunk" in places, and segment files start with `dj-replay 1` (`dj-segment 1`
   would match the `.segment` extension; the tools would read both).
+
+## Set aside
+
+Not planned for now. They're kept so the idea and its reasoning aren't lost if it comes up again.
+
+- **Markers tab: group repeated texts.** Collapse markers with the same text into one row.

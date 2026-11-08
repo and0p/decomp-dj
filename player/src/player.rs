@@ -124,6 +124,10 @@ impl Session {
                 col.config.rom.sha256
             );
         }
+        let core_path = &crate::libretro::library_path(core_path);
+        if !core_path.is_file() {
+            bail!("the core library {} doesn't exist", core_path.display());
+        }
         let core_sha = sha256_file(core_path)?;
         if !col.config.core.sha256.is_empty() && core_sha != col.config.core.sha256 {
             bail!("core {} has sha256 {core_sha}, but the collection is pinned to {}", core_path.display(), col.config.core.sha256);

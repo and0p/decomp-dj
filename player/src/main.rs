@@ -291,8 +291,9 @@ fn resolve_local(col: &Collection, local: &Local) -> Result<(PathBuf, PathBuf)> 
     let core = local.core.clone().or(saved.core).ok_or_else(|| anyhow!("no core given; pass --core (it is then remembered)"))?;
     if local.rom.is_some() || local.core.is_some() {
         let mut saved = col.load_local()?;
-        saved.rom = Some(std::fs::canonicalize(&rom)?);
-        saved.core = Some(std::fs::canonicalize(&core)?);
+        saved.rom = Some(std::fs::canonicalize(&rom).with_context(|| format!("the ROM {}", rom.display()))?);
+        let lib = libretro::library_path(&core);
+        saved.core = Some(std::fs::canonicalize(&lib).with_context(|| format!("the core library {}", lib.display()))?);
         col.save_local(&saved)?;
     }
     Ok((rom, core))
@@ -307,6 +308,10 @@ fn open_session(col: &Collection, local: &Local) -> Result<Session> {
 fn init(dir: &Path, name: &str, rom: &Path, core_path: &Path, core_build: Option<String>, options: &[String], symbols: Option<&Path>) -> Result<()> {
     if dir.join("config.toml").exists() || dir.join("collection.toml").exists() {
         bail!("{} already has a project", dir.display());
+    }
+    let core_path = &libretro::library_path(core_path);
+    if !core_path.is_file() {
+        bail!("the core library {} doesn't exist", core_path.display());
     }
     let mut overrides = BTreeMap::new();
     for o in options {

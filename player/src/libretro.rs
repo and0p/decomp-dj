@@ -10,7 +10,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{c_char, c_void, CStr, CString};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::format::{InputKey, DEVICE_JOYPAD};
@@ -581,6 +581,26 @@ pub struct Core {
     game_loaded: bool,
 }
 
+/// The core library a configured `path` names (docs/config.md#core-paths). A file that
+/// exists as written is used as is, and so is a path ending in `.so`, `.dylib` or `.dll`
+/// (missing or not, so errors name it). Otherwise this platform's library suffix is added
+/// to the whole name: `cores/mesen_libretro` is `cores/mesen_libretro.dylib` on macOS, `.so`
+/// on Linux and other Unixes, `.dll` on Windows, and `cores/foo.v2` is `cores/foo.v2.dylib`.
+pub fn library_path(path: &Path) -> PathBuf {
+    library_path_for(path, std::env::consts::DLL_EXTENSION)
+}
+
+fn library_path_for(path: &Path, suffix: &str) -> PathBuf {
+    let is_lib = path.extension().and_then(|e| e.to_str()).is_some_and(|e| ["so", "dylib", "dll"].iter().any(|l| e.eq_ignore_ascii_case(l)));
+    if is_lib || path.is_file() || path.file_name().is_none() {
+        return path.to_path_buf();
+    }
+    let mut s = path.as_os_str().to_os_string();
+    s.push(".");
+    s.push(suffix);
+    PathBuf::from(s)
+}
+
 impl Core {
     /// Loads the project's core, into the baseline slot.
     pub fn load(core_path: &Path, work_dir: &Path, options: &BTreeMap<String, String>) -> Result<Core> {
@@ -1087,4 +1107,35 @@ pub fn region_memory_id(name: &str) -> Option<u32> {
         "RTC" => MEMORY_RTC,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod library_path_tests {
+    use super::library_path_for;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn adds_the_suffix_to_a_bare_name() {
+        assert_eq!(library_path_for(Path::new("cores/mesen_libretro"), "dylib"), PathBuf::from("cores/mesen_libretro.dylib"));
+        assert_eq!(library_path_for(Path::new("cores/mesen_libretro"), "so"), PathBuf::from("cores/mesen_libretro.so"));
+        // Another dot isn't a library extension: the suffix goes on the whole name.
+        assert_eq!(library_path_for(Path::new("cores/foo.v2"), "dll"), PathBuf::from("cores/foo.v2.dll"));
+    }
+
+    #[test]
+    fn keeps_a_library_extension() {
+        for p in ["cores/foo.so", "cores/foo.dylib", "C:/cores/foo.DLL", "foo_libretro.so"] {
+            assert_eq!(library_path_for(Path::new(p), "dylib"), PathBuf::from(p));
+        }
+    }
+
+    #[test]
+    fn keeps_a_file_that_exists() {
+        let dir = std::env::temp_dir().join(format!("dj_library_path_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let odd = dir.join("core_without_suffix");
+        std::fs::write(&odd, b"").unwrap();
+        assert_eq!(library_path_for(&odd, "dylib"), odd);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

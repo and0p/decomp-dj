@@ -153,7 +153,8 @@ impl Comparison {
     pub fn open(col: &Collection, name: &str, baseline_core: &Path, rom: Option<&Path>) -> Result<Comparison> {
         let cfg = col.config.compare.iter().find(|c| c.name == name).ok_or_else(|| anyhow!("no [[compare]] entry is named \"{name}\""))?;
         let path = cfg.path.as_ref().ok_or_else(|| anyhow!("[[compare]] \"{name}\" has no path: set `path` (in config.toml, or in .local/local.toml for this machine)"))?;
-        let path = if path.is_relative() { col.root.join(path) } else { path.clone() };
+        let path = crate::libretro::library_path(&if path.is_relative() { col.root.join(path) } else { path.clone() });
+        let baseline_core = &crate::libretro::library_path(baseline_core);
         if !path.is_file() {
             bail!("the core library {} doesn't exist", path.display());
         }

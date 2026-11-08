@@ -97,6 +97,9 @@ pub fn devices_at_start(col: &Collection, id: &str) -> Result<BTreeMap<u32, u32>
 pub struct Session {
     pub core: Core,
     boot_state: Vec<u8>,
+    /// The save RAM at power-on: not every core keeps it in a save state, so a root with no
+    /// save file would otherwise start with the last one loaded.
+    boot_sram: Option<Vec<u8>>,
     pub setup_id: String,
     pub rom_path: PathBuf,
     /// The local database, unless the session runs without one.
@@ -140,6 +143,7 @@ impl Session {
         }
 
         let boot_state = core.serialize().context("saving the power-on state")?;
+        let boot_sram = core.memory(crate::libretro::MEMORY_SAVE_RAM).map(|m| m.to_vec());
         let mut h = blake3::Hasher::new();
         h.update(col.config.core.build.as_bytes());
         h.update(core_sha.as_bytes());
@@ -166,7 +170,7 @@ impl Session {
         } else {
             None
         };
-        Ok(Session { core, boot_state, setup_id, rom_path: rom.to_path_buf(), cache, core_version })
+        Ok(Session { core, boot_state, boot_sram, setup_id, rom_path: rom.to_path_buf(), cache, core_version })
     }
 
     pub fn devices_at_start(&self, col: &Collection, id: &str) -> Result<BTreeMap<u32, u32>> {
@@ -224,6 +228,10 @@ impl Session {
     pub fn start_trunk(&mut self, col: &Collection, r: &Replay) -> Result<()> {
         let boot = self.boot_state.clone();
         self.core.unserialize(&boot)?;
+        if let (Some(power_on), Some(mem)) = (&self.boot_sram, self.core.memory(crate::libretro::MEMORY_SAVE_RAM)) {
+            let n = power_on.len().min(mem.len());
+            mem[..n].copy_from_slice(&power_on[..n]);
+        }
         if let Some(snap) = r.get("snapshot") {
             let data = col.read_blob(snap, "snapshot")?;
             self.core.unserialize(&data).with_context(|| format!("loading snapshot blob {snap}"))?;

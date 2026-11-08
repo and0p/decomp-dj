@@ -607,7 +607,7 @@ impl Collection {
         Ok(data)
     }
 
-    #[allow(dead_code)]
+    /// Copies `data` into blobs/ under its content hash and returns that id.
     pub fn write_blob(&self, data: &[u8], field: &str) -> Result<String> {
         let id = blob_id(data);
         std::fs::create_dir_all(self.root.join("blobs"))?;

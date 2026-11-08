@@ -48,7 +48,14 @@ after the child, to keep the moment the split marked.
 
 **Properties.** Changing `title` changes no state. Changing `frames` drops the
 `end-hash` and any checkpoints past the new end. A segment cannot be shortened
-past its last body line.
+past its last body line. On a root segment, choosing or clearing the save file (`sram`)
+changes how it starts: the file is copied into `blobs/`, and the segment drops its
+`start-hash`, checkpoints and `end-hash`, so it and everything below turn dirty.
+
+**Duplicate.** A copy of the segment beside it: same parent, same lines and hashes, a new
+id and "(copy)" after the title. For a segment with children it asks "Duplicate N children?
+(F frames)", counting everything below it, and offers **With children** (the whole branch
+is copied under the copy, each with a new id) or **Just this segment**.
 
 ## What an edit does to hashes
 
@@ -70,11 +77,14 @@ The Segment menu, and right-click in the tree, offer:
 
 - **Play to here** (right-click only): plays through to the end of that segment, on from the playhead if the current segment is on the way, otherwise from the first segment below where the two paths meet.
 - **New child at end**.
+- **New root segment**: an empty 600-frame segment with no parent, starting from power-on; its Properties open so it can be named, sized and given a save file. Also on right-click in the empty space of the tree, and the **+ New root segment** button below it.
+- **Duplicate**: a copy beside the segment, asking first whether to copy what is below it too.
 - **Branch at playhead**: splits the segment right after the playhead and starts an empty second path beside the rest.
 - **Split at playhead**: just the split. The first part becomes "(first N frames)" in the old place.
-- **Properties**: title and length.
+- **Properties**: title and length, and for a root segment its save file (**Choose…** or **Clear**).
 - **Join with parent** (only for a segment with no siblings): the confirmation has "Leave a marker", on by default, with an editable text that starts as the child's title. An event at the join frame keeps whatever moment made the author split there ("menu fully open", "victory pose finished").
 - **Join with only child** (only for a segment with exactly one child): the same join, offered on the parent. It opens the same confirmation.
+- **Join chain…** (when the only child has an only child of its own): joins every only child below the segment into it, down to the first segment with no children or several. The confirmation lists the segments and total frames, and "Leave markers" puts an event with each joined segment's title at its join frame. One undo takes it all back.
 - **Delete…**: removes the segment and everything below it, after a confirmation that names the segment, says how many segments go with it and gives the total frames. The files are removed on Save. If the segment being shown was deleted, its parent is shown.
 
 In the tree, Enter (or F2) renames the selected segment in place; Enter or clicking away

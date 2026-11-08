@@ -10,6 +10,10 @@
  */
 #include "game.h"
 
+/* How long the name entry screen takes to draw with NMIs off, in CPU cycles
+ * from the NMI (see busyUntil). */
+#define HIGH_SCORE_SCREEN_DRAW 32994
+
 /* copyHighScoreNameToNextIndex: copies the name at offset A (plus 24 for
  * B-type) down one entry. */
 static void copyHighScoreNameToNextIndex(uint8_t a)
@@ -132,7 +136,7 @@ int handleHighScoreIfNecessary(void)
     WAIT_DISABLE_RENDERING(0xA214);
     disableNmi();
     /* menu_palette, enter_high_score_nametable, the game type, then showHighScores */
-    busy(1024 * 16 + 800 + 32 * 16 + 200 + 100 + 900 + 3 * 400);
+    busyUntil(HIGH_SCORE_SCREEN_DRAW); /* more than a frame: the game loses one here */
     renderMode = 0x02;
     waitForVBlankAndEnableNmi();
     WAIT_RESET_OAM(0xA24A);

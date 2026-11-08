@@ -153,6 +153,13 @@ pub fn body_hash(r: &Replay, devices: &BTreeMap<u32, u32>) -> Result<String> {
     for (p, d) in devices {
         h.update(format!("device {p} {d}\n").as_bytes());
     }
+    // A root segment's start blobs are part of what it plays: without them, changing the save
+    // file of a root that has no start hash yet would find the old content's rows.
+    for field in ["snapshot", "sram"] {
+        if let Some(b) = r.get(field) {
+            h.update(format!("{field} {b}\n").as_bytes());
+        }
+    }
     for l in &r.lines {
         let text = r.line_command_text(l.line_no).unwrap_or_default();
         h.update(format!("{} {}\n", l.frame, text).as_bytes());

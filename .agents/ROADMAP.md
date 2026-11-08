@@ -58,10 +58,6 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   half-written reads, which are the file-system part of the draft problems. Ownership
   (agent-owned segments) isn't, and stays as it is. Sockets
   ([below](#project-and-cli)) are then only needed for attach.
-- **Stop at a changed ending.** An opt-in toggle (off by default) that pauses playback as
-  soon as a segment records an ending that differs from its saved file (the **!**), so the
-  author can undo before the children below it replay. By default playback carries
-  straight on, since a child always starts from where its parent really ends.
 - **Recording follow-ups** (recording itself is in docs/gui.md#recording).
   - **Gamepads.** Device discovery, hot-plugging, analog dead zones and per-OS differences
     make them a larger job than the keyboard.
@@ -74,26 +70,21 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   slider and a mute button in the playback toolbar. When more than one core is running
   (side-by-side comparison), an A|B toggle picks which core you hear.
 - **More ways to join.** Merge into children (copy the parent's frames onto the front of every child, then remove
-  the parent: no hash changes, but the frames are duplicated); and join a chain (select a run
-  of only-children and join them all at once).
+  the parent: no hash changes, but the frames are duplicated). (Join a chain is done:
+  Segment > Join chain….)
 - **Instead of deleting,** merge a segment into its children, or move its children up to the
   grandparent, which turns everything below dirty.
 - **Moving segments** to another parent from the GUI.
-- **Duplicate a segment.** Segment menu and right-click > Duplicate: a copy of the segment's
-  lines under the same parent, with a new id and "(copy)" after the title, so a variation can
-  start from the same inputs. It plays the same as the original until edited, so it can keep
-  the original's hashes and start clean. Open: whether to offer copying the whole subtree
-  too, and whether the copy goes right after the original in the tree.
-- **New root segment from the GUI.** Today a root segment (formerly "trunk") can only be
-  made with `dj new` without `--parent`; the GUI has no way at all. Offer it from the
-  Segment menu, the project's right-click menu on empty space in the tree, and a **+**
-  below the last segment in the tree. It starts as an empty cold boot, ready for a title,
-  a length and, through its properties, a start state (below).
-- **Choosing SRAM in a root segment's properties.** Pick a save file (`.srm` or the core's
-  battery file) for a root segment, or clear it. The file is copied into `blobs/` under its
-  content hash and named by `sram:` in the segment ([segments.md](../docs/segments.md)). It
-  changes the start state, so the segment and everything below it turn dirty, as any edit
-  before their frames would. Possibly also choosing a `snapshot` blob the same way.
+- **Choosing a snapshot in a root segment's properties,** the way the save file (`sram`)
+  can be chosen now.
+- **Record button as an icon.** Make **● Rec** a circle icon, a little wider than tall like
+  the play button, instead of the text label.
+- **Revert one segment.** Throw away the unsaved changes to a single segment and put back
+  its saved file, without File > Reload dropping every other edit. In the File menu (for the
+  selected segment) and on right-click in the tree. One undo step; a reverted segment with
+  an unsaved parent or children may need a word in the confirmation.
+- **Save one segment.** Write only the selected segment's file, leaving other edits unsaved.
+  In the File menu and on right-click in the tree.
 - **Back and forward, like a browser.** A history of where you've been, as segment and
   frame: selecting another segment (in the tree, the Coverage tab's "First runs in", a
   marker, a search), or a seek far enough to count as a jump, pushes the place you left.

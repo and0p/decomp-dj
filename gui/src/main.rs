@@ -188,6 +188,8 @@ struct App {
     speed: usize,
     /// What playback does at the end of a segment.
     end_mode: EndMode,
+    /// Pause playback when a segment records an ending that differs from its saved file.
+    stop_on_changed: bool,
     /// Sticky children: remember the deepest segment visited on the selected chain.
     /// The deepest segment visited on the current chain (tracked even while sticky is off).
     sticky_tip: Option<String>,
@@ -199,6 +201,8 @@ struct App {
     renaming: Option<(String, String, bool)>,
     /// The segment waiting for delete confirmation.
     delete_dialog: Option<String>,
+    /// Duplicate of a segment with children, waiting on whether to copy them too.
+    dup_dialog: Option<String>,
     /// Save was asked for while it would leave this many segments dirty: offer to clean first.
     save_dialog: Option<SaveAsk>,
     /// Open, Reload or Quit asked for with unsaved edits: waiting on "discard them?".
@@ -209,6 +213,8 @@ struct App {
     save_after_clean: bool,
     /// Join with parent, waiting on its confirmation: (segment id, leave a marker, marker text).
     join_dialog: Option<(String, bool, String)>,
+    /// Join chain, waiting on its confirmation: (top segment id, leave markers).
+    chain_dialog: Option<(String, bool)>,
     undo: Vec<UndoStep>,
     redo: Vec<UndoStep>,
     clip: Option<Clip>,
@@ -367,6 +373,9 @@ struct UndoStep {
 
 const UNDO_LIMIT: usize = 200;
 
+const NEW_ROOT_TIP: &str = "A new empty segment with no parent: it starts from power-on (or from a save file set in its properties)";
+const JOIN_CHAIN_TIP: &str = "Join every only-child below this segment into it, down to the first segment with no children or several, as one undo step";
+const DUP_TIP: &str = "A copy of this segment beside it (same parent, same inputs); with children, it asks whether to copy them too";
 const JOIN_TIP: &str = "Merge this segment into its parent: the parent keeps its name and grows by this segment's frames. Only for a segment with no siblings.";
 const JOIN_CHILD_TIP: &str = "Merge this segment's only child into it: this segment keeps its name and grows by the child's frames. Only for a segment with exactly one child.";
 
@@ -379,6 +388,12 @@ struct NodeDialog {
     id: String,
     title: String,
     frames: u64,
+    /// A root segment: it may start from a save file.
+    root: bool,
+    /// The save file's blob id (`sram:`), as the dialog has it now.
+    sram: Option<String>,
+    /// A file picked in the dialog, not written to blobs/ until Apply: (path, bytes).
+    sram_pick: Option<(PathBuf, Vec<u8>)>,
 }
 
 struct FrameDialog {
@@ -419,17 +434,20 @@ impl Default for App {
             message: None,
             speed: 3,
             end_mode: EndMode::Next,
+            stop_on_changed: false,
             sticky_tip: None,
             route: vec![],
             route_target: None,
             node_dialog: None,
             renaming: None,
             delete_dialog: None,
+            dup_dialog: None,
             save_dialog: None,
             discard_dialog: None,
             quit_ok: false,
             save_after_clean: false,
             join_dialog: None,
+            chain_dialog: None,
             undo: vec![],
             redo: vec![],
             clip: None,
@@ -1497,6 +1515,8 @@ impl App {
         }
         // Playback is running: the next edit starts a new "since playback last ran".
         self.edit_from = None;
+        // For "Stop at a changed ending": whether the segment had its ! before these frames.
+        let changed_before = self.selected.as_deref().is_some_and(|id| self.ending_changed(id));
         let speed = SPEEDS[self.speed].0;
         // Real-time recording: what is held now goes into every frame this tick plays.
         let chord = if self.recording && !self.rec_cfg.frame_by_frame { self.held_chord() } else { None };
@@ -1549,6 +1569,21 @@ impl App {
                 self.playing = false;
             }
             return;
+        }
+        if self.at_end() && self.stop_on_changed && !changed_before {
+            // Only the first changed ending of a run: below it, a change is expected.
+            let parent_changed = |id: &str| {
+                let parent = self.col.as_ref().and_then(|c| c.replays.get(id)).and_then(|r| r.parent().map(String::from));
+                parent.is_some_and(|p| self.ending_changed(&p))
+            };
+            if let Some(id) = self.selected.clone().filter(|id| self.ending_changed(id) && !parent_changed(id)) {
+                self.playing = false;
+                self.route.clear();
+                self.route_target = None;
+                let title = col_title(self.col.as_ref(), &id);
+                self.info(format!("Stopped: \"{title}\" ended differently from its saved file (!). Undo now, before the segments below replay, or play on."));
+                return;
+            }
         }
         if self.at_end() {
             if !self.route.is_empty() {
@@ -2351,7 +2386,12 @@ impl App {
             let now = col.replays.get(&id).cloned();
             if cur.as_deref() == Some(id.as_str()) {
                 match (&now, &before) {
-                    (Some(a), Some(b)) if a.frames().ok() == b.frames().ok() && a.parent() == b.parent() => {
+                    // A root's save file or snapshot decides its first frame.
+                    (Some(a), Some(b))
+                        if a.frames().ok() == b.frames().ok()
+                            && a.parent() == b.parent()
+                            && ["sram", "snapshot"].iter().all(|f| a.get(f) == b.get(f)) =>
+                    {
                         if let Some(f) = first_change(a, b) {
                             first_diff = Some(first_diff.map_or(f, |d| d.min(f)));
                         }
@@ -2527,6 +2567,45 @@ impl App {
     }
 
     fn try_join(&mut self, id: &str, marker: Option<&str>) -> Result<()> {
+        self.join_step(id, marker, true)
+    }
+
+    /// The run of only-children below `top`: its only child, that one's only child, and so on,
+    /// down to the first segment with no children or several.
+    fn only_child_run(&self, top: &str) -> Vec<String> {
+        let mut out = vec![];
+        let mut cur = top.to_string();
+        while let Some(c) = self.only_child(&cur) {
+            out.push(c.clone());
+            cur = c;
+        }
+        out
+    }
+
+    /// Joins the whole run of only-children below `top` into it, as one undo step. With
+    /// `markers`, an event with each joined segment's title marks where it began.
+    fn join_chain(&mut self, top: &str, markers: bool) -> Result<()> {
+        let run = self.only_child_run(top);
+        let Some(last) = run.last() else { return Err(anyhow!("this segment has no only child to join")) };
+        let col = self.col.as_ref().ok_or_else(|| anyhow!("no project"))?;
+        let kids: Vec<String> = col.children(Some(last)).into_iter().map(String::from).collect();
+        let titles: Vec<String> = run.iter().map(|id| col.replays[id].title().to_string()).collect();
+        let mut ids: Vec<&str> = vec![top];
+        ids.extend(run.iter().map(String::as_str));
+        ids.extend(kids.iter().map(String::as_str));
+        if !self.remember("Join chain", &ids) {
+            return Ok(());
+        }
+        for (id, title) in run.iter().zip(&titles) {
+            self.join_step(id, markers.then_some(title.as_str()), false)?;
+        }
+        let n = run.len();
+        self.info(format!("Joined {n} segment{} into \"{}\".", if n == 1 { "" } else { "s" }, col_title(self.col.as_ref(), top)));
+        Ok(())
+    }
+
+    /// One join of `id` into its parent; `undo` records it as its own undo step.
+    fn join_step(&mut self, id: &str, marker: Option<&str>, undo: bool) -> Result<()> {
         if !self.can_join(id) {
             return Err(anyhow!("only a segment whose parent has no other children can be joined"));
         }
@@ -2570,7 +2649,7 @@ impl App {
         }
         let mut ids: Vec<&str> = vec![pid.as_str(), id];
         ids.extend(kids.iter().map(String::as_str));
-        if !self.remember("Join with parent", &ids) {
+        if undo && !self.remember("Join with parent", &ids) {
             return Ok(());
         }
         let here = if self.selected.as_deref() == Some(id) { self.pb.as_ref().and_then(|b| b.shown()).map(|f| f + pf) } else { None };
@@ -2630,6 +2709,79 @@ impl App {
 
     fn new_id() -> String {
         uuid::Uuid::new_v4().to_string()
+    }
+
+    /// A new empty root segment: a cold boot with no parent (formerly a "trunk").
+    fn new_root(&mut self) {
+        if self.col.is_none() {
+            return;
+        }
+        let id = Self::new_id();
+        self.remember("New root segment", &[&id]);
+        let Some(col) = &mut self.col else { return };
+        let r = decomp_dj::format::Replay::new(&id, None, "New root segment", 600);
+        col.replays.insert(id.clone(), r);
+        self.edited.insert(id.clone());
+        self.hoist = None;
+        self.info("Added a 600-frame root segment that starts from power-on. Change its title, length and save file with Segment > Properties.");
+        self.select(&id);
+        self.open_node_dialog(&id);
+    }
+
+    /// Duplicate: at once for a segment with no children, otherwise ask whether to copy them.
+    fn ask_duplicate(&mut self, id: &str) {
+        let has_kids = self.col.as_ref().is_some_and(|c| !c.children(Some(id)).is_empty());
+        if has_kids {
+            self.dup_dialog = Some(id.to_string());
+        } else {
+            self.duplicate(id, false);
+        }
+    }
+
+    /// A copy of `id` beside it (same parent), with a new id and "(copy)" after the title,
+    /// and with `children`, a copy of everything below it too. The same lines from the same
+    /// start play the same, so the copies keep the originals' hashes and start clean.
+    fn duplicate(&mut self, id: &str, children: bool) {
+        let Some(col) = self.col.as_ref() else { return };
+        if !col.replays.contains_key(id) {
+            return;
+        }
+        let olds = if children { subtree(col, id) } else { vec![id.to_string()] };
+        let map: HashMap<String, String> = olds.iter().map(|o| (o.clone(), Self::new_id())).collect();
+        let copies: Vec<decomp_dj::format::Replay> = olds
+            .iter()
+            .map(|o| {
+                let mut r = col.replays[o].clone();
+                r.set("id", &map[o]);
+                if o == id {
+                    r.set("title", &format!("{} (copy)", r.title()));
+                } else if let Some(p) = r.parent().and_then(|p| map.get(p)).cloned() {
+                    r.set("parent", &p);
+                }
+                r
+            })
+            .collect();
+        let new = map[id].clone();
+        let new_ids: Vec<&str> = olds.iter().map(|o| map[o].as_str()).collect();
+        if !self.remember("Duplicate", &new_ids) {
+            return;
+        }
+        let Some(col) = &mut self.col else { return };
+        for r in copies {
+            let rid = r.get("id").unwrap_or_default().to_string();
+            col.replays.insert(rid.clone(), r);
+            self.edited.insert(rid);
+        }
+        if let Some(p) = col.replays[&new].parent().map(String::from) {
+            self.tree_closed.remove(&p);
+        }
+        let n = olds.len();
+        self.info(if n == 1 {
+            "Duplicated. The copy has the same inputs and hashes; its children weren't copied.".to_string()
+        } else {
+            format!("Duplicated {n} segments: the copy and the {} below it, with the same inputs and hashes.", n - 1)
+        });
+        self.select(&new);
     }
 
     /// Adds an empty child segment that starts where `parent` ends, and selects it.
@@ -2717,7 +2869,14 @@ impl App {
     fn open_node_dialog(&mut self, id: &str) {
         let Some(col) = &self.col else { return };
         let r = &col.replays[id];
-        self.node_dialog = Some(NodeDialog { id: id.to_string(), title: r.title().to_string(), frames: r.frames().unwrap_or(0) });
+        self.node_dialog = Some(NodeDialog {
+            id: id.to_string(),
+            title: r.title().to_string(),
+            frames: r.frames().unwrap_or(0),
+            root: r.parent().is_none(),
+            sram: r.get("sram").map(String::from),
+            sram_pick: None,
+        });
     }
 
     fn apply_node_dialog(&mut self, d: &NodeDialog) -> Result<()> {
@@ -2732,16 +2891,60 @@ impl App {
         if d.frames == 0 {
             return Err(anyhow!("a segment needs at least one frame"));
         }
-        if d.title.trim() == r.title() && d.frames == old_frames {
+        // The save file a root segment starts from: a picked file becomes a blob on Apply.
+        let new_sram = match &d.sram_pick {
+            Some((_, data)) => Some(decomp_dj::collection::blob_id(data)),
+            None => d.sram.clone(),
+        };
+        let sram_changed = d.root && new_sram.as_deref() != r.get("sram");
+        if d.title.trim() == r.title() && d.frames == old_frames && !sram_changed {
             return Ok(());
         }
         if !self.remember("Segment properties", &[&d.id]) {
             return Ok(());
         }
         let Some(col) = &mut self.col else { return Ok(()) };
+        if sram_changed {
+            if let Some((path, data)) = &d.sram_pick {
+                col.write_blob(data, "sram").map_err(|e| anyhow!("copying {} into blobs/: {e:#}", path.display()))?;
+            }
+        }
         let r = col.replays.get_mut(&d.id).ok_or_else(|| anyhow!("segment is gone"))?;
         r.set("title", d.title.trim());
         self.edited.insert(d.id.clone());
+        if sram_changed {
+            // A new start state: nothing recorded for this segment holds any more, from its
+            // start hash on, and everything below turns dirty.
+            match &new_sram {
+                Some(b) => r.set("sram", b),
+                None => r.remove_all("sram"),
+            }
+            r.remove_all("start-hash");
+            r.remove_all("checkpoint");
+            r.remove_all("end-hash");
+            let e = self.dirty_from.entry(d.id.clone()).or_insert(0);
+            *e = 0;
+            self.roll.invalidate();
+            self.coverage_stale();
+            if self.selected.as_deref() == Some(d.id.as_str()) {
+                self.select(&d.id.clone());
+            }
+            self.info(match &new_sram {
+                Some(_) => "Save file set: the segment starts from it now. It and everything below are dirty until cleaned.",
+                None => "Save file cleared: the segment starts with no save data. It and everything below are dirty until cleaned.",
+            });
+            if d.frames == old_frames {
+                return Ok(());
+            }
+            let Some(col) = &mut self.col else { return Ok(()) };
+            let r = col.replays.get_mut(&d.id).ok_or_else(|| anyhow!("segment is gone"))?;
+            r.set("frames", &d.frames.to_string());
+            self.roll.invalidate();
+            if self.selected.as_deref() == Some(d.id.as_str()) {
+                self.select(&d.id.clone());
+            }
+            return Ok(());
+        }
         if d.frames != old_frames {
             r.set("frames", &d.frames.to_string());
             self.invalidate_from(&d.id.clone(), d.frames.min(old_frames));
@@ -2909,6 +3112,38 @@ impl App {
                 self.save_dialog = Some(ask);
             }
         }
+        if let Some(id) = self.dup_dialog.clone() {
+            let info = self.col.as_ref().filter(|c| c.replays.contains_key(&id)).map(|c| {
+                let below = &subtree(c, &id)[1..];
+                let frames: u64 = below.iter().filter_map(|i| c.replays.get(i).and_then(|r| r.frames().ok())).sum();
+                (below.len(), frames)
+            });
+            match info {
+                None => self.dup_dialog = None,
+                Some((below, frames)) => {
+                    let mut open = true;
+                    let (mut one, mut all, mut cancel) = (false, false, false);
+                    egui::Window::new("Duplicate segment").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).show(ctx, |ui| {
+                        ui.label(format!("Duplicate {below} {}? ({frames} frames)", if below == 1 { "child" } else { "children" }));
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            all = ui.button("With children").on_hover_text("Copy the whole branch: every segment below this one comes along, under the copy").clicked();
+                            one = ui.button("Just this segment").on_hover_text("Copy only this segment; the copy has no children").clicked();
+                            cancel = ui.button("Cancel").clicked();
+                        });
+                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            cancel = true;
+                        }
+                    });
+                    if one || all {
+                        self.dup_dialog = None;
+                        self.duplicate(&id, all);
+                    } else if cancel || !open {
+                        self.dup_dialog = None;
+                    }
+                }
+            }
+        }
         let pending = self.delete_dialog.clone().and_then(|id| self.col.as_ref().filter(|c| c.replays.contains_key(&id)).map(|c| (id, c)));
         if pending.is_none() {
             self.delete_dialog = None;
@@ -2946,6 +3181,36 @@ impl App {
                 self.delete_nodes(&id, ids);
             } else if cancel || !open {
                 self.delete_dialog = None;
+            }
+        }
+        if let Some((top, mut markers)) = self.chain_dialog.take() {
+            let run = self.only_child_run(&top);
+            let col = self.col.as_ref();
+            let title = col_title(col, &top);
+            let total: u64 = std::iter::once(&top).chain(run.iter()).filter_map(|id| col.and_then(|c| c.replays.get(id)).and_then(|r| r.frames().ok())).sum();
+            let names: Vec<String> = run.iter().map(|id| col_title(col, id)).collect();
+            let mut open = !run.is_empty();
+            let (mut go, mut cancel) = (false, false);
+            egui::Window::new("Join chain").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).show(ctx, |ui| {
+                ui.label(RichText::new(format!("Join {} segment{} into \"{title}\"?", run.len(), if run.len() == 1 { "" } else { "s" })).strong());
+                ui.label(format!("\"{title}\" keeps its name and grows to {total} frames, with the same inputs: {}. One undo splits them all again.", names.join(" › ")));
+                ui.add_space(6.0);
+                ui.checkbox(&mut markers, "Leave a marker with each segment's title where it began");
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    go = ui.button("Join").clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    cancel = true;
+                }
+            });
+            if go {
+                if let Err(e) = self.join_chain(&top, markers) {
+                    self.error(e);
+                }
+            } else if !cancel && open {
+                self.chain_dialog = Some((top, markers));
             }
         }
         let pending = self.join_dialog.take().and_then(|d| {
@@ -3002,7 +3267,34 @@ impl App {
                     ui.label("");
                     ui.label(RichText::new(format!("{:.1} s at {:.2} fps", d.frames as f64 / self.fps, self.fps)).weak());
                     ui.end_row();
+                    if d.root {
+                        ui.label("Save file");
+                        ui.horizontal(|ui| {
+                            let shown = match (&d.sram_pick, &d.sram) {
+                                (Some((p, data)), _) => format!("{} ({} bytes, not applied yet)", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), data.len()),
+                                (None, Some(b)) => format!("blob {}…", &b[..b.len().min(12)]),
+                                (None, None) => "none (power-on with no save data)".into(),
+                            };
+                            ui.label(shown);
+                            if ui.button("Choose…").on_hover_text("Battery-backed save RAM to load before frame 0 (an .srm, or the core's save file). It is copied into blobs/.").clicked() {
+                                if let Some(f) = rfd::FileDialog::new().set_title("Choose a save file (SRAM)").pick_file() {
+                                    match std::fs::read(&f) {
+                                        Ok(data) => d.sram_pick = Some((f, data)),
+                                        Err(e) => self.error(format!("Reading {}: {e}", f.display())),
+                                    }
+                                }
+                            }
+                            if ui.add_enabled(d.sram.is_some() || d.sram_pick.is_some(), egui::Button::new("Clear")).clicked() {
+                                d.sram = None;
+                                d.sram_pick = None;
+                            }
+                        });
+                        ui.end_row();
+                    }
                 });
+                if d.root {
+                    ui.label(RichText::new("Changing the save file changes how the segment starts: it and everything below turn dirty.").weak().small());
+                }
                 ui.label(RichText::new(format!("id {}", d.id)).weak().small());
                 ui.horizontal(|ui| {
                     apply = ui.button("Apply").clicked();
@@ -3189,6 +3481,12 @@ impl App {
                 if ui.add_enabled(has, egui::Button::new("New child at end")).on_hover_text("A new empty segment that starts where this one ends").clicked() {
                     self.new_child(sel.as_deref().unwrap());
                 }
+                if ui.add_enabled(self.col.is_some(), egui::Button::new("New root segment")).on_hover_text(NEW_ROOT_TIP).clicked() {
+                    self.new_root();
+                }
+                if ui.add_enabled(sel.is_some(), egui::Button::new("Duplicate")).on_hover_text(DUP_TIP).clicked() {
+                    self.ask_duplicate(sel.as_deref().unwrap());
+                }
                 if ui.add_enabled(has, egui::Button::new("Branch at playhead")).on_hover_text("Split this segment after the playhead and start a second path there").clicked() {
                     self.split_here(true);
                 }
@@ -3210,6 +3508,10 @@ impl App {
                 let only = sel.as_deref().and_then(|s| self.only_child(s));
                 if ui.add_enabled(only.is_some(), egui::Button::new("Join with only child")).on_hover_text(JOIN_CHILD_TIP).on_disabled_hover_text("Only for a segment with exactly one child").clicked() {
                     self.join_with_parent(&only.unwrap());
+                }
+                let chain = sel.as_deref().is_some_and(|s| self.only_child_run(s).len() >= 2);
+                if ui.add_enabled(chain, egui::Button::new("Join chain…")).on_hover_text(JOIN_CHAIN_TIP).on_disabled_hover_text("Only where at least two only-children follow in a row").clicked() {
+                    self.chain_dialog = Some((sel.clone().unwrap(), true));
                 }
                 ui.separator();
                 if ui.add_enabled(sel.is_some(), egui::Button::new("Delete…")).on_hover_text("Delete this segment and everything below it").clicked() {
@@ -3643,6 +3945,9 @@ impl App {
                         if ui.button("New child at end").clicked() {
                             context = Some((id.to_string(), "child"));
                         }
+                        if ui.button("Duplicate").on_hover_text(DUP_TIP).clicked() {
+                            context = Some((id.to_string(), "dup"));
+                        }
                         if ui.button("Properties…").clicked() {
                             context = Some((id.to_string(), "props"));
                         }
@@ -3653,6 +3958,10 @@ impl App {
                         let one_child = col.children(Some(id)).len() == 1;
                         if ui.add_enabled(one_child, egui::Button::new("Join with only child")).on_hover_text(JOIN_CHILD_TIP).on_disabled_hover_text("Only for a segment with exactly one child").clicked() {
                             context = Some((id.to_string(), "joinchild"));
+                        }
+                        let grand_only = one_child && col.children(Some(col.children(Some(id))[0])).len() == 1;
+                        if ui.add_enabled(grand_only, egui::Button::new("Join chain…")).on_hover_text(JOIN_CHAIN_TIP).on_disabled_hover_text("Only where at least two only-children follow in a row").clicked() {
+                            context = Some((id.to_string(), "joinchain"));
                         }
                         if ui.button("Delete…").on_hover_text("Delete this segment and everything below it").clicked() {
                             context = Some((id.to_string(), "delete"));
@@ -3681,6 +3990,22 @@ impl App {
                     let x = rect.left() + depth as f32 * 14.0 + 7.0;
                     let gap = ui.spacing().item_spacing.y;
                     ui.painter().line_segment([egui::pos2(x, rect.top() - gap - 3.0), egui::pos2(x, rect.top() + 4.0)], egui::Stroke::new(1.5, Color32::from_gray(90)));
+                }
+            }
+            // Below the last segment: a + for a new root segment, and the rest of the panel
+            // takes a right-click for the same (not while focused on a branch or filtering).
+            if hoist.is_none() && !filtering {
+                if ui.add(egui::Button::new(RichText::new("+ New root segment").small().weak()).frame(false)).on_hover_text(NEW_ROOT_TIP).clicked() {
+                    context = Some((String::new(), "root"));
+                }
+                let rest = ui.available_rect_before_wrap();
+                if rest.height() > 0.0 {
+                    let resp = ui.interact(rest, egui::Id::unique("tree_empty"), egui::Sense::click());
+                    resp.context_menu(|ui| {
+                        if ui.button("New root segment").on_hover_text(NEW_ROOT_TIP).clicked() {
+                            context = Some((String::new(), "root"));
+                        }
+                    });
                 }
             }
         });
@@ -3721,6 +4046,9 @@ impl App {
             }
         }
         match context {
+            Some((_, "root")) => self.new_root(),
+            Some((id, "joinchain")) => self.chain_dialog = Some((id, true)),
+            Some((id, "dup")) => self.ask_duplicate(&id),
             Some((id, "child")) => {
                 if self.selected.as_deref() != Some(id.as_str()) {
                     self.select(&id);
@@ -4473,6 +4801,9 @@ impl App {
                         for m in EndMode::ALL {
                             ui.selectable_value(&mut self.end_mode, m, m.label()).on_hover_text(m.tip());
                         }
+                        ui.separator();
+                        ui.checkbox(&mut self.stop_on_changed, "Stop at a changed ending")
+                            .on_hover_text("Pause as soon as a segment records an ending that differs from its saved file (the !), so you can undo before the segments below it replay. Off: playback carries on, since a child always starts from where its parent really ends.");
                     })
                     .response
                     .on_hover_text("Behavior at the end of the segment");

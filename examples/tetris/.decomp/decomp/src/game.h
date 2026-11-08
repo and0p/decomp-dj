@@ -222,6 +222,7 @@ void memset_page(uint8_t a, uint8_t x, uint8_t y);
 void waitForVBlankAndEnableNmi(void);
 void disableNmi(void);
 void busy(uint32_t cycles);
+void busyUntil(uint32_t total);
 void nmi(void);
 
 /* menus.c */

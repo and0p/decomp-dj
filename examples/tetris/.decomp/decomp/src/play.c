@@ -13,8 +13,10 @@
 /* A byte of the playfield being processed, (playfieldAddr),y. */
 #define PF(y) R(ptr16(A_playfieldAddr) + (uint8_t)(y))
 
-/* What copying the game's nametable and palette takes, roughly. */
-#define GAME_SCREEN_CYCLES (1024 * 16 + 800 + 32 * 16 + 200)
+/* How long the game screen takes to draw with NMIs off, in CPU cycles from
+ * the NMI (see busyUntil): B-type also patches in the height box. */
+#define GAME_SCREEN_DRAW_A 24873
+#define GAME_SCREEN_DRAW_B 25697
 
 static uint8_t gameMode_playAndEndingHighScore(void);
 static void playState_unassignOrientationId(void);
@@ -59,7 +61,7 @@ int gameModeState_initGameBackground(void)
     disableNmi();
     /* game_palette, game_nametable, the type, the top score; for B-type,
      * game_typeb_nametable_patch and the height */
-    busy(GAME_SCREEN_CYCLES + 300 + (gameType ? 600 : 0));
+    busyUntil(gameType ? GAME_SCREEN_DRAW_B : GAME_SCREEN_DRAW_A);
     screen_clearPlayfields();
     /* gameModeState_initGameBackground_finish */
     waitForVBlankAndEnableNmi();

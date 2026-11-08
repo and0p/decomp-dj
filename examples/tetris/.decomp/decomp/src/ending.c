@@ -13,8 +13,13 @@
 #define bTypeLevelBonus generalCounter4
 #define bTypeHeightBonus generalCounter5
 
-/* What drawing an ending's screen takes, roughly: a nametable and a palette. */
-#define ENDING_SCREEN_CYCLES (1024 * 16 + 800 + 32 * 16 + 200)
+/* How long the endings' screens take to draw with NMIs off, in CPU cycles
+ * from the NMI (see busyUntil). The A-type rocket's grows a little with the
+ * ending, and the cathedral (ending 4) patches the picture; B-type's level 9
+ * concert patches the stage for the height. */
+#define ENDING_A_DRAW(ending) ((ending) == 4 ? 26595 : 24852 + 12 * (ending))
+#define ENDING_B_DRAW 25174
+#define ENDING_B_LEVEL9_DRAW 27302
 
 /* add100Points: adds 100 (BCD) to totalScore. Its BCD fixup checks the
  * hundreds digit only after a carry out of the tens. */
@@ -105,8 +110,7 @@ static void selectEndingScreen(void)
             if (player1_score[2] >= 0x10) {
                 ending = 0x03;
                 if (player1_score[2] >= 0x12) {
-                    ending = 0x04;
-                    busy(400); /* patchToPpu: ending_patchToPpu_typeAOver120k */
+                    ending = 0x04; /* and patchToPpu: ending_patchToPpu_typeAOver120k */
                 }
             }
         }
@@ -140,8 +144,8 @@ int endingAnimation(void)
     /* endingAnimationA */
     WAIT_DISABLE_RENDERING(0xA928);
     disableNmi();
-    busy(ENDING_SCREEN_CYCLES); /* type_a_ending_nametable, ending_palette */
-    selectEndingScreen();
+    selectEndingScreen(); /* with type_a_ending_nametable and ending_palette */
+    busyUntil(ENDING_A_DRAW(ending));
     waitForVBlankAndEnableNmi();
     WAIT_RESET_OAM(0xA948);
     WAIT_ENABLE_RENDERING(0xA94B);
@@ -168,7 +172,7 @@ endingAnimationB:
     /* the concert's or the parade's nametable, ending_palette, and
      * ending_initTypeBVars, which for the concert patches the stage for the
      * height */
-    busy(ENDING_SCREEN_CYCLES + (levelNumber == 0x09 ? 600 : 0));
+    busyUntil(levelNumber == 0x09 ? ENDING_B_LEVEL9_DRAW : ENDING_B_DRAW);
     waitForVBlankAndEnableNmi();
     WAIT_RESET_OAM(0x9EB1);
     WAIT_ENABLE_RENDERING(0x9EB4);

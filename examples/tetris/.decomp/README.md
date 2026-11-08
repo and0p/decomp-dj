@@ -12,6 +12,7 @@ together for decomp-dj. None of it needs the ROM.
 | [libretro/](libretro/) | The libretro core: decomp + port, with decomp-dj's `dj_sync` and `dj_write`. Builds to `tetris_decomp_libretro.dylib` / `.so` |
 | [tools/gen_decomp.py](tools/gen_decomp.py) | Regenerates the RAM layout and the game's data tables from a build of the disassembly |
 | [tools/gen_sites.py](tools/gen_sites.py) | Regenerates `decomp/src/sites.h`, the resume points the snapshot loader matches against the stack |
+| [tools/measure_draws.py](tools/measure_draws.py) | Measures, in a 6502 emulator, how long the original takes to draw each screen with NMIs off (needs the ROM and py65) |
 | [tools/dbg2csv.py](tools/dbg2csv.py), [tools/ramdiff/](tools/ramdiff/) | A decomp-dj symbol map from the reference build; a RAM differ for two cores |
 | [_old/](_old/) | The previous ROM-based port and core, its plan (PLAN.md, QUESTIONS.md, functions.csv) and its header generator, kept for reference |
 
@@ -49,7 +50,9 @@ tetris_load_nes_snapshot(&t, nesRam, why, sizeof why);   // take over from a rea
 Kept: everything that decides what the game does from one frame to the next. That
 includes menu timers, the RNG, the demo (its input and pieces are tables in `data.c`), the
 high score table and the endings' timing. Long work with NMIs off (drawing a new screen)
-is costed in CPU cycles, so the game skips the same frames the NES does.
+is costed in CPU cycles, measured by running the original's code, so the game skips the
+same frames the NES does. The level menu and the name entry screen each take more than a
+frame to draw, and the NES loses one there.
 
 Dropped: drawing to the PPU, sprites, the mapper and the audio engine. Scratch bytes those
 leave in RAM are not reproduced: the OAM page, `oamStagingLength`, the sprite offsets
@@ -123,3 +126,7 @@ The first differences after that were the dropped sprite-staging scratch above, 
 gameplay wasn't checked further. `tetris_load_nes_snapshot` accepted Mesen's RAM at every
 frame it was tried on (every 7th, through the attract mode and into a game). The runs that
 followed matched Mesen up to that same scratch.
+
+`frameCounter` matched Mesen frame for frame through a scripted A-type game (from the menus
+through play, game over and name entry with up and down held) and through B-type games,
+including level 9. The name being entered matched on every frame.

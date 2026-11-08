@@ -15,9 +15,14 @@
  */
 #include "game.h"
 
-/* What copying a nametable (1 KB) and a palette takes, roughly. */
-#define NAMETABLE_CYCLES (1024 * 16 + 800)
-#define PALETTE_CYCLES (32 * 16 + 200)
+/* How long each screen takes to draw with NMIs off, in CPU cycles from the
+ * NMI of the frame it starts in (see busyUntil). The level menu takes more
+ * than a frame, so the game loses a frame there. */
+#define LEGAL_SCREEN_DRAW 24425
+#define TITLE_SCREEN_DRAW 24467
+#define GAME_TYPE_MENU_DRAW 24474
+#define LEVEL_MENU_DRAW_A 37449 /* with the height box patched out */
+#define LEVEL_MENU_DRAW_B 33023
 
 /*
  * gameMode_legalScreen (0): the copyright screen. Shown for 255 frames, then
@@ -31,7 +36,7 @@ int gameMode_legalScreen(void)
     renderMode = 0;
     WAIT_DISABLE_RENDERING(0x8209);
     disableNmi();
-    busy(PALETTE_CYCLES + NAMETABLE_CYCLES); /* legal_screen_palette, legal_screen_nametable */
+    busyUntil(LEGAL_SCREEN_DRAW); /* legal_screen_palette, legal_screen_nametable */
     waitForVBlankAndEnableNmi();
     WAIT_RESET_OAM(0x8226);
     WAIT_ENABLE_RENDERING(0x8229);
@@ -68,7 +73,7 @@ int gameMode_titleScreen(void)
     displayNextPiece = 0;
     WAIT_DISABLE_RENDERING(0x825C);
     disableNmi();
-    busy(PALETTE_CYCLES + NAMETABLE_CYCLES); /* menu_palette, title_screen_nametable */
+    busyUntil(TITLE_SCREEN_DRAW); /* menu_palette, title_screen_nametable */
     waitForVBlankAndEnableNmi();
     WAIT_RESET_OAM(0x8279);
     WAIT_ENABLE_RENDERING(0x827C);
@@ -100,7 +105,7 @@ int gameMode_gameTypeMenu(void)
     renderMode = 0x01;
     WAIT_DISABLE_RENDERING(0x82DF);
     disableNmi();
-    busy(PALETTE_CYCLES + NAMETABLE_CYCLES); /* menu_palette, game_type_menu_nametable */
+    busyUntil(GAME_TYPE_MENU_DRAW); /* menu_palette, game_type_menu_nametable */
     waitForVBlankAndEnableNmi();
     WAIT_RESET_OAM(0x82FC);
     WAIT_ENABLE_RENDERING(0x82FF);
@@ -202,7 +207,7 @@ int gameMode_levelMenu(void)
     disableNmi();
     /* menu_palette, level_menu_nametable, (A-type) height_menu_nametablepalette_patch,
      * then showHighScores: high_scores_nametable and three entries */
-    busy(PALETTE_CYCLES + NAMETABLE_CYCLES + (gameType ? 0 : 400) + 900 + 3 * 400);
+    busyUntil(gameType ? LEVEL_MENU_DRAW_B : LEVEL_MENU_DRAW_A);
     waitForVBlankAndEnableNmi();
     WAIT_RESET_OAM(0x8411);
     WAIT_ENABLE_RENDERING(0x841E);

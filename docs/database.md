@@ -15,7 +15,7 @@ memory. It only makes things faster, except for coverage reports, which read it.
 ## What it holds
 
 Rows are keyed by each segment's **content key**: a hash of its setup, start state and
-lines. An edit gives a segment a new key, so it invalidates only that segment's rows.
+lines (for a root, also its `sram` and `snapshot` blob ids). An edit gives a segment a new key, so it invalidates only that segment's rows.
 
 - **Snapshots** of the core state at frame 0, every `diff_every` frames, at markers, and at the end of segments with children. Each is split into pages that are stored once by hash and compressed with zstd.
 - **Previews** (PNG) at the start of each segment and at markers.

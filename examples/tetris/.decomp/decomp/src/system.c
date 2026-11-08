@@ -92,6 +92,21 @@ void busy(uint32_t cycles)
     }
 }
 
+/*
+ * busyUntil: the original's work with NMIs off (drawing a new screen) ends
+ * `total` cycles after this frame's NMI began. The totals are measured, not
+ * estimated: tools/measure_draws.py runs the original's code for each screen
+ * in a 6502 emulator, from the NMI to waitForVBlankAndEnableNmi, starting
+ * from RAM that Mesen had at that frame. Whether a screen takes past the next
+ * vertical blank decides whether the game loses a frame there, which shifts
+ * frameCounter (and everything timed by it) from then on.
+ */
+void busyUntil(uint32_t total)
+{
+    if (total > T->ctl.cycles)
+        busy(total - T->ctl.cycles);
+}
+
 /* ------------------------------------------------------------------------ */
 /* Reset and boot                                                           */
 /* ------------------------------------------------------------------------ */

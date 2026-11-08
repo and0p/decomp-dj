@@ -52,6 +52,16 @@ When one ships, its user-facing description moves into `docs/` and the entry her
     N64, ...) should get its own default that covers its buttons, picked from the core or
     the project's system.
   - **Two players in real time.** Bindings for a second controller at once.
+- **Two lines for the playback bar.** The bar under the picture has grown crowded: play,
+  step, the marker buttons, the ⏭ continue split button, the end mode, Record and speed.
+  Split it in two: the transport (play, step, markers, continue, Record, speed) on one line,
+  and the modes and options (end mode, and the comparison controls below) on the other,
+  with the frame and status line below as now. Open: how it wraps at narrow widths (fold
+  to one line when there's room, or wrap).
+- **Comparison controls on the playback bar, redesigned.** The Compare dropdown, Run and
+  Check parity were taken out of the bar; for now they're only in the Compare menu. Once
+  the two-line layout exists, bring back something compact: an indicator or toggle for the
+  comparison core (which one, in step or not) and for parity checking.
 - **Audio playback (GUI).** Play the core's audio while a segment plays, with a volume
   slider and a mute button in the playback toolbar. When more than one core is running
   (side-by-side comparison), an A|B toggle picks which core you hear.
@@ -63,7 +73,7 @@ When one ships, its user-facing description moves into `docs/` and the entry her
 - **Focus on tagged segments.** The tree filters by tag (`#tag`, the **#** menu) and can show
   what's below the matches. Still open: a Focus-like view of every segment with a tag at
   once (Focus here takes one segment), clearing the tag filter as it focuses.
-- **Menu follow-ups.** The menus are regrouped (File, Edit, View, Project, Emulation, MCP).
+- **Menu follow-ups.** The menus are regrouped (File, Edit, View, Project, Emulation, Compare, MCP).
   Placeholders still to fill: File > Options… (the GUI preferences in `.local/local.toml`,
   with Keyboard mapping maybe folded in) and Project > Project settings… (the
   project-related settings of `config.toml` and `local.toml`). Later, View toggles to hide or
@@ -257,7 +267,7 @@ When one ships, its user-facing description moves into `docs/` and the entry her
 ## Comparison and parity
 
 - **Shipped: comparison cores, phase 1.** `[[compare]]` entries, the GUI's Compare
-  dropdown and Run toggle, `dj_sync` (with `DJ_SYNC_BOOT`) or save-state sync after
+  dropdown and Run toggle (now the Compare menu), `dj_sync` (with `DJ_SYNC_BOOT`) or save-state sync after
   jumps, `dj_write` for `[WRITE]` lines, and the pictures side by side
   ([gui.md](../docs/gui.md#comparison-cores), [connectors.md](../docs/connectors.md#comparison-cores)).
   GUI only; the comparison core's coverage hooks are ignored.
@@ -270,7 +280,7 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   flags per core and build (not per frame or keyed by segment content), failures name the
   segment by id, a Re-run that passes clears an old failure without asking, failed syncs
   aren't kept, and parity is counted per instruction (not per block). Still to do: counts
-  per block ("passed on X frames"), the CLI and MCP (`dj parity`), and the Compare menu.
+  per block ("passed on X frames") and the CLI and MCP (`dj parity`).
   - **A frame is the test.** After each frame both cores ran from a synced state, the
     comparison core's connector gives a verdict through an optional
     `int dj_check_parity(baseline, frame, char *reason, size_t)`: MATCH, MISMATCH or SKIP,
@@ -323,10 +333,8 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   decide later: a "not applicable" colour of its own, kept out of the not-checked count; a
   `[[compare]]` setting (say `parity_from = 60`) that skips a power-on's first frames without
   core code; and showing skip counts so skips can't hide gaps.
-- **A Compare menu.** The comparison core gets its own entry in the menu bar, for choosing
-  the core (now Project > Comparison core and the Compare dropdown), Run, Sync now, Check
-  parity, Pause on first failure, the later keep-playing-after-a-failure setting, and the
-  parity actions (Re-run old failures, Clear).
+- **More in the Compare menu.** Pause on first failure, the later keep-playing-after-a-failure
+  setting, and a Clear all failures action (Clear is per failure, in the Functions tab).
 - **Comparison core error messages.** Done: `dj_run` ([connectors.md](../docs/connectors.md#parity)), and the same faded message for failed syncs, ticks and parity checks.
 - **Shipped: OpenGL cores (HW_RENDER).** A private offscreen context per core slot (CGL on
   macOS, EGL elsewhere), read back on captured frames ([install.md](../docs/install.md#cores-that-draw-with-opengl)).
@@ -342,7 +350,7 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   `foo_libretro.dylib`/`.so`/`.dll`); per-platform paths (`path.macos`, `path.linux`); and
   `sha256` per platform, since builds differ. `dj` could warn when config.toml holds an
   absolute or platform-specific path, and an entry with no `path` here would show in the
-  Compare dropdown as "not set up on this machine" instead of failing on pick. The same
+  Compare menu as "not set up on this machine" instead of failing on pick. The same
   applies to `[core] path`.
 - **Later:** the comparison core in the CLI and MCP (`dj parity`), its coverage, sound
   (an A|B toggle), and more than one comparison core at a time.

@@ -416,7 +416,7 @@ impl App {
     pub(crate) fn parity_section(&mut self, ui: &mut egui::Ui) {
         let Some(p) = &self.parity else {
             if self.compare.is_none() {
-                ui.label(RichText::new("Load a comparison core (Project > Comparison core) and turn on Check parity to see which code matches.").small().weak());
+                ui.label(RichText::new("Load a comparison core (Compare > Comparison core) and turn on Check parity to see which code matches.").small().weak());
             }
             return;
         };

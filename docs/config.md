@@ -145,7 +145,7 @@ The formats (`ca65-dbg`, `csv`, `splat`, `mesen-mlb`, `ld-map`, `elf`) and how e
 ### `[[compare]]` (optional, repeatable)
 
 Comparison cores: other libretro cores to run beside the baseline, picked in the GUI's
-**Compare** dropdown ([gui.md](gui.md#comparison-cores)). Only one is loaded at a time, and
+**Compare > Comparison core** menu ([gui.md](gui.md#comparison-cores)). Only one is loaded at a time, and
 none is until you pick it. Entries merge by `name` across `config.toml` and
 `.local/local.toml` ([layering](#layering)), so the shared entry can carry `name`, `sync`
 and `options` and each machine's `local.toml` adds its own `path`.
@@ -166,7 +166,7 @@ mesen_ntsc_filter = "Composite"
 
 | Key | Required | Meaning |
 | --- | --- | --- |
-| `name` | yes | What the dropdown shows, and the key entries merge by. |
+| `name` | yes | What the menu shows, and the key entries merge by. |
 | `path` | yes, on each machine | The core library. Relative paths are from the project folder. It may be the baseline's own library: it is then loaded from a private copy in `.local/compare/`, so the two don't share globals. |
 | `build` | no | A free-form id of the build, for people. |
 | `sha256` | no | Pins the library, like `[core] sha256`: a different file doesn't load. |

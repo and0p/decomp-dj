@@ -100,7 +100,11 @@ A comparison core is another libretro core (a decomp built as a core, or the sam
 in another build or with other options) that runs beside the baseline on the same input
 lines. The project lists them as `[[compare]]` entries ([config.md](config.md#compare-optional-repeatable)).
 
-- **Compare** (in the transport, when the project has entries) picks one, or None. A core
+The **Compare** menu holds these controls: Comparison core, Run, Sync now, Check parity, and
+Re-run old failures (Stop re-running while it runs). They're only in the menu, not in the
+transport.
+
+- **Comparison core** (greyed out when the project has no entries) picks one, or None. A core
   loads when you pick it and unloads when you pick another or None; only one is loaded at a
   time, and none is when the app starts. If it fails to load, a dialog says why and only the
   baseline shows.
@@ -113,8 +117,8 @@ lines. The project lists them as `[[compare]]` entries ([config.md](config.md#co
   lines, on saved, unsaved and dirty segments alike. After a jump the comparison core is
   synced to the baseline before the next frame shown ([connectors.md](connectors.md#comparison-cores)):
   when you're paused, the frame shown is re-run so both pictures show it. **Sync now** tries
-  again after a failed sync.
-- **Check parity** (beside Run, off when the app starts) checks after every frame both cores
+  again after a failed sync (in the menu, also after a stop at a failure).
+- **Check parity** (off when the app starts) checks after every frame both cores
   run that they agree: with the core's `dj_check_parity`, or by comparing system RAM byte
   for byte when it has none ([connectors.md](connectors.md#parity)). While it's on, every
   frame is drawn, so a failure shows its own frame.
@@ -167,8 +171,9 @@ and links to the first failing frame that ran it.
 | File | Open project…, Save (Ctrl/Cmd+S): writes every unsaved segment and moves drafts into `segments/`; when that would leave segments dirty it offers **Clean, then save** or **Save anyway**. Clean, then save saves at once only if the clean changed no ending; otherwise it stops with the changed endings marked **!** and offers **Save**, **Save anyway** or **Review first**, so nothing unreviewed is saved without asking. Save selected segment (writes only that segment's file), Revert selected segment (drops only its unsaved changes and puts back its file; undo brings them back), Reload all from disk (every segment, dropping all unsaved edits), Options… (not yet: GUI preferences), Keyboard mapping… ([below](#recording)), Quit. With unsaved edits, Open, Reload all and Quit (also the window's close button) ask first: **Save and …**, **Discard and …** or **Cancel**. Drafts nobody edited here don't count: they stay in `.local/drafts/`. |
 | Edit | Undo, Redo, Cut, Copy, Paste at play cursor ([editing.md](editing.md#undo-cut-copy-and-paste)), Select all (Ctrl/Cmd+A: every press in the piano roll), Drag to draw inputs (off to begin with; [editing.md](editing.md#piano-roll)); then the segment edits and Add event at playhead (E) ([editing.md](editing.md#segment-editing)) |
 | View | Zoom in, Zoom out, Follow playhead, Return to the edit ([editing.md](editing.md#return-to-the-edit)), Show every joypad button |
-| Project | Clean all segments, Replay everything, Use the local database ([database.md](database.md#in-the-gui)), Comparison core (the same choice as the Compare dropdown), Set ROM…, Set core…, Project settings… (not yet) |
+| Project | Clean all segments, Replay everything, Use the local database ([database.md](database.md#in-the-gui)), Set ROM…, Set core…, Project settings… (not yet) |
 | Emulation | Play/pause, step, go to start or end, Snapshot memory |
+| Compare | Comparison core, Run, Sync now, Check parity, Re-run old failures or Stop re-running ([above](#comparison-cores)) |
 | MCP | Enable MCP (off by default), Show agent drafts, follow an agent session, Stop following, Share my view with agents ([mcp.md](mcp.md#the-gui)) |
 
 ## Limits

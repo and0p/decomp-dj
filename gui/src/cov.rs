@@ -652,7 +652,7 @@ impl App {
         let view = self.map_view;
         let has_parity = self.parity.is_some();
         if view == MapView::Parity && !has_parity {
-            ui.label(RichText::new("Load a comparison core (Project > Comparison core) and turn on Check parity to see which code matches.").small().weak());
+            ui.label(RichText::new("Load a comparison core (Compare > Comparison core) and turn on Check parity to see which code matches.").small().weak());
             return;
         }
         let mut pick: Option<usize> = None;

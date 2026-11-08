@@ -4006,7 +4006,6 @@ impl App {
                 if ui.add_enabled(self.col.is_some() && idle, egui::Checkbox::new(&mut use_db, "Use the local database")).keep_open().on_hover_text("Off: play from power-on and keep snapshots only in memory, as before the database existed").changed() {
                     self.set_database(use_db);
                 }
-                self.compare_menu(ui);
                 ui.separator();
                 let has_col = self.col.is_some();
                 if ui.add_enabled(has_col, egui::Button::new("Set ROM…")).clicked() {
@@ -4055,6 +4054,7 @@ impl App {
                 .response
                 .keep_open();
             }));
+            bar.push(ui.menu_button("Compare", |ui| self.compare_bar_menu(ui)));
             bar.push(ui.menu_button("MCP", |ui| self.agent_menu(ui)));
         });
         let open = bar.iter().any(|r| r.inner.is_some());
@@ -5372,9 +5372,6 @@ impl App {
             ui.separator();
             self.record_button(ui, icon);
             ui.separator();
-            if self.compare_controls(ui) {
-                ui.separator();
-            }
 
             // Speed.
             ui.add_enabled_ui(has, |ui| {
@@ -5437,7 +5434,68 @@ impl App {
         });
     }
 
-    /// Project > Comparison core: the same choice as the Compare dropdown.
+    /// The Compare menu: the comparison core, Run, Sync now, Check parity and the parity
+    /// actions.
+    fn compare_bar_menu(&mut self, ui: &mut egui::Ui) {
+        self.compare_menu(ui);
+        ui.separator();
+        let loaded = self.compare.is_some();
+        let no_core = "Load a comparison core first";
+        let was = self.compare_run;
+        ui.add_enabled(loaded, egui::Checkbox::new(&mut self.compare_run, "Run"))
+            .keep_open()
+            .on_hover_text("Run comparison: off pauses the comparison core without unloading it; on syncs it again")
+            .on_disabled_hover_text(no_core);
+        if self.compare_run && !was {
+            self.compare_at = None;
+            self.compare_need_sync = true;
+        }
+        let busy = self.playing || self.job.is_some() || self.hydrating.is_some();
+        let sync_why = if !loaded {
+            no_core
+        } else if !self.compare_run {
+            "Run is off"
+        } else {
+            "Busy: pause playback and wait for the clean or seek to finish"
+        };
+        if ui
+            .add_enabled(loaded && self.compare_run && !busy, egui::Button::new("Sync now"))
+            .on_hover_text("Bring the comparison core to the baseline's state at the frame shown")
+            .on_disabled_hover_text(sync_why)
+            .clicked()
+        {
+            // As playing on after a failure does: drop the failure and sync first.
+            self.compare_failed = false;
+            self.compare_problem = None;
+            self.compare_at = None;
+            self.compare_need_sync = true;
+        }
+        let how = if self.compare.as_ref().is_some_and(|c| c.has_check()) { "with the core's dj_check_parity" } else { "by comparing system RAM (the core has no dj_check_parity)" };
+        ui.add_enabled(loaded, egui::Checkbox::new(&mut self.check_parity, "Check parity"))
+            .keep_open()
+            .on_hover_text(format!("After every frame both cores run, check that they agree, {how}. A failure stops playback at that frame."))
+            .on_disabled_hover_text(no_core);
+        ui.separator();
+        if self.rerun.is_some() {
+            let left = self.rerun.as_ref().map_or(0, |r| r.queue.len() + r.current.is_some() as usize);
+            if ui.button(format!("Stop re-running ({left} to go)")).clicked() {
+                self.rerun_stop();
+            }
+        } else {
+            let old: Vec<i64> = self.parity.as_ref().map(|p| p.failures.iter().filter(|f| p.is_old(f)).map(|f| f.id).collect()).unwrap_or_default();
+            let why = if !loaded { no_core } else { "No failures from an older build" };
+            if ui
+                .add_enabled(!old.is_empty(), egui::Button::new(format!("Re-run old failures ({})", old.len())))
+                .on_hover_text("Re-run every failure from an older build: those that pass now are cleared")
+                .on_disabled_hover_text(why)
+                .clicked()
+            {
+                self.rerun_start(old);
+            }
+        }
+    }
+
+    /// Compare > Comparison core: picks the comparison core, or None.
     fn compare_menu(&mut self, ui: &mut egui::Ui) {
         let names: Vec<String> = self.col.as_ref().map(|c| c.config.compare.iter().map(|e| e.name.clone()).collect()).unwrap_or_default();
         let busy = self.hydrating.is_some() || self.job.is_some();
@@ -5460,51 +5518,6 @@ impl App {
         if let Some(p) = pick {
             self.select_compare(p);
         }
-    }
-
-    /// Compare (pick a comparison core) and Run comparison. Nothing when the project has no
-    /// `[[compare]]` entries; returns whether it showed anything.
-    fn compare_controls(&mut self, ui: &mut egui::Ui) -> bool {
-        let names: Vec<String> = self.col.as_ref().map(|c| c.config.compare.iter().map(|e| e.name.clone()).collect()).unwrap_or_default();
-        if names.is_empty() {
-            return false;
-        }
-        let cur = self.compare.as_ref().map(|c| c.name.clone());
-        let mut pick = None;
-        let busy = self.hydrating.is_some() || self.job.is_some();
-        ui.add_enabled_ui(!busy, |ui| {
-            egui::ComboBox::from_id_salt("compare")
-                .selected_text(cur.as_deref().map_or("Compare: none".to_string(), |n| format!("Compare: {n}")))
-                .width(140.0)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_label(cur.is_none(), "None").clicked() && cur.is_some() {
-                        pick = Some(None);
-                    }
-                    for n in &names {
-                        if ui.selectable_label(cur.as_ref() == Some(n), n).clicked() && cur.as_ref() != Some(n) {
-                            pick = Some(Some(n.clone()));
-                        }
-                    }
-                })
-                .response
-                .on_hover_text("A comparison core to run beside the baseline, from [[compare]] in the project's config");
-        });
-        if let Some(p) = pick {
-            self.select_compare(p);
-        }
-        if self.compare.is_some() {
-            let was = self.compare_run;
-            ui.checkbox(&mut self.compare_run, "Run").on_hover_text("Run comparison: off pauses the comparison core without unloading it; on syncs it again");
-            if self.compare_run && !was {
-                self.compare_at = None;
-                self.compare_need_sync = true;
-            }
-            let how = if self.compare.as_ref().is_some_and(|c| c.has_check()) { "with the core's dj_check_parity" } else { "by comparing system RAM (the core has no dj_check_parity)" };
-            ui.checkbox(&mut self.check_parity, "Check parity").on_hover_text(format!(
-                "After every frame both cores run, check that they agree, {how}. A failure stops playback at that frame."
-            ));
-        }
-        true
     }
 
     /// Selects the parent and goes to its last frame.

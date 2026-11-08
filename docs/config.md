@@ -269,6 +269,12 @@ region is `PRG` when left out.
 | `[[data]]` | Never read as code: disassembly skips it and starts again after it, so a jump table inside a function doesn't throw off the instructions that follow. Left out of every total, with or without a symbol map, and shown purple. Where it overlaps an `[[unreachable]]` range, data wins. |
 | `[[function]]` | At the offset of a map's function, renames it, and resizes it given a `size`. Elsewhere it adds a function: with no `size`, it runs to the end of the map's function it falls inside (which then ends where it starts), or else to the next function. Map functions it overlaps give way to it. |
 
+A function the symbol maps describe that these entries leave nothing of (every instruction
+unreachable, or all of it data) isn't counted at all: it drops out of the function totals,
+the lists in `dj report`, `dj summary`, `dj gaps` and the Coverage tab, and the map. The
+report says how many were left out. A function only partly annotated stays, counted on
+what's left.
+
 If code runs inside a `[[data]]` or `[[unreachable]]` range, the annotation is wrong (or the
 segment does something the game can't): `dj report`, `dj summary` and the Coverage tab warn,
 naming the entry and the segments. `dj annotations <dir>` lists every entry, what each

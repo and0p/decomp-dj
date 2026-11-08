@@ -12,6 +12,23 @@ When one ships, its user-facing description moves into `docs/` and the entry her
 - `exclude` in `[cache]` is recorded but not applied to snapshots yet.
 
 ## GUI
+- **Select all.** Cmd+A (Ctrl+A elsewhere) selects the whole timeline of the selected
+  segment in the piano roll: every input span on every row, ready for cut, copy, delete or
+  a drag. Only when no text field has focus, so it still selects text there. Bare A is a
+  recording key (B button by default), but Cmd+A isn't.
+- **Backspace in real-time recording.** Today the rewind key (Backspace) only works in
+  frame-by-frame recording: `record_keys` returns before reading it when frame-by-frame is
+  off. In real-time mode it should also step back while held, at the playback speed, and
+  erase the input on the frames it leaves when "rewind clears" is on (Shift for the
+  opposite), as it does frame by frame. Recording carries on forward from wherever it's
+  released.
+- **A console in the app.** A panel (View > Console, or clicking the status bar's message)
+  with a scrolling, filterable log of everything that's now only a passing status message
+  or stderr: errors and warnings, info messages, jobs (cleans, hydrates, seeks), comparison
+  syncs and their failures, and the core's own log (libretro's `GET_LOG_INTERFACE`, which
+  the frontend could route here per core slot). Copy and clear buttons; also written to
+  `.local/gui.log` for bug reports. The MCP console (under "Project and CLI") could be
+  one tab of it.
 - **A-B loop.** Loop a chosen stretch of frames, like VLC's A-B repeat: set A and B at the
   playhead (buttons in the transport and keys, or drag a range on the frame ruler), and
   playback jumps back to A on reaching B until the loop is cleared. Shown as a band on the

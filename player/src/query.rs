@@ -232,6 +232,7 @@ impl Project {
             by_play_alone: Ratio { covered: t.played_only_instructions_covered, total: t.instructions, percent: pct(t.played_only_instructions_covered, t.instructions) },
             unreachable_instructions: t.unreachable_instructions,
             data_bytes: t.data_bytes,
+            annotated_functions: t.annotated_functions,
             annotation_warnings: rep.annotation_warnings.iter().map(|w| w.text(&self.col)).collect(),
             executed_outside_symbols: t.executed_outside_symbols,
             segments: rep.replays.len(),
@@ -351,7 +352,10 @@ impl Project {
             .analyzed
             .iter()
             .find(|f| a.region == f.func.region && a.offset >= f.func.offset && a.offset < f.func.offset + f.func.size.max(1))
-            .ok_or_else(|| anyhow!("{} is not inside a function the symbol maps describe", a.text))?;
+            .ok_or_else(|| match d.annotated_functions.iter().find(|f| a.region == f.region && a.offset >= f.offset && a.offset < f.offset + f.size.max(1)) {
+                Some(f) => anyhow!("{} is in {}, which annotations.toml marks wholly unreachable or data, so it isn't counted", a.text, f.name),
+                None => anyhow!("{} is not inside a function the symbol maps describe", a.text),
+            })?;
         let firsts = self.first_frames(&f.func.region, f.func.offset, f.func.offset + f.func.size)?;
         let succ = analysis::block_successors_6502(f, &prg);
         let blocks = f
@@ -778,6 +782,8 @@ pub struct Summary {
     pub unreachable_instructions: usize,
     /// PRG bytes annotations.toml marks as data.
     pub data_bytes: usize,
+    /// Functions left out because annotations.toml marks all of them unreachable or data.
+    pub annotated_functions: usize,
     /// Code that ran where annotations.toml says none can.
     pub annotation_warnings: Vec<String>,
     pub executed_outside_symbols: usize,
@@ -1039,7 +1045,24 @@ mod tests {
         let rows: Vec<(&str, &str, usize, usize)> = r.functions.iter().map(|f| (f.name.as_str(), f.offset.as_str(), f.instructions, f.instructions_covered)).collect();
         assert_eq!(rows, vec![("f", "0x0", 2, 2), ("tail", "0x7", 2, 0)]);
         assert_eq!((r.totals.instructions, r.totals.data_bytes), (4, 3));
+        assert_eq!(r.totals.annotated_functions, 0);
         assert_eq!(p.resolve("tail").unwrap().offset, 7);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wholly_annotated_functions_are_left_out() {
+        // dead (7-9) is all unreachable, table (4-6) all data: only f counts.
+        let ann = "[[unreachable]]\nrange = \"0x7-0x9\"\n[[data]]\nrange = \"0x4-0x6\"\n";
+        let csv = "name,region,offset,size,cpu\nf,PRG,0,4,8000\ntable,PRG,4,3,8004\ndead,PRG,7,3,8007\n";
+        let (dir, mut p) = project_full("whole", true, 2, Some(ann), Some(csv));
+        let r = p.report().unwrap();
+        assert_eq!(r.functions.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["f"]);
+        assert_eq!((r.totals.functions, r.totals.functions_entered, r.totals.annotated_functions), (1, 1, 2));
+        assert_eq!(r.detail.analyzed.len(), r.detail.unreachable_per_function.len());
+        let s = p.summary().unwrap();
+        assert_eq!((s.functions.covered, s.functions.total, s.annotated_functions), (1, 1, 2));
+        assert!(p.function("dead", 5).err().unwrap().to_string().contains("wholly unreachable or data"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

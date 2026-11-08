@@ -678,7 +678,7 @@ impl App {
             if t.unsaved_segments > 0 {
                 notes.push(format!("{} unsaved", t.unsaved_segments));
             }
-            if !notes.is_empty() || t.unreachable_instructions > 0 || t.data_bytes > 0 || !r.annotation_warnings.is_empty() || !r.symbols {
+            if !notes.is_empty() || t.unreachable_instructions > 0 || t.data_bytes > 0 || t.annotated_functions > 0 || !r.annotation_warnings.is_empty() || !r.symbols {
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     if !notes.is_empty() {
@@ -690,6 +690,11 @@ impl App {
                     }
                     if t.data_bytes > 0 {
                         ui.label(RichText::new(format!("{} data bytes", t.data_bytes)).small().color(DATA)).on_hover_text("Inside annotations.toml's [[data]] ranges: never read as code or counted");
+                    }
+                    if t.annotated_functions > 0 {
+                        let names: Vec<&str> = r.detail.annotated_functions.iter().map(|f| f.name.as_str()).collect();
+                        ui.label(RichText::new(format!("{} functions left out", t.annotated_functions)).small().weak())
+                            .on_hover_text(format!("Wholly unreachable or data in annotations.toml, so not counted or shown: {}", names.join(", ")));
                     }
                     for w in &r.annotation_warnings {
                         ui.label(RichText::new(format!("⚠ {} ran as code", w.entry)).small().color(Color32::from_rgb(230, 160, 60))).on_hover_text(match &self.col {

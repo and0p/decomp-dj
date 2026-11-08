@@ -123,7 +123,12 @@ pub enum Command {
 pub struct Line {
     pub frame: u64,
     pub command: Command,
+    /// Its line number in the file when it was read: what errors cite, and what names the
+    /// line to `line_command_text` and `replace_line`. Header edits that don't reparse (a
+    /// title, a hash) move the file's lines but not this.
     pub line_no: usize,
+    /// Index into `body_text`, which header edits don't move.
+    body: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -185,6 +190,7 @@ impl Replay {
                 header.push(HeaderLine::Field(key.to_string(), normalize_field(key, v.trim())));
             } else {
                 body_text.push(l.to_string());
+                let body = body_text.len() - 1;
                 let t = l.trim();
                 if t.is_empty() || t.starts_with('#') {
                     continue;
@@ -194,7 +200,7 @@ impl Replay {
                     bail!("line {line_no}: frame {frame} comes after frame {last_frame}");
                 }
                 last_frame = frame;
-                lines.push(Line { frame, command, line_no });
+                lines.push(Line { frame, command, line_no, body });
             }
         }
         let r = Replay { header, body_text, lines };
@@ -410,9 +416,10 @@ impl Replay {
         Ok(())
     }
 
-    /// Index into `body_text` of a parsed line's file line number.
+    /// Index into `body_text` of the line read from file line `line_no`. Not worked out from
+    /// the header's length: `set`, `add` and `remove_all` change that without reparsing.
     fn body_index(&self, line_no: usize) -> Option<usize> {
-        let i = line_no.checked_sub(self.header.len() + 3)?;
+        let i = self.lines.iter().find(|l| l.line_no == line_no)?.body;
         (i < self.body_text.len()).then_some(i)
     }
 
@@ -624,7 +631,8 @@ impl Replay {
     #[allow(dead_code)]
     pub fn push_body(&mut self, text: &str) -> Result<()> {
         let (frame, command) = parse_body_line(text.trim())?;
-        self.lines.push(Line { frame, command, line_no: 0 });
+        let line_no = self.lines.iter().map(|l| l.line_no).max().unwrap_or(0) + 1;
+        self.lines.push(Line { frame, command, line_no, body: self.body_text.len() });
         self.body_text.push(text.to_string());
         Ok(())
     }
@@ -992,6 +1000,24 @@ frames: 100
         assert_eq!(r.lines[4].command, Command::Write { region: "RAM".into(), address: 0x12, bytes: vec![0x13, 0xff] });
         assert_eq!(r.lines[5].command, Command::Event { text: "Title visible".into(), pos: Some((10, 20)) });
         assert_eq!(Replay::parse(&r.to_text()).unwrap().to_text(), r.to_text());
+    }
+
+    #[test]
+    fn line_text_survives_header_edits() {
+        let text = "dj-replay 1\nid: a\nparent: none\nframes: 100\nend-hash: x\n---\n0 P1 JOYPAD DOWN 1\n40 [WRITE] RAM 0x73 00 00 03\n50 P1 JOYPAD DOWN 0\n";
+        let mut r = Replay::parse(text).unwrap();
+        let write = r.lines[1].line_no;
+        // Fewer header lines (an edit drops the end hash), then more (a title, a checkpoint).
+        r.remove_all("end-hash");
+        assert_eq!(r.line_command_text(write).as_deref(), Some("[WRITE] RAM 0x73 00 00 03"));
+        r.set("title", "t");
+        r.add("checkpoint", "20 c");
+        r.add("checkpoint", "30 d");
+        assert_eq!(r.line_command_text(write).as_deref(), Some("[WRITE] RAM 0x73 00 00 03"));
+        assert_eq!(r.line_command_text(r.lines[0].line_no).as_deref(), Some("P1 JOYPAD DOWN 1"));
+        r.replace_line(write, Some("[WRITE] RAM 0x73 09")).unwrap();
+        assert!(r.to_text().contains("\n40 [WRITE] RAM 0x73 09\n50 P1 JOYPAD DOWN 0\n"), "{}", r.to_text());
+        assert!(r.to_text().contains("checkpoint: 30 d"));
     }
 
     #[test]

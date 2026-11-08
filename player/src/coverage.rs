@@ -32,6 +32,9 @@ pub struct Totals {
     pub unreachable_instructions: usize,
     /// PRG bytes inside `[[data]]` ranges: never read as code, never counted.
     pub data_bytes: usize,
+    /// Functions annotations.toml leaves nothing of (all unreachable or data): left out of
+    /// the function counts and lists.
+    pub annotated_functions: usize,
     /// Segments left out because they are dirty, or have not been played yet.
     pub dirty_segments: usize,
     pub unplayed_segments: usize,
@@ -131,6 +134,8 @@ pub struct Detail {
     pub data: Vec<(u64, u64)>,
     /// annotations.toml as read for this report.
     pub annotations: Annotations,
+    /// Functions left out because annotations.toml leaves nothing of them to count.
+    pub annotated_functions: Vec<analysis::Function>,
 }
 
 impl Detail {
@@ -275,13 +280,20 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
     let symbols = !analyzed.is_empty();
     let mut unreachable_instructions = 0;
     let mut unreachable_per_function = vec![];
-    for f in &mut analyzed {
+    let mut annotated_functions = vec![];
+    analyzed.retain_mut(|f| {
         let before = f.instructions.len();
         f.instructions.retain(|i| !is_unreachable(i.offset));
         f.blocks.retain(|b| !is_unreachable(b.offset));
         unreachable_instructions += before - f.instructions.len();
+        // Nothing left, all of it annotated: not a function to cover.
+        if f.instructions.is_empty() && (f.func.offset..f.func.offset + f.func.size).any(|o| is_data(o) || is_unreachable(o)) {
+            annotated_functions.push(f.func.clone());
+            return false;
+        }
         unreachable_per_function.push(before - f.instructions.len());
-    }
+        true
+    });
 
     // Units of coverage: instruction offsets in PRG when we have symbols, else every PRG
     // byte that isn't annotated as data or unreachable.
@@ -472,6 +484,7 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
             executed_outside_symbols,
             unreachable_instructions,
             data_bytes,
+            annotated_functions: annotated_functions.len(),
             dirty_segments,
             unplayed_segments,
             unsaved_segments,
@@ -493,6 +506,7 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
             unreachable,
             data,
             annotations: ann,
+            annotated_functions,
         },
     })
 }
@@ -557,6 +571,9 @@ pub fn print_report(rep: &Report, col: &Collection) {
     }
     if t.data_bytes > 0 {
         println!("  data (annotations.toml): {} bytes, not counted", t.data_bytes);
+    }
+    if t.annotated_functions > 0 {
+        println!("  {} functions wholly unreachable or data (annotations.toml), not counted", t.annotated_functions);
     }
     for w in &rep.annotation_warnings {
         println!("  warning: {}", w.text(col));

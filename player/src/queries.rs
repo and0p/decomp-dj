@@ -73,7 +73,7 @@ pub fn summary(dir: &Path, q: &QueryArgs) -> Result<()> {
         println!("opcode bytes run: {} (no symbol map)", s.instructions.covered);
     }
     if s.unreachable_instructions + s.data_bytes > 0 {
-        println!("left out (annotations.toml): {} unreachable, {} data bytes", s.unreachable_instructions, s.data_bytes);
+        println!("left out (annotations.toml): {} unreachable, {} data bytes, {} whole functions", s.unreachable_instructions, s.data_bytes, s.annotated_functions);
     }
     for w in &s.annotation_warnings {
         println!("warning: {w}");

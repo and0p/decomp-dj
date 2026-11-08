@@ -261,11 +261,63 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   jumps, `dj_write` for `[WRITE]` lines, and the pictures side by side
   ([gui.md](../docs/gui.md#comparison-cores), [connectors.md](../docs/connectors.md#comparison-cores)).
   GUI only; the comparison core's coverage hooks are ignored.
-- **Next: parity (phase 2).** `int dj_check_parity(baseline, frame, char *reason, size_t)`
-  returning MATCH, MISMATCH, SKIP or ERROR with a reason, called after each frame both
-  cores ran (redundant right after a sync). A **Check parity** checkbox, off at launch and
-  kept for the app session (not saved), and a **Pause on first parity failure** option.
-  Parity is tracked per comparison core.
+- **Next: parity (phase 2).** Decided with Andrew; the design:
+  - **A frame is the test.** After each frame both cores ran from a synced state, the
+    comparison core's connector gives a verdict through an optional
+    `int dj_check_parity(baseline, frame, char *reason, size_t)`: MATCH, MISMATCH or SKIP,
+    with a reason. A core without it falls back to a RAM compare (below). Frames are tested
+    one at a time, from wherever playback is: every way of reaching a frame (from frame 1,
+    from frame 2, ...) can't be tried, so a frame checked once counts, whatever pass it was
+    in. A **Check parity** checkbox, off at launch and kept for the app session (not saved).
+  - **A failure stops everything.** A MISMATCH (or ERROR) stops playback of both cores at
+    that frame. The comparison core's picture is shown faded, as while seeking, with the
+    failure message over it. No resync and no carrying on: the next frame isn't tested
+    until playback is started again, which syncs the comparison core first, as after a
+    jump. The same goes for a failed `dj_sync` (its `reason` is the message) and for a
+    failed tick (below). Later: a setting to keep playing after a failure (both cores run
+    on, unsynced, with later frames marked as following a failure, not tested), since how
+    far and how fast they drift apart can say a lot.
+  - **Which blocks a frame ran.** Coverage flags are cleared only when a segment starts, so
+    they can't say what ran in one frame. The player clears them every frame and keeps the
+    segment's running union itself (cheap for the NES; for large ROMs, a connector call
+    listing the pages touched since the last clear). Only the baseline core's coverage is
+    used.
+  - **Which build.** The comparison core's library is hashed (sha256) when it's loaded, as
+    `[[compare]] sha256` pinning already does. That hash is the build: the same file is the
+    same build, a rebuilt one has a new hash. No version query is needed from the core.
+  - **Failures record how to reproduce them:** the build, the segment, the frame playback
+    was synced at (where this run started) and the failing frame, with the reason. Starting
+    from another frame can give another result, so the record keeps the exact run.
+  - **Block verdicts from frame verdicts.** A block (or byte) is **parity** (purple) when it
+    ran on at least one checked frame and on no failing one; **untested** when it ran only
+    on unchecked frames; not run; **failed** (red) when a frame that ran it failed with the
+    current build: a pass of the same frame later (from another start, say) doesn't clear
+    it, since nothing changed; and **failed before** (orange) when it failed with an older
+    build. Orange doesn't turn purple by itself: a later pass from another start doesn't
+    show the old run is fixed. Each old failure offers **Re-run** (sync at the recorded
+    frame of the recorded segment and play to the failing frame with the current build)
+    and **Clear**; a Re-run that passes offers to clear it, and a project-wide "Re-run old
+    failures" does all of them. A function has parity when every block of it that ran
+    has parity.
+  - **Stored per comparison core.** In the local database, per `[[compare]]` entry, keyed
+    by segment content and frame: the frames checked, the failing frames with their reason
+    and the build (`sha256`) they failed with, and per frame the blocks run (or per segment,
+    "ran on a passing frame" and "ran on a failing frame" sets, if per-frame sets are too
+    large). A new build keeps the old failures, which turn orange once the frame passes.
+    Counts per block ("passed on X frames, failed on Y") and a link to the first failing
+    frame, like the Coverage tab's "Runs in".
+  - **Shown** on the coverage map and the function list (purple, orange, red), and later
+    from `dj parity` and an MCP tool.
+- **A Compare menu.** The comparison core gets its own entry in the menu bar, for choosing
+  the core (now Project > Comparison core and the Compare dropdown), Run, Sync now, Check
+  parity, Pause on first failure, the later keep-playing-after-a-failure setting, and the
+  parity actions (Re-run old failures, Clear).
+- **Comparison core error messages.** `dj_sync` already returns a `reason`. Ticking has no
+  way to fail with a message: `retro_run` returns nothing. Add an optional alternative tick,
+  `int dj_run(char *reason, size_t reason_len)`, called instead of `retro_run` when the core
+  has it: 0 is a normal frame, anything else stops playback with `reason` shown over the
+  faded comparison picture (a crash caught by the port, an unimplemented function hit, an
+  assertion). The same message box serves sync failures and parity failures.
 - **Shipped: OpenGL cores (HW_RENDER).** A private offscreen context per core slot (CGL on
   macOS, EGL elsewhere), read back on captured frames ([install.md](../docs/install.md#cores-that-draw-with-opengl)).
   Next: Vulkan (the negotiation interface, `ash`, MoltenVK on macOS), then maybe OpenGL ES
@@ -284,13 +336,10 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   applies to `[core] path`.
 - **Later:** the comparison core in the CLI and MCP (`dj parity`), its coverage, sound
   (an A|B toggle), and more than one comparison core at a time.
-- **To discuss: emulator vs decomp mismatches.** When the decomp core and the
-  emulator disagree (state hash, RAM, or video), the comparison should stop ticking
-  and report the first difference it caught: the frame, the regions or addresses
-  that differ, and both values. It should not try to resynchronize. Open questions:
-  - What counts as a match when the decomp's RAM layout differs from the original
-    game's (a map between addresses, or only watched values)?
-  - Should video differences stop the run, or only be logged?
+- **Emulator vs decomp mismatches** (decided: stop at the first failing frame, no resync;
+  see parity above). Still open: what counts as a match when the decomp's RAM layout
+  differs from the original game's (a map between addresses, or only watched values), and
+  whether video differences count or are only logged.
 - **Comparison cores can define their own parity.** A decomp may be a port with a completely
   different architecture (a PC port of an N64 game, say), so comparing RAM byte for byte
   means nothing. Let a comparison core's connector decide what a match is: an optional
@@ -303,13 +352,6 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   report. A core without the function falls back to the default check (RAM while
   stepping, below). Open: how much of the baseline to hand over each frame without
   slowing stepping down, and whether the check runs every frame or only at ticks.
-- **Open question: frame parity vs block parity.** A comparison core's `dj_check_parity`
-  gives a verdict per frame: after frame N, it matches the baseline or it doesn't. The
-  coverage map's parity colours want a verdict per block or instruction: this code ran and
-  behaved the same. Settle whether parity is one, the other or both, and if blocks are
-  judged from frame verdicts, the rule (for example, every block run only on matching frames
-  has parity, and every block run on a failing frame is a suspect). Decided so far: loading,
-  syncing and ticking a comparison core come first, then parity.
 - **Open question: how parity is checked.** Nothing is decided yet. The options are:
   - **RAM while stepping.** Run both cores frame by frame and compare RAM (or the
     watched regions) after each frame. It's cheap, and it works with any core. A

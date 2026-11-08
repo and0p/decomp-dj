@@ -13,6 +13,24 @@ The core is Mesen (NES), patched as described in
 [connectors/mesen/README.md](../connectors/mesen/README.md). Any other libretro core plays
 segments too, but records no coverage until it has a [connector](connectors.md).
 
+## Cores that draw with OpenGL
+
+Cores that render on the GPU (libretro's `SET_HW_RENDER`) are supported with OpenGL, in the
+CLI and the GUI alike. Each such core gets a private OpenGL context with no window and a
+framebuffer to draw into; frames are read back into memory only when they are shown or
+saved, so hashes, previews and screenshots work as with any other core. State hashes come
+from memory regions, never from the picture, so GPUs and drivers don't change them.
+
+| Platform | Context | Limits |
+| --- | --- | --- |
+| macOS | CGL (OpenGL.framework) | Core profiles up to OpenGL 4.1; the compatibility profile is OpenGL 2.1 |
+| Linux | EGL, without a window (Mesa's surfaceless platform or a GPU device) | Needs `libEGL.so.1`; a machine with no GPU can use Mesa's software renderer |
+| Windows | none yet | |
+
+A core that asks for something unavailable (Vulkan, OpenGL ES, Direct3D, or a version too
+new) is told no, so it can fall back to software rendering; if it can't, loading fails and
+says what it asked for. `player/tests/testcore/glcore.c` is a small OpenGL core for tests.
+
 ## Trying the example
 
 [examples/thwaite/](../examples/thwaite/) is a 12-segment project for Thwaite, a free NES

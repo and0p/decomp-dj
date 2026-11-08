@@ -39,6 +39,15 @@ const ENV_GET_FASTFORWARDING: u32 = 49 | ENV_EXPERIMENTAL;
 const ENV_GET_CORE_OPTIONS_VERSION: u32 = 52;
 const ENV_SET_CORE_OPTIONS_DISPLAY: u32 = 55;
 const ENV_GET_INPUT_MAX_USERS: u32 = 61;
+const ENV_SET_HW_RENDER: u32 = 14;
+const ENV_GET_HW_RENDER_INTERFACE: u32 = 41 | ENV_EXPERIMENTAL;
+const ENV_SET_HW_SHARED_CONTEXT: u32 = 44 | ENV_EXPERIMENTAL;
+const ENV_GET_PREFERRED_HW_RENDER: u32 = 56;
+
+const HW_CONTEXT_OPENGL: u32 = 1;
+const HW_CONTEXT_OPENGL_CORE: u32 = 3;
+/// `RETRO_HW_FRAME_BUFFER_VALID`: the frame is in the framebuffer, not in memory.
+const HW_FRAME_BUFFER_VALID: usize = usize::MAX;
 
 pub const MEMORY_SAVE_RAM: u32 = 0;
 pub const MEMORY_RTC: u32 = 1;
@@ -126,6 +135,25 @@ struct DjRegionC {
     size: usize,
 }
 
+type HwResetFn = unsafe extern "C" fn();
+
+/// `struct retro_hw_render_callback`.
+#[repr(C)]
+struct HwRenderCallback {
+    context_type: u32,
+    context_reset: Option<HwResetFn>,
+    get_current_framebuffer: Option<unsafe extern "C" fn() -> usize>,
+    get_proc_address: Option<unsafe extern "C" fn(*const c_char) -> ProcAddress>,
+    depth: bool,
+    stencil: bool,
+    bottom_left_origin: bool,
+    version_major: u32,
+    version_minor: u32,
+    cache_context: bool,
+    context_destroy: Option<HwResetFn>,
+    debug_context: bool,
+}
+
 type EnvFn = unsafe extern "C" fn(u32, *mut c_void) -> bool;
 type VideoFn = unsafe extern "C" fn(*const c_void, u32, u32, usize);
 type AudioFn = unsafe extern "C" fn(i16, i16);
@@ -160,6 +188,16 @@ pub struct BusRange {
     pub offset: usize,
 }
 
+/// A core that draws with OpenGL (`SET_HW_RENDER`).
+struct Hw {
+    req: crate::gl::Request,
+    reset: Option<HwResetFn>,
+    destroy: Option<HwResetFn>,
+    bottom_left_origin: bool,
+    /// Made once the game is loaded.
+    ctx: Option<crate::gl::GlContext>,
+}
+
 struct Host {
     system_dir: CString,
     save_dir: CString,
@@ -175,6 +213,9 @@ struct Host {
     proc_iface: Option<unsafe extern "C" fn(*const c_char) -> ProcAddress>,
     bus: Vec<BusRange>,
     av_info: SystemAvInfo,
+    hw: Option<Hw>,
+    /// A GPU context the core asked for and was refused, and why.
+    hw_refused: Option<String>,
 }
 
 /// How many cores may be loaded at once.
@@ -319,10 +360,86 @@ unsafe extern "C" fn env_cb<const S: usize>(cmd: u32, data: *mut c_void) -> bool
             *(data as *mut u32) = 8;
             true
         }
+        ENV_SET_HW_RENDER => {
+            let cb = &mut *(data as *mut HwRenderCallback);
+            let req = crate::gl::Request {
+                core_profile: cb.context_type == HW_CONTEXT_OPENGL_CORE,
+                major: cb.version_major,
+                minor: cb.version_minor,
+                depth: cb.depth,
+                stencil: cb.stencil,
+                debug: cb.debug_context,
+            };
+            let refused = match cb.context_type {
+                HW_CONTEXT_OPENGL | HW_CONTEXT_OPENGL_CORE => crate::gl::unsupported(&req),
+                t => Some(format!("{} (only OpenGL is supported so far)", hw_context_name(t))),
+            };
+            if let Some(why) = refused {
+                with_host(S, |h| h.hw_refused = Some(why));
+                return false;
+            }
+            cb.get_current_framebuffer = Some(hw_framebuffer_cb::<S>);
+            cb.get_proc_address = Some(hw_proc_cb::<S>);
+            let hw = Hw { req, reset: cb.context_reset, destroy: cb.context_destroy, bottom_left_origin: cb.bottom_left_origin, ctx: None };
+            with_host(S, |h| {
+                h.hw = Some(hw);
+                h.hw_refused = None;
+            });
+            true
+        }
+        ENV_GET_PREFERRED_HW_RENDER => {
+            if crate::gl::unsupported(&crate::gl::Request { core_profile: false, major: 0, minor: 0, depth: false, stencil: false, debug: false }).is_some() {
+                return false;
+            }
+            // macOS has no compatibility profile past 2.1.
+            *(data as *mut u32) = if cfg!(target_os = "macos") { HW_CONTEXT_OPENGL_CORE } else { HW_CONTEXT_OPENGL };
+            true
+        }
+        // Every core gets a context of its own anyway.
+        ENV_SET_HW_SHARED_CONTEXT => true,
+        ENV_GET_HW_RENDER_INTERFACE => false,
         ENV_SET_INPUT_DESCRIPTORS | ENV_SET_CONTROLLER_INFO | ENV_SET_SUPPORT_NO_GAME | ENV_SET_CORE_OPTIONS_DISPLAY
         | ENV_SET_SERIALIZATION_QUIRKS => true,
         _ => false,
     }
+}
+
+fn hw_context_name(t: u32) -> String {
+    match t {
+        1 => "OpenGL".into(),
+        2 => "OpenGL ES 2".into(),
+        3 => "OpenGL core".into(),
+        4 => "OpenGL ES 3".into(),
+        5 => "OpenGL ES".into(),
+        6 => "Vulkan".into(),
+        7 => "Direct3D 11".into(),
+        8 => "Direct3D 10".into(),
+        9 => "Direct3D 12".into(),
+        10 => "Direct3D 9".into(),
+        t => format!("GPU context type {t}"),
+    }
+}
+
+unsafe extern "C" fn hw_framebuffer_cb<const S: usize>() -> usize {
+    with_host(S, |h| h.hw.as_ref().and_then(|hw| hw.ctx.as_ref()).map_or(0, |c| c.framebuffer() as usize)).unwrap_or(0)
+}
+
+unsafe extern "C" fn hw_proc_cb<const S: usize>(name: *const c_char) -> ProcAddress {
+    if name.is_null() {
+        return None;
+    }
+    let name = CStr::from_ptr(name).to_string_lossy();
+    let p = with_host(S, |h| h.hw.as_ref().and_then(|hw| hw.ctx.as_ref()).map_or(std::ptr::null(), |c| c.proc(&name))).unwrap_or(std::ptr::null());
+    if p.is_null() {
+        None
+    } else {
+        Some(std::mem::transmute::<*const c_void, unsafe extern "C" fn()>(p))
+    }
+}
+
+/// A colour channel of `max + 1` levels (the bits of `v` under `max`), widened to 0..=255.
+fn scale(v: u16, max: u16) -> u8 {
+    ((v & max) as u32 * 255 / max as u32) as u8
 }
 
 unsafe extern "C" fn video_cb<const S: usize>(data: *const c_void, width: u32, height: u32, pitch: usize) {
@@ -331,6 +448,15 @@ unsafe extern "C" fn video_cb<const S: usize>(data: *const c_void, width: u32, h
             return;
         }
         h.capture_next_frame = false;
+        if data as usize == HW_FRAME_BUFFER_VALID {
+            // Drawn on the GPU: read it back (the context is current while the core runs).
+            if let Some((ctx, bl)) = h.hw.as_ref().and_then(|hw| hw.ctx.as_ref().map(|c| (c, hw.bottom_left_origin))) {
+                let rgb = ctx.read_rgb(width, height, bl);
+                let (w, hgt) = (width.min(ctx.width), height.min(ctx.height));
+                h.last_frame = Some(Frame { width: w, height: hgt, rgb });
+            }
+            return;
+        }
         let mut rgb = Vec::with_capacity((width * height * 3) as usize);
         for y in 0..height as usize {
             let row = (data as *const u8).add(y * pitch);
@@ -342,11 +468,11 @@ unsafe extern "C" fn video_cb<const S: usize>(data: *const c_void, width: u32, h
                     }
                     PixelFormat::Rgb565 => {
                         let p = *(row.add(x * 2) as *const u16);
-                        (((p >> 11) & 0x1f) as u8 * 255 / 31, ((p >> 5) & 0x3f) as u8 * 255 / 63, (p & 0x1f) as u8 * 255 / 31)
+                        (scale(p >> 11, 0x1f), scale(p >> 5, 0x3f), scale(p, 0x1f))
                     }
                     PixelFormat::Rgb1555 => {
                         let p = *(row.add(x * 2) as *const u16);
-                        (((p >> 10) & 0x1f) as u8 * 255 / 31, ((p >> 5) & 0x1f) as u8 * 255 / 31, (p & 0x1f) as u8 * 255 / 31)
+                        (scale(p >> 10, 0x1f), scale(p >> 5, 0x1f), scale(p, 0x1f))
                     }
                 };
                 rgb.extend_from_slice(&[r, g, b]);
@@ -393,6 +519,7 @@ struct Api {
     get_memory_data: unsafe extern "C" fn(u32) -> *mut c_void,
     get_memory_size: unsafe extern "C" fn(u32) -> usize,
     set_controller_port_device: unsafe extern "C" fn(u32, u32),
+    get_system_av_info: unsafe extern "C" fn(*mut SystemAvInfo),
 }
 
 pub struct Connector {
@@ -497,6 +624,8 @@ impl Core {
                 proc_iface: None,
                 bus: vec![],
                 av_info: SystemAvInfo::default(),
+                hw: None,
+                hw_refused: None,
             })
         });
 
@@ -527,6 +656,7 @@ impl Core {
                 get_memory_data: sym!("retro_get_memory_data"),
                 get_memory_size: sym!("retro_get_memory_size"),
                 set_controller_port_device: sym!("retro_set_controller_port_device"),
+                get_system_av_info: sym!("retro_get_system_av_info"),
             };
 
             let mut info: SystemInfo = std::mem::zeroed();
@@ -604,20 +734,72 @@ impl Core {
         let info = GameInfo { path: path.as_ptr(), data: data.as_ptr() as *const c_void, size: data.len(), meta: std::ptr::null() };
         let ok = unsafe { (self.api.load_game)(&info) };
         if !ok {
-            bail!("core refused to load {}", rom.display());
+            bail!("core refused to load {}{}", rom.display(), self.refused_note());
         }
         self.game_loaded = true;
+        self.after_load()
+    }
+
+    /// ": it asked for ...", when the core asked for a GPU context it didn't get.
+    fn refused_note(&self) -> String {
+        with_host(self.slot, |h| h.hw_refused.clone()).flatten().map(|r| format!(": it asked for {r}, which isn't available")).unwrap_or_default()
+    }
+
+    /// After the game is loaded: reads the core's timing and geometry, and gives a core that
+    /// draws with OpenGL its context.
+    fn after_load(&mut self) -> Result<()> {
+        let mut av = SystemAvInfo::default();
+        unsafe { (self.api.get_system_av_info)(&mut av) };
+        with_host(self.slot, |h| h.av_info = av);
+        let Some((req, reset)) = with_host(self.slot, |h| h.hw.as_ref().map(|hw| (hw.req, hw.reset))).flatten() else { return Ok(()) };
+        let g = av.geometry;
+        let ctx = crate::gl::GlContext::new(req, g.max_width.max(g.base_width), g.max_height.max(g.base_height))
+            .map_err(|e| anyhow!("the core draws with {}, and that failed: {e:#}", req.describe()))?;
+        with_host(self.slot, |h| {
+            if let Some(hw) = &mut h.hw {
+                hw.ctx = Some(ctx);
+            }
+        });
+        // The context is current: the core sets up its GL objects.
+        if let Some(reset) = reset {
+            unsafe { reset() };
+        }
+        self.gl_leave();
         Ok(())
+    }
+
+    /// Makes the core's GL context current (if it has one) for a call into the core.
+    fn gl_enter(&self) {
+        let r = with_host(self.slot, |h| {
+            let g = h.av_info.geometry;
+            h.hw.as_mut().and_then(|hw| hw.ctx.as_mut()).map(|c| c.enter(g.max_width, g.max_height))
+        });
+        if let Some(Some(Err(e))) = r {
+            eprintln!("warning: {e:#}");
+        }
+    }
+
+    fn gl_leave(&self) {
+        with_host(self.slot, |h| {
+            if let Some(c) = h.hw.as_ref().and_then(|hw| hw.ctx.as_ref()) {
+                c.leave();
+            }
+        });
+    }
+
+    /// The core draws with OpenGL: the context's description, for people.
+    pub fn gpu(&self) -> Option<String> {
+        with_host(self.slot, |h| h.hw.as_ref().and_then(|hw| hw.ctx.as_ref().map(|c| format!("{} ({})", hw.req.describe(), c.version)))).flatten()
     }
 
     /// Starts the core with no content (for cores that need none).
     pub fn load_no_game(&mut self) -> Result<()> {
         let ok = unsafe { (self.api.load_game)(std::ptr::null()) };
         if !ok {
-            bail!("core refused to start without content");
+            bail!("core refused to start without content{}", self.refused_note());
         }
         self.game_loaded = true;
-        Ok(())
+        self.after_load()
     }
 
     /// A function or symbol of the core: through its proc address callback first
@@ -648,7 +830,9 @@ impl Core {
                 h.last_frame = None;
             }
         });
+        self.gl_enter();
         unsafe { (self.api.run)() };
+        self.gl_leave();
         if capture {
             with_host(self.slot, |h| {
                 h.capture_next_frame = false;
@@ -661,7 +845,9 @@ impl Core {
     }
 
     pub fn reset(&mut self) {
+        self.gl_enter();
         unsafe { (self.api.reset)() }
+        self.gl_leave();
     }
 
     pub fn set_input(&mut self, key: InputKey, value: i16) {
@@ -683,6 +869,13 @@ impl Core {
     }
 
     pub fn serialize(&mut self) -> Result<Vec<u8>> {
+        self.gl_enter();
+        let r = self.serialize_inner();
+        self.gl_leave();
+        r
+    }
+
+    fn serialize_inner(&mut self) -> Result<Vec<u8>> {
         unsafe {
             let size = (self.api.serialize_size)();
             if size == 0 {
@@ -697,7 +890,9 @@ impl Core {
     }
 
     pub fn unserialize(&mut self, state: &[u8]) -> Result<()> {
+        self.gl_enter();
         let ok = unsafe { (self.api.unserialize)(state.as_ptr() as *const c_void, state.len()) };
+        self.gl_leave();
         if !ok {
             bail!("core failed to load state");
         }
@@ -843,12 +1038,22 @@ impl Core {
 
 impl Drop for Core {
     fn drop(&mut self) {
+        // As RetroArch: the GL context is destroyed (context_destroy) before the game unloads.
+        let destroy = with_host(self.slot, |h| h.hw.as_ref().filter(|hw| hw.ctx.is_some()).map(|hw| hw.destroy)).flatten();
+        self.gl_enter();
         unsafe {
+            if let Some(Some(d)) = destroy {
+                d();
+            }
             if self.game_loaded {
                 (self.api.unload_game)();
             }
             (self.api.deinit)();
         }
+        self.gl_leave();
+        // Drop the context outside the borrow (dropping it makes it current again).
+        let ctx = with_host(self.slot, |h| h.hw.as_mut().and_then(|hw| hw.ctx.take())).flatten();
+        drop(ctx);
         HOST.with(|h| h.borrow_mut()[self.slot] = None);
         CORE_LOADED[self.slot].store(false, Ordering::SeqCst);
     }

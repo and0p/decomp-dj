@@ -204,6 +204,11 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   cores ran (redundant right after a sync). A **Check parity** checkbox, off at launch and
   kept for the app session (not saved), and a **Pause on first parity failure** option.
   Parity is tracked per comparison core.
+- **Shipped: OpenGL cores (HW_RENDER).** A private offscreen context per core slot (CGL on
+  macOS, EGL elsewhere), read back on captured frames ([install.md](../docs/install.md#cores-that-draw-with-opengl)).
+  Next: Vulkan (the negotiation interface, `ash`, MoltenVK on macOS), then maybe OpenGL ES
+  through EGL, Windows (WGL), and asynchronous readback (PBOs) or showing the texture
+  directly if readback costs too much at high internal resolutions.
 - **Later:** the comparison core in the CLI and MCP (`dj parity`), its coverage, sound
   (an A|B toggle), and more than one comparison core at a time.
 - **To discuss: emulator vs decomp mismatches.** When the decomp core and the

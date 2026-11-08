@@ -7,6 +7,7 @@ pub mod collection;
 pub mod compare;
 pub mod coverage;
 pub mod format;
+pub mod gl;
 pub mod hydrate;
 pub mod libretro;
 pub mod player;

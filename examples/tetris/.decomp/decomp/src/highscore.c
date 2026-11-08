@@ -136,6 +136,7 @@ int handleHighScoreIfNecessary(void)
     WAIT_DISABLE_RENDERING(0xA214);
     disableNmi();
     /* menu_palette, enter_high_score_nametable, the game type, then showHighScores */
+    drawLeftovers(0xC95C, 0x9FFD); /* showHighScores */
     busyUntil(HIGH_SCORE_SCREEN_DRAW); /* more than a frame: the game loses one here */
     renderMode = 0x02;
     waitForVBlankAndEnableNmi();

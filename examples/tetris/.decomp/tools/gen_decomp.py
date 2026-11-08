@@ -131,6 +131,27 @@ TABLES = [
     ('demoTetriminoTypeTable', 'the demo\'s pieces: bits 4-6 of each byte pick from spawnTable', 0x100),
     ('orientationToSpriteTable', 'the next piece preview\'s sprite, by orientation', None),
     ('oamContentLookup', 'the sprites\' ROM addresses, low byte first: the scratch values loading one leaves', None),
+    ('LA735', 'B-type concert: the value of ending_customVars at which each dome starts to rise', 4),
+    ('LA73D', 'B-type concert: each dome\'s starting y', 4),
+    ('ending_typeBCathedralAnimSpeed', 'B-type ending: frames between animation frames, by level', None),
+    ('ending_typeBCathedralFrameDelayTable', 'B-type ending: frames between steps, by level', None),
+    ('LA75D', 'B-type ending: the x a figure enters at, by level', None),
+    ('LA767', 'B-type ending: the x that marks a figure not yet entered, by level', None),
+    ('ending_typeBCathedralVectorTable', 'B-type ending: the x a figure moves by each step, by level', None),
+    ('ending_typeBCathedralXTable', 'B-type ending: the x at which each figure lets the next one in, six per level', None),
+]
+
+# Code addresses the game's RAM can point at (patchToPpuAddr, tmp1/tmp2 after
+# a jump table), as ROM_name.
+ADDRESSES = [
+    ('ending_patchToPpu_typeAOver120k', 'A-type ending 4: the cathedral\'s patch to the picture'),
+    ('ending_patchToPpu_typeBConcertHeight4', 'B-type concert: the last patch to the stage, for heights 0-4'),
+]
+# Jump tables after a jsr switch_s_plus_2a, as ROM_name_entries: the entry
+# addresses, which switch_s_plus_2a leaves in tmp1/tmp2.
+JUMP_TABLES = [
+    ('ending_typeBConcert', 'B-type concert: what to draw for each start height', 6),
+    ('ending_typeBConcertPatchToPpuForHeight', 'B-type concert: where to start patching the stage, by start height + 1', 7),
 ]
 
 with open(os.path.join(out, 'src/data.h'), 'w') as h, open(os.path.join(out, 'src/data.c'), 'w') as c:
@@ -151,6 +172,16 @@ with open(os.path.join(out, 'src/data.h'), 'w') as h, open(os.path.join(out, 'sr
         for i, b in enumerate(data):
             c.write(('\n    ' if i % 16 == 0 else ' ') + f'0x{b:02X},')
         c.write('\n};\n\n')
+    for name, what in ADDRESSES:
+        h.write(f'/* {what} */\n#define ROM_{name} 0x{labels[name]:04X}\n\n')
+    for name, what, n in JUMP_TABLES:
+        a = labels[name]
+        # the routine starts lda zp / jsr switch_s_plus_2a; the table follows
+        assert prg[a - 0x8000] == 0xA5 and prg[a - 0x8000 + 2] == 0x20, name
+        t = a + 5 - 0x8000
+        entries = [prg[t + 2 * i] | prg[t + 2 * i + 1] << 8 for i in range(n)]
+        h.write(f'/* {what}: the jump table\'s entries */\nstatic const uint16_t ROM_{name}_entries[{n}] = {{'
+                + ', '.join(f'0x{e:04X}' for e in entries) + '};\n\n')
     # How many 4-byte entries each sprite has (they end with $FF): loading one
     # into OAM staging adds 4 bytes per entry to oamStagingLength.
     look = labels['oamContentLookup']

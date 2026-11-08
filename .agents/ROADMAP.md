@@ -261,7 +261,16 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   jumps, `dj_write` for `[WRITE]` lines, and the pictures side by side
   ([gui.md](../docs/gui.md#comparison-cores), [connectors.md](../docs/connectors.md#comparison-cores)).
   GUI only; the comparison core's coverage hooks are ignored.
-- **Next: parity (phase 2).** Decided with Andrew; the design:
+- **Shipped: parity (phase 2)**, in the GUI ([gui.md](../docs/gui.md#parity),
+  [connectors.md](../docs/connectors.md#parity)): `dj_check_parity` with the RAM fallback,
+  `dj_run`, Check parity, stopping on any failure with the faded picture and its message,
+  the build hash at load, each checked frame's own coverage, failures and passes in the
+  local database per core, the colours on the map and the function list, Re-run, Clear and
+  Re-run old failures. Where it differs from the design below: passes are one set of PRG
+  flags per core and build (not per frame or keyed by segment content), failures name the
+  segment by id, a Re-run that passes clears an old failure without asking, failed syncs
+  aren't kept, and parity is counted per instruction (not per block). Still to do: counts
+  per block ("passed on X frames"), the CLI and MCP (`dj parity`), and the Compare menu.
   - **A frame is the test.** After each frame both cores ran from a synced state, the
     comparison core's connector gives a verdict through an optional
     `int dj_check_parity(baseline, frame, char *reason, size_t)`: MATCH, MISMATCH or SKIP,
@@ -312,12 +321,7 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   the core (now Project > Comparison core and the Compare dropdown), Run, Sync now, Check
   parity, Pause on first failure, the later keep-playing-after-a-failure setting, and the
   parity actions (Re-run old failures, Clear).
-- **Comparison core error messages.** `dj_sync` already returns a `reason`. Ticking has no
-  way to fail with a message: `retro_run` returns nothing. Add an optional alternative tick,
-  `int dj_run(char *reason, size_t reason_len)`, called instead of `retro_run` when the core
-  has it: 0 is a normal frame, anything else stops playback with `reason` shown over the
-  faded comparison picture (a crash caught by the port, an unimplemented function hit, an
-  assertion). The same message box serves sync failures and parity failures.
+- **Comparison core error messages.** Done: `dj_run` ([connectors.md](../docs/connectors.md#parity)), and the same faded message for failed syncs, ticks and parity checks.
 - **Shipped: OpenGL cores (HW_RENDER).** A private offscreen context per core slot (CGL on
   macOS, EGL elsewhere), read back on captured frames ([install.md](../docs/install.md#cores-that-draw-with-opengl)).
   Next: Vulkan (the negotiation interface, `ash`, MoltenVK on macOS), then maybe OpenGL ES

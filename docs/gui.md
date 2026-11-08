@@ -114,7 +114,50 @@ lines. The project lists them as `[[compare]]` entries ([config.md](config.md#co
   synced to the baseline before the next frame shown ([connectors.md](connectors.md#comparison-cores)):
   when you're paused, the frame shown is re-run so both pictures show it. **Sync now** tries
   again after a failed sync.
-- Parity checks aren't there yet: for now you compare by eye.
+- **Check parity** (beside Run, off when the app starts) checks after every frame both cores
+  run that they agree: with the core's `dj_check_parity`, or by comparing system RAM byte
+  for byte when it has none ([connectors.md](connectors.md#parity)). While it's on, every
+  frame is drawn, so a failure shows its own frame.
+- **Any failure stops playback**: a parity failure, a failed tick (`dj_run`), a failed or
+  declined sync. Both cores stop on that frame, and the comparison picture stays faded with
+  the reason over it, the state **stopped** and the frame the comparison core was last synced
+  at (where its run started). Playing or stepping on syncs it again first, as after a jump;
+  after a failed sync, playback carries on without the comparison until the next jump or
+  **Sync now**.
+
+### Parity
+
+Each frame checked with **Check parity** is a test. While it's on, the coverage connector's
+flags are read after every frame, so each frame's code is known on its own. The results are
+kept in the local database, separately for each `[[compare]]` entry
+([database.md](database.md#what-it-holds)):
+
+- A frame that **passed** adds the code it ran to the passes of the comparison core's
+  **build**: the sha256 of its library when it was loaded. A rebuilt library is a new
+  build and starts with no passes.
+- A frame that **failed** (a parity failure or a failed tick) is kept with how to reproduce
+  it: the build, the segment and frame the comparison core was synced at, the failing
+  segment and frame, the reason, and the code that frame ran. Failed syncs aren't kept.
+
+The Coverage tab's **Parity with "core"** section counts the instructions with parity,
+failed and not checked, and lists the failures, newest first. Click one to show its frame.
+**Re-run** syncs where it was synced and plays to its frame with Check parity on (through
+the segments in between, if it was synced in an ancestor); **Clear** forgets it. **Re-run old
+failures** re-runs every failure from an older build, one after another (**Stop** ends it),
+and the status bar says how they went. **Show on map** colours the ROM map and the function
+list by parity:
+
+| Colour | Meaning |
+| --- | --- |
+| Purple | Parity: frames that passed with this build ran it, and no failing frame did. Brighter as more of the code that ran has parity. |
+| Red | A frame that failed with this build ran it. A later pass doesn't clear it: clear the failure once it's fixed, or Re-run it. |
+| Orange | A frame that failed with an older build ran it. A Re-run that passes now clears it; one that fails turns it red. |
+| Grey-green | Ran, but in no frame checked against this build. |
+| Dark grey | Never run. |
+
+Any frame that fails marks everything it ran, so code every frame runs (the NMI handler,
+the main loop) turns red with any failure. The selected function shows its parity counts
+and links to the first failing frame that ran it.
 
 ## Menus
 

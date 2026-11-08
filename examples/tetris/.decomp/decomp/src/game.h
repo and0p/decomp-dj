@@ -168,11 +168,15 @@ enum { DISPATCH_GAME_MODE, DISPATCH_GAME_MODE_STATE, DISPATCH_PLAY_STATE };
     case (site):;                                                                                  \
     } while (0)
 
-/* updateAudioWaitForNmiAndResetOamStaging: leaves A = $FF. */
+/* updateAudioWaitForNmiAndResetOamStaging: leaves A = $FF, and its
+ * memset_page of the OAM page (which the decomp doesn't keep) leaves tmp1 = 0
+ * and tmp2 = 1. */
 #define WAIT_RESET_OAM(site)                                                                       \
     do {                                                                                           \
         PT_WAIT_NMI(site);                                                                         \
         regA = 0xFF;                                                                               \
+        tmp1 = 0x00;                                                                               \
+        tmp2 = 0x01;                                                                               \
     } while (0)
 /* updateAudioWaitForNmiAndDisablePpuRendering: the picture goes off. */
 #define WAIT_DISABLE_RENDERING(site)                                                               \
@@ -223,6 +227,7 @@ void waitForVBlankAndEnableNmi(void);
 void disableNmi(void);
 void busy(uint32_t cycles);
 void busyUntil(uint32_t total);
+void drawLeftovers(uint16_t tmp, uint16_t bulkCopyReturn);
 void nmi(void);
 
 /* menus.c */

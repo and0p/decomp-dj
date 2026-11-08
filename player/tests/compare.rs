@@ -2,7 +2,7 @@
 //! with the system C compiler; the test is skipped when there is none).
 
 use decomp_dj::collection::Collection;
-use decomp_dj::compare::{Comparison, SyncOutcome};
+use decomp_dj::compare::{Comparison, SyncOutcome, Verdict};
 use decomp_dj::libretro::MEMORY_SYSTEM_RAM;
 use decomp_dj::player::Session;
 use std::path::{Path, PathBuf};
@@ -30,6 +30,8 @@ fn project(dir: &Path, core: &Path, nodj: &Path) -> Collection {
              [[compare]]\nname = \"state\"\npath = \"{c}\"\nsync = \"state\"\n\
              [[compare]]\nname = \"dj\"\npath = \"{c}\"\n\
              [[compare]]\nname = \"dj-fail\"\npath = \"{c}\"\n[compare.options]\ntestcore_sync = \"fail\"\n\
+             [[compare]]\nname = \"dj-mismatch\"\npath = \"{c}\"\n[compare.options]\ntestcore_break = \"mismatch\"\n\
+             [[compare]]\nname = \"dj-tick\"\npath = \"{c}\"\n[compare.options]\ntestcore_break = \"tick\"\n\
              [[compare]]\nname = \"nodj\"\npath = \"{}\"\n",
             nodj.display()
         ),
@@ -84,10 +86,39 @@ fn comparison_cores() {
     assert_eq!(ram(&mut c.core)[63], 1);
     for f in 0..20 {
         s2.step(&col, "seg", f, false).unwrap();
-        c.step(&s2.core, &col, "seg", f, false).unwrap();
+        let st = c.step(&s2.core, &col, "seg", f, false).unwrap();
+        assert!(st.tick_failed.is_none());
         assert_eq!(ram(&mut s2.core)[..63], ram(&mut c.core)[..63], "frame {f}");
+        assert_eq!(c.check(&mut s2.core, f).unwrap(), Verdict::Match, "frame {f}");
     }
+    assert!(c.has_check());
+    assert_eq!(c.build.len(), 64);
     drop(c);
+
+    // Parity fails on the frame where the core goes wrong (dj_run changes its RAM there),
+    // with the core's reason; and a tick can fail with its own reason.
+    for (name, tick) in [("dj-mismatch", false), ("dj-tick", true)] {
+        s2.enter_replay(&col, "seg").unwrap();
+        let mut c = Comparison::open(&col, name, &core, Some(&rom)).unwrap();
+        assert_eq!(c.sync(&mut s2.core, &col, "seg", 0, 0, true).unwrap(), SyncOutcome::Synced);
+        let mut first_bad = None;
+        for f in 0..20 {
+            s2.step(&col, "seg", f, false).unwrap();
+            let st = c.step(&s2.core, &col, "seg", f, false).unwrap();
+            if let Some(why) = st.tick_failed {
+                assert!(tick && why.contains("told to fail the tick"), "{why}");
+                first_bad = Some(f);
+                break;
+            }
+            if let Verdict::Mismatch(why) = c.check(&mut s2.core, f).unwrap() {
+                assert!(!tick && why.contains("RAM 0x02"), "{why}");
+                first_bad = Some(f);
+                break;
+            }
+        }
+        assert_eq!(first_bad, Some(9), "{name}");
+        drop(c);
+    }
 
     // A sync the core declines, with its reason.
     let mut c = Comparison::open(&col, "dj-fail", &core, Some(&rom)).unwrap();

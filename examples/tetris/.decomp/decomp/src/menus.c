@@ -36,6 +36,7 @@ int gameMode_legalScreen(void)
     renderMode = 0;
     WAIT_DISABLE_RENDERING(0x8209);
     disableNmi();
+    drawLeftovers(0xB218, 0x821E);
     busyUntil(LEGAL_SCREEN_DRAW); /* legal_screen_palette, legal_screen_nametable */
     waitForVBlankAndEnableNmi();
     WAIT_RESET_OAM(0x8226);
@@ -73,6 +74,7 @@ int gameMode_titleScreen(void)
     displayNextPiece = 0;
     WAIT_DISABLE_RENDERING(0x825C);
     disableNmi();
+    drawLeftovers(0xB679, 0x8271);
     busyUntil(TITLE_SCREEN_DRAW); /* menu_palette, title_screen_nametable */
     waitForVBlankAndEnableNmi();
     WAIT_RESET_OAM(0x8279);
@@ -105,6 +107,7 @@ int gameMode_gameTypeMenu(void)
     renderMode = 0x01;
     WAIT_DISABLE_RENDERING(0x82DF);
     disableNmi();
+    drawLeftovers(0xBADA, 0x82EA);
     busyUntil(GAME_TYPE_MENU_DRAW); /* menu_palette, game_type_menu_nametable */
     waitForVBlankAndEnableNmi();
     WAIT_RESET_OAM(0x82FC);
@@ -207,6 +210,7 @@ int gameMode_levelMenu(void)
     disableNmi();
     /* menu_palette, level_menu_nametable, (A-type) height_menu_nametablepalette_patch,
      * then showHighScores: high_scores_nametable and three entries */
+    drawLeftovers(0xC95C, 0x9FFD); /* showHighScores */
     busyUntil(gameType ? LEVEL_MENU_DRAW_B : LEVEL_MENU_DRAW_A);
     waitForVBlankAndEnableNmi();
     WAIT_RESET_OAM(0x8411);

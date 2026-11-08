@@ -118,6 +118,27 @@ again on the next frame shown.
 The comparison core's coverage functions are ignored for now. A test core with these
 functions is in `player/tests/testcore/`.
 
+### Parity
+
+```c
+// Called after each frame both cores ran from a synced state, if Check parity is on.
+// 0: match. 1: mismatch (fill in `reason`). 2: skip, not judged here (fill in `reason`).
+// Anything else: an error. `frame` is the frame just run, counted from power-on.
+int dj_check_parity(const struct dj_baseline *baseline, uint64_t frame,
+                    char *reason, size_t reason_len);
+
+// Called instead of retro_run when the core has it: run one frame (call retro_run, or your
+// own loop). 0: done. Anything else stops playback with `reason` shown.
+int dj_run(char *reason, size_t reason_len);
+```
+
+`dj_check_parity` decides what a match is, which matters for a port whose memory isn't laid
+out like the original's: compare watched values, a RAM map, or the picture. A core without
+it is checked by comparing both cores' system RAM (`retro_get_memory_data`) byte for byte;
+when the sizes differ, frames aren't judged. `dj_run` lets a port stop with a message (a
+crash it caught, an unimplemented function it hit) instead of running on. A mismatch, an
+error or a failed `dj_run` stops playback at that frame ([gui.md](gui.md#comparison-cores)).
+
 ## Writing one for another core
 
 1. Find where the core fetches an instruction byte, and where it can turn a CPU address into a ROM offset (Mesen's mappers already do: `BaseMapper::GetAbsoluteAddressAndType`).

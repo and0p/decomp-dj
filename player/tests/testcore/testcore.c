@@ -124,6 +124,35 @@ int dj_sync(const struct dj_baseline *b, uint64_t frame, uint32_t flags, char *r
     return 0;
 }
 
+/* Parity: the first 63 bytes of RAM match the baseline's (ram[63] counts boots). */
+int dj_check_parity(const struct dj_baseline *b, uint64_t frame, char *reason, size_t len) {
+    void *(*mem)(unsigned) = (void *(*)(unsigned))b->get_proc(b->ctx, "retro_get_memory_data");
+    if (!mem) { snprintf(reason, len, "no baseline RAM"); return 2; }
+    const uint8_t *base = mem(RETRO_MEMORY_SYSTEM_RAM);
+    for (unsigned i = 0; i < 63; i++)
+        if (base[i] != ram[i]) {
+            snprintf(reason, len, "RAM 0x%02X is 0x%02X here, 0x%02X in the baseline (frame %llu)", i, ram[i], base[i], (unsigned long long)frame);
+            return 1;
+        }
+    return 0;
+}
+
+/* The core option `testcore_break` makes the frame where ram[0] becomes 10 go wrong:
+ * "mismatch" changes RAM there (a parity failure), "tick" fails the tick with a reason. */
+static const char *break_setting(void) {
+    struct retro_variable v = {"testcore_break", NULL};
+    if (env && env(RETRO_ENVIRONMENT_GET_VARIABLE, &v) && v.value) return v.value;
+    return "off";
+}
+int dj_run(char *reason, size_t len) {
+    retro_run();
+    if (ram[0] != 10) return 0;
+    const char *s = break_setting();
+    if (strcmp(s, "mismatch") == 0) ram[2] ^= 0x55;
+    if (strcmp(s, "tick") == 0) { snprintf(reason, len, "told to fail the tick"); return 1; }
+    return 0;
+}
+
 int dj_write(const struct dj_baseline *b, const char *region, uint64_t address, const uint8_t *bytes, size_t n, char *reason, size_t len) {
     (void)b;
     if (strcmp(region, "RAM") != 0) return 1;

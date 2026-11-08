@@ -93,6 +93,50 @@ extern const uint8_t orientationToSpriteTable[19];
 #define ROM_oamContentLookup 0x8C6C
 extern const uint8_t oamContentLookup[180];
 
+/* B-type concert: the value of ending_customVars at which each dome starts to rise */
+#define ROM_LA735 0xA735
+extern const uint8_t LA735[4];
+
+/* B-type concert: each dome's starting y */
+#define ROM_LA73D 0xA73D
+extern const uint8_t LA73D[4];
+
+/* B-type ending: frames between animation frames, by level */
+#define ROM_ending_typeBCathedralAnimSpeed 0xA749
+extern const uint8_t ending_typeBCathedralAnimSpeed[10];
+
+/* B-type ending: frames between steps, by level */
+#define ROM_ending_typeBCathedralFrameDelayTable 0xA753
+extern const uint8_t ending_typeBCathedralFrameDelayTable[10];
+
+/* B-type ending: the x a figure enters at, by level */
+#define ROM_LA75D 0xA75D
+extern const uint8_t LA75D[10];
+
+/* B-type ending: the x that marks a figure not yet entered, by level */
+#define ROM_LA767 0xA767
+extern const uint8_t LA767[10];
+
+/* B-type ending: the x a figure moves by each step, by level */
+#define ROM_ending_typeBCathedralVectorTable 0xA771
+extern const uint8_t ending_typeBCathedralVectorTable[10];
+
+/* B-type ending: the x at which each figure lets the next one in, six per level */
+#define ROM_ending_typeBCathedralXTable 0xA77B
+extern const uint8_t ending_typeBCathedralXTable[60];
+
+/* A-type ending 4: the cathedral's patch to the picture */
+#define ROM_ending_patchToPpu_typeAOver120k 0xA8CC
+
+/* B-type concert: the last patch to the stage, for heights 0-4 */
+#define ROM_ending_patchToPpu_typeBConcertHeight4 0xA896
+
+/* B-type concert: what to draw for each start height: the jump table's entries */
+static const uint16_t ROM_ending_typeBConcert_entries[6] = {0xA609, 0xA5F1, 0xA5D9, 0xA5C1, 0xA5A9, 0xA54C};
+
+/* B-type concert: where to start patching the stage, by start height + 1: the jump table's entries */
+static const uint16_t ROM_ending_typeBConcertPatchToPpuForHeight_entries[7] = {0xA4C4, 0xA4CF, 0xA4DA, 0xA4E5, 0xA4F0, 0xA4FB, 0xA506};
+
 /* the number of OAM entries (4 bytes each) of each sprite in oamContentLookup */
 extern const uint8_t oamSpriteEntries[90];
 

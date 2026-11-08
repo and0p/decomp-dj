@@ -73,12 +73,140 @@ static void ending_typeA(void)
         ending_customVars[0]--;
 }
 
+/*
+ * ending_initTypeBVars: B-type's ending, before it starts. Level 9 is the
+ * concert: the stage is patched for the start height (patchToPpu; the picture
+ * isn't kept, only where the patching left patchToPpuAddr), and the four domes
+ * start at their resting y. Other levels are the parade: figures walk in from
+ * one side, ending_customVars+1 on being the first one's x.
+ */
+static void ending_initTypeBVars(void)
+{
+    ending = 0;
+    ending_customVars[0] = 0;
+    ending_typeBCathedralFrameDelayCounter = 0;
+    spriteIndexInOamContentLookup = 0x02;
+    if (levelNumber == 0x09) {
+        ending = (uint8_t)(player1_startHeight + 1);
+        /* ending_typeBConcertPatchToPpuForHeight: from this height's patch on,
+         * falling through to height 4's; height 5 has none */
+        uint16_t entry = ROM_ending_typeBConcertPatchToPpuForHeight_entries[ending < 7 ? ending : 6];
+        tmp1 = (uint8_t)entry;
+        tmp2 = (uint8_t)(entry >> 8);
+        if (ending <= 0x05) {
+            R(A_patchToPpuAddr) = (uint8_t)ROM_ending_patchToPpu_typeBConcertHeight4;
+            R(A_patchToPpuAddr + 1) = (uint8_t)(ROM_ending_patchToPpu_typeBConcertHeight4 >> 8);
+        }
+        ending = 0;
+        ending_customVars[2] = 0;
+        for (int i = 0; i < 4; i++)
+            ending_customVars[3 + i] = LA73D[i];
+        return;
+    }
+    for (int i = 2; i <= 6; i++) /* @notLevel9 */
+        ending_customVars[i] = LA767[levelNumber];
+    ending_customVars[1] = LA75D[levelNumber];
+}
+
+/*
+ * The concert's domes (LA6BC): ending_customVars counts up as the domes
+ * start; each starts to rise when it reaches the dome's number in LA735,
+ * a pixel a frame, then two once above $A0 (with a sound effect, which the
+ * decomp doesn't play), until it reaches 0. ending_customVars+3.. are their y.
+ */
+static void ending_typeBConcertDomes(void)
+{
+    for (int x = 0; x < 4; x++)
+        if (LA735[x] == ending_customVars[0] && ending_customVars[3 + x]) {
+            ending_customVars[3 + x]--;
+            ending_customVars[0]++;
+        }
+    for (ending_currentSprite = 0; ending_currentSprite != 4; ending_currentSprite++) {
+        uint8_t x = ending_currentSprite, y = ending_customVars[3 + x];
+        if (!y)
+            continue;
+        if (LA73D[x] != y) { /* rising: soundEffectSlot0Init = 3 */
+            y--;
+            if (y < 0xA0)
+                y--;
+        }
+        ending_customVars[3 + x] = y;
+        generalCounter = y;
+        /* (the dome, and its exhaust while it rises, are sprites) */
+    }
+}
+
+/*
+ * ending_typeBConcert: the musicians, more of them the higher the start
+ * height (a jump table into a run that falls through), then the domes.
+ * At height 5 Luigi jumps: `ending` counts his frames, and each time it
+ * wraps (ten animation frames of eight) the domes' count goes up by one.
+ */
+static void ending_typeBConcert(void)
+{
+    uint8_t h = player1_startHeight;
+    uint16_t entry = ROM_ending_typeBConcert_entries[h < 6 ? h : 5];
+    tmp1 = (uint8_t)entry;
+    tmp2 = (uint8_t)(entry >> 8);
+    if (h == 5) { /* @marioLuigiPeach */
+        while ((ending >> 3) == 0x0A) { /* @luigiCalculateFrame */
+            ending = 0;
+            ending_customVars[0]++;
+        }
+        ending++;
+    }
+    /* (Mario, Luigi, Peach, Bowser, Donkey Kong, Samus, Link and Pit are
+     * sprites) */
+    ending_typeBConcertDomes();
+}
+
+/*
+ * ending_typeBCathedral: the parade. `ending` times the figures' animation
+ * (ending_customVars flips between two frames). Every few frames
+ * (ending_typeBCathedralFrameDelayTable) each figure that has entered
+ * moves by the level's vector, and on reaching its spot in
+ * ending_typeBCathedralXTable lets the next one in. There are startHeight + 1
+ * of them.
+ */
+static void ending_typeBCathedral(void)
+{
+    uint8_t lv = levelNumber;
+    ending++; /* ending_typeBCathedralSetSprite */
+    if (ending_typeBCathedralAnimSpeed[lv] == ending) {
+        ending_customVars[0] ^= 0x01;
+        ending = 0;
+    }
+    ending_typeBCathedralFrameDelayCounter++;
+    ending_currentSprite = 0;
+    for (;;) { /* @spriteLoop */
+        uint8_t cs = ending_currentSprite;
+        generalCounter = LA767[lv];
+        uint8_t x = ending_customVars[1 + cs];
+        if (x != generalCounter && ending_typeBCathedralFrameDelayTable[lv] == ending_typeBCathedralFrameDelayCounter) {
+            /* (the figure is a sprite) */
+            x = (uint8_t)(x + ending_typeBCathedralVectorTable[lv]);
+            ending_customVars[1 + cs] = x;
+            if (ending_typeBCathedralXTable[(uint8_t)(lv * 6 + cs)] == x)
+                R(A_ending_customVars + 2 + cs) = LA75D[lv]; /* past the end for the sixth: ending_currentSprite */
+        }
+        generalCounter = ending_currentSprite; /* @continue */
+        if (ending_currentSprite == startHeight)
+            break;
+        ending_currentSprite++;
+    }
+    if (ending_typeBCathedralFrameDelayTable[lv] == ending_typeBCathedralFrameDelayCounter) /* @done */
+        ending_typeBCathedralFrameDelayCounter = 0;
+}
+
 /* render_ending: one frame of the ending animation. */
 static void render_ending(void)
 {
     if (!gameType)
         ending_typeA();
-    /* else ending_typeB: the concert or the parade, sprites only */
+    else if (levelNumber == 0x09)
+        ending_typeBConcert();
+    else
+        ending_typeBCathedral();
 }
 
 /* render_endingUnskippable: plays sleepCounter frames of the ending
@@ -110,7 +238,10 @@ static void selectEndingScreen(void)
             if (player1_score[2] >= 0x10) {
                 ending = 0x03;
                 if (player1_score[2] >= 0x12) {
-                    ending = 0x04; /* and patchToPpu: ending_patchToPpu_typeAOver120k */
+                    ending = 0x04;
+                    /* and patchToPpu: the cathedral, in the picture */
+                    R(A_patchToPpuAddr) = (uint8_t)ROM_ending_patchToPpu_typeAOver120k;
+                    R(A_patchToPpuAddr + 1) = (uint8_t)(ROM_ending_patchToPpu_typeAOver120k >> 8);
                 }
             }
         }
@@ -145,6 +276,7 @@ int endingAnimation(void)
     WAIT_DISABLE_RENDERING(0xA928);
     disableNmi();
     selectEndingScreen(); /* with type_a_ending_nametable and ending_palette */
+    drawLeftovers(0xAD66, 0xA93D);
     busyUntil(ENDING_A_DRAW(ending));
     waitForVBlankAndEnableNmi();
     WAIT_RESET_OAM(0xA948);
@@ -169,9 +301,10 @@ endingAnimationB:
     bTypeHeightBonus = (uint8_t)(player1_startHeight << 4);
     WAIT_DISABLE_RENDERING(0x9E6C);
     disableNmi();
-    /* the concert's or the parade's nametable, ending_palette, and
-     * ending_initTypeBVars, which for the concert patches the stage for the
-     * height */
+    /* the concert's or the parade's nametable, ending_palette, then
+     * ending_initTypeBVars */
+    drawLeftovers(0xAD66, 0x9EA6);
+    ending_initTypeBVars();
     busyUntil(levelNumber == 0x09 ? ENDING_B_LEVEL9_DRAW : ENDING_B_DRAW);
     waitForVBlankAndEnableNmi();
     WAIT_RESET_OAM(0x9EB1);

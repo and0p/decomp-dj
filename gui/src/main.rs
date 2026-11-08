@@ -7,7 +7,7 @@
 use anyhow::{anyhow, Result};
 use eframe::egui::{self, Color32, RichText};
 use decomp_dj::collection::{Collection, LocalConfig, Status};
-use decomp_dj::compare::{Comparison, SyncOutcome};
+use decomp_dj::compare::{Comparison, SyncOutcome, Verdict};
 use decomp_dj::format::{Command, InputKey};
 use decomp_dj::hydrate::Hydrator;
 use decomp_dj::player::{trunk_start_frame, PlayOptions, Recorder, Session};
@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 
 mod agent;
 mod cov;
+mod parity;
 mod record;
 mod roll;
 
@@ -294,6 +295,22 @@ struct App {
     compare_split: f32,
     /// A comparison core that failed to load: the message for its dialog.
     compare_dialog: Option<String>,
+    /// Check parity after every frame both cores run (off at launch, not saved).
+    check_parity: bool,
+    /// A parity failure or a failed tick stopped playback: `compare_problem` says why, the
+    /// comparison picture stays faded, and the next frame run syncs first.
+    compare_failed: bool,
+    /// Where the comparison core was last synced (segment, frame): where its run started.
+    compare_synced: Option<(String, u64)>,
+    /// Parity results with the loaded comparison core (docs/gui.md#parity).
+    parity: Option<parity::Parity>,
+    /// Colour the coverage map and list by parity.
+    show_parity: bool,
+    /// Re-running parity failures.
+    rerun: Option<parity::Rerun>,
+    /// Running frames to reach a seek's target: only the target frame is drawn (and syncs
+    /// the comparison core), even while checking parity.
+    seeking: bool,
     /// The baseline's next frame when it last ran one: the segment and frame. Anything else
     /// next is a jump.
     base_next: Option<(String, u64)>,
@@ -519,6 +536,13 @@ impl Default for App {
             compare_texture: None,
             compare_split: 0.5,
             compare_dialog: None,
+            check_parity: false,
+            compare_failed: false,
+            compare_synced: None,
+            parity: None,
+            show_parity: false,
+            rerun: None,
+            seeking: false,
             base_next: None,
             reshow: false,
         }
@@ -1306,18 +1330,12 @@ impl App {
     fn try_work(&mut self, job: Job) -> Result<()> {
         let t0 = std::time::Instant::now();
         match job {
-            Job::Seek { from, to } => loop {
-                let ran = self.pb.as_ref().map_or(to, |p| p.ran);
-                if ran >= to {
-                    return Ok(());
-                }
-                let last = ran + 1 == to;
-                self.run_one(last)?;
-                if !last && t0.elapsed() > JOB_SLICE {
-                    self.job = Some(Job::Seek { from, to });
-                    return Ok(());
-                }
-            },
+            Job::Seek { from, to } => {
+                self.seeking = true;
+                let r = self.seek_slice(from, to, t0);
+                self.seeking = false;
+                r
+            }
             Job::Enter { id, queue, mut qi, mut frame, start_frame, mut done, total, then_seek } => {
                 loop {
                     let (Some(col), Some(s)) = (&self.col, &mut self.session) else { return Ok(()) };
@@ -1350,6 +1368,22 @@ impl App {
         }
     }
 
+    /// Runs a far seek's frames for one slice of time.
+    fn seek_slice(&mut self, from: u64, to: u64, t0: std::time::Instant) -> Result<()> {
+        loop {
+            let ran = self.pb.as_ref().map_or(to, |p| p.ran);
+            if ran >= to {
+                return Ok(());
+            }
+            let last = ran + 1 == to;
+            self.run_one(last)?;
+            if !last && t0.elapsed() > JOB_SLICE {
+                self.job = Some(Job::Seek { from, to });
+                return Ok(());
+            }
+        }
+    }
+
     /// Progress of the current job, for the status bar.
     fn job_progress(&self) -> Option<(f32, String)> {
         match self.job.as_ref()? {
@@ -1372,6 +1406,15 @@ impl App {
             return Ok(());
         }
         let (id, k) = (pb.id.clone(), pb.ran);
+        // Playing on after a failure: sync first, as after a jump.
+        if self.compare_failed {
+            self.compare_failed = false;
+            self.compare_problem = None;
+            self.compare_at = None;
+            self.compare_need_sync = true;
+        }
+        // While checking parity, every frame is drawn, so a failure shows its own frame.
+        let capture = capture || (self.check_parity && self.compare_run && self.compare.is_some() && !self.seeking);
         // Anything but the frame after the last one run is a jump: the comparison core
         // falls out of step and syncs again before the next frame shown.
         if self.base_next.as_ref().is_none_or(|(i, f)| *i != id || *f != k) {
@@ -1416,17 +1459,14 @@ impl App {
         };
         pb.ran += 1;
         self.base_next = Some((id.clone(), k + 1));
+        // A failure stops playback of both cores (Some: why). `passed`: the frame was checked
+        // and matched.
+        let mut failed: Option<String> = None;
+        let mut passed = false;
         if self.compare_run && self.compare_at.as_ref().is_some_and(|(i, f)| *i == id && *f == k) {
             if let Some(c) = &mut self.compare {
                 match c.step(&s.core, col, &id, k, capture) {
                     Ok(st) => {
-                        if st.needs_sync {
-                            // A [WRITE] it couldn't follow: sync again at the next frame shown.
-                            self.compare_at = None;
-                            self.compare_need_sync = true;
-                        } else {
-                            self.compare_at = Some((id.clone(), k + 1));
-                        }
                         if let Some(f) = st.frame {
                             let img = egui::ColorImage::from_rgb([f.width as usize, f.height as usize], &f.rgb);
                             match &mut self.compare_texture {
@@ -1434,13 +1474,54 @@ impl App {
                                 None => self.compare_texture = Some(egui_ctx().load_texture("compare", img, egui::TextureOptions::NEAREST)),
                             }
                         }
+                        if let Some(why) = st.tick_failed {
+                            failed = Some(format!("The comparison core's frame {k} failed: {why}"));
+                        } else if st.needs_sync {
+                            // A [WRITE] it couldn't follow: sync again at the next frame shown
+                            // (this frame isn't checked: the core didn't see the write).
+                            self.compare_at = None;
+                            self.compare_need_sync = true;
+                        } else {
+                            self.compare_at = Some((id.clone(), k + 1));
+                            if self.check_parity {
+                                match c.check(&mut s.core, pb.start_frame + k) {
+                                    Ok(Verdict::Match) => passed = true,
+                                    Ok(Verdict::Skip(_)) => {}
+                                    Ok(Verdict::Mismatch(why)) => failed = Some(format!("Parity failure at frame {k}: {why}")),
+                                    Err(e) => failed = Some(format!("The parity check at frame {k} failed: {e:#}")),
+                                }
+                            }
+                        }
                     }
-                    Err(e) => {
-                        self.compare_at = None;
-                        self.compare_problem = Some(format!("Frame {k} failed: {e:#}"));
-                    }
+                    Err(e) => failed = Some(format!("The comparison core's frame {k} failed: {e:#}")),
                 }
             }
+        }
+        // While checking parity, each frame's coverage is read on its own: the code a frame
+        // that passed or failed ran.
+        let checking = self.check_parity && self.compare_run && self.compare.is_some();
+        let frame_flags = if checking { cov::take_prg_flags(&mut s.core) } else { None };
+        if let Some(fl) = &frame_flags {
+            self.cov.absorb(fl, egui_ctx().input(|i| i.time));
+            if passed && failed.is_none() {
+                if let Some(p) = &mut self.parity {
+                    p.add_pass(fl);
+                }
+            }
+        }
+        let checked = if failed.is_some() { Some(false) } else { passed.then_some(true) };
+        if let Some(msg) = failed {
+            let (core, build) = self.compare.as_ref().map(|c| (c.name.clone(), c.build.clone())).unwrap_or_default();
+            let synced = self.compare_synced.clone().unwrap_or((id.clone(), k));
+            let from = if synced.0 == id { format!("frame {}", synced.1) } else { format!("frame {} of \"{}\"", synced.1, col_title(Some(col), &synced.0)) };
+            if let Some(p) = &mut self.parity {
+                let f = decomp_dj::parity::Failure { id: 0, core, build, synced, segment: id.clone(), frame: k, reason: msg.clone(), created: decomp_dj::parity::now(), flags: frame_flags.unwrap_or_default() };
+                p.add_failure(f, s.cache.as_ref());
+            }
+            self.compare_at = None;
+            self.compare_failed = true;
+            self.compare_problem = Some(format!("{msg}\n\nSynced at {from}. Play or step on to sync again."));
+            self.playing = false;
         }
         let reached_end = pb.ran == pb.frames;
         // Frames run since the edit are up to date again.
@@ -1483,6 +1564,9 @@ impl App {
         if recorded {
             self.refresh_stored();
             self.refresh_pass_frames();
+        }
+        if self.rerun.is_some() {
+            self.rerun_frame(&id, k, checked);
         }
         Ok(())
     }
@@ -1585,10 +1669,14 @@ impl App {
                 self.work();
                 return Ok(());
             }
-            while self.pb.as_ref().unwrap().ran < want_ran {
+            self.seeking = true;
+            let mut r = Ok(());
+            while self.pb.as_ref().unwrap().ran < want_ran && r.is_ok() {
                 let last = self.pb.as_ref().unwrap().ran + 1 == want_ran;
-                self.run_one(last)?;
+                r = self.run_one(last);
             }
+            self.seeking = false;
+            r?;
         }
         Ok(())
     }
@@ -1674,7 +1762,7 @@ impl App {
                     break;
                 }
                 r = self.run_one(last);
-                if last {
+                if last || !self.playing {
                     break;
                 }
             }
@@ -1696,7 +1784,7 @@ impl App {
                     break;
                 }
                 r = self.run_one(i + 1 == n);
-                if r.is_err() {
+                if r.is_err() || !self.playing {
                     break;
                 }
             }
@@ -1705,6 +1793,10 @@ impl App {
         if let Err(e) = res {
             self.playing = false;
             self.error(e);
+            return;
+        }
+        if !self.playing {
+            // Stopped by the comparison core (a parity failure, a failed tick or sync).
             return;
         }
         if self.at_end() && self.recording {
@@ -1974,8 +2066,13 @@ impl App {
     // ---- comparison cores (docs/gui.md#comparison-cores) ----
 
     fn unload_compare(&mut self) {
+        self.parity_save(true);
+        self.parity = None;
+        self.rerun = None;
         self.compare = None;
         self.compare_at = None;
+        self.compare_failed = false;
+        self.compare_synced = None;
         self.compare_problem = None;
         self.compare_texture = None;
         self.compare_need_sync = false;
@@ -1993,6 +2090,7 @@ impl App {
             Ok(c) => {
                 self.compare = Some(c);
                 self.compare_need_sync = true;
+                self.parity_load();
                 self.info(format!("Loaded comparison core \"{name}\""));
             }
             Err(e) => self.compare_dialog = Some(format!("Could not load comparison core \"{name}\": {e:#}")),
@@ -2010,15 +2108,20 @@ impl App {
         match c.sync(&mut s.core, col, id, k, pb.start_frame + k, boot) {
             Ok(SyncOutcome::Synced) => {
                 self.compare_at = Some((id.to_string(), k));
+                self.compare_synced = Some((id.to_string(), k));
                 self.compare_problem = None;
             }
             Ok(SyncOutcome::Failed(why)) => {
                 self.compare_at = None;
                 self.compare_problem = Some(format!("Couldn't sync at frame {k}: {why}"));
+                // Any failure stops playback; playing on carries on without the comparison
+                // (the sync is tried again at the next jump, or with Sync now).
+                self.playing = false;
             }
             Err(e) => {
                 self.compare_at = None;
                 self.compare_problem = Some(format!("Sync at frame {k} failed: {e:#}"));
+                self.playing = false;
             }
         }
     }
@@ -5396,6 +5499,10 @@ impl App {
                 self.compare_at = None;
                 self.compare_need_sync = true;
             }
+            let how = if self.compare.as_ref().is_some_and(|c| c.has_check()) { "with the core's dj_check_parity" } else { "by comparing system RAM (the core has no dj_check_parity)" };
+            ui.checkbox(&mut self.check_parity, "Check parity").on_hover_text(format!(
+                "After every frame both cores run, check that they agree, {how}. A failure stops playback at that frame."
+            ));
         }
         true
     }
@@ -5496,6 +5603,8 @@ impl App {
         let name = self.compare.as_ref().map(|c| c.name.clone()).unwrap_or_default();
         let (status, color, over) = if !self.compare_run {
             ("paused".to_string(), Color32::from_gray(150), Some("Run comparison is off".to_string()))
+        } else if let (true, Some(p)) = (self.compare_failed, &self.compare_problem) {
+            ("stopped".to_string(), Color32::from_rgb(240, 100, 90), Some(p.clone()))
         } else if let Some(p) = &self.compare_problem {
             ("out of sync".to_string(), Color32::from_rgb(240, 160, 60), Some(p.clone()))
         } else if self.compare_at.is_some() {
@@ -5507,7 +5616,10 @@ impl App {
         ui.scope_builder(egui::UiBuilder::new().max_rect(rh.shrink2(egui::vec2(6.0, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
             ui.label(RichText::new(&name).strong());
             ui.label(RichText::new(&status).color(color));
-            if self.compare_run && self.compare_at.is_none() {
+            if self.compare_run && self.compare_at.is_some() && self.check_parity {
+                ui.label(RichText::new("checking parity").weak());
+            }
+            if self.compare_run && self.compare_at.is_none() && !self.compare_failed {
                 let busy = self.playing || self.job.is_some() || self.hydrating.is_some();
                 sync_now = ui.add_enabled(!busy, egui::Button::new("Sync now").small()).on_hover_text("Bring the comparison core to the baseline's state at the frame shown").clicked();
             }
@@ -5730,6 +5842,9 @@ impl eframe::App for App {
         let ctx = ui.ctx().clone();
         CTX.with(|c| *c.borrow_mut() = Some(ctx.clone()));
         // Closing the window (its close button, Cmd+Q) with unsaved edits asks first.
+        if ctx.input(|i| i.viewport().close_requested()) {
+            self.parity_save(true);
+        }
         if ctx.input(|i| i.viewport().close_requested()) && !self.quit_ok && self.unsaved_edits() > 0 {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.discard_dialog = Some(Discard::Quit);
@@ -5757,6 +5872,7 @@ impl eframe::App for App {
         }
         self.record_keys(&ctx, dt);
         self.tick(dt);
+        self.rerun_step();
         self.compare_idle(&ctx);
         if self.playing {
             ctx.request_repaint();

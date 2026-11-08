@@ -824,6 +824,13 @@ impl Core {
     }
 
     pub fn run_frame(&mut self, capture: bool) -> Option<Frame> {
+        let run = self.api.run;
+        self.run_frame_with(capture, || unsafe { run() }).0
+    }
+
+    /// Runs one frame through `tick` instead of `retro_run` (a connector's `dj_run`, which
+    /// calls it itself), capturing the picture as `run_frame` does.
+    pub fn run_frame_with<T>(&mut self, capture: bool, tick: impl FnOnce() -> T) -> (Option<Frame>, T) {
         with_host(self.slot, |h| {
             h.capture_next_frame = capture;
             if capture {
@@ -831,9 +838,9 @@ impl Core {
             }
         });
         self.gl_enter();
-        unsafe { (self.api.run)() };
+        let out = tick();
         self.gl_leave();
-        if capture {
+        let frame = if capture {
             with_host(self.slot, |h| {
                 h.capture_next_frame = false;
                 h.last_frame.take()
@@ -841,7 +848,8 @@ impl Core {
             .flatten()
         } else {
             None
-        }
+        };
+        (frame, out)
     }
 
     pub fn reset(&mut self) {

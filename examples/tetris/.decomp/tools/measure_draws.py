@@ -13,6 +13,11 @@ the stack, raises the NMI there and runs the original's code in py65 until it
 reaches $AA6B. Reads from I/O give 0 and writes to I/O and the mapper are
 ignored, which the drawing code doesn't depend on.
 
+It also prints the zero-page temporaries ($00-$07) the draw leaves behind.
+The RAM a draw writes on the way to the next frame wait (the bytes in flight
+when a frame boundary falls inside it, decomp/src/parity.c) is a separate
+run: work it out by watching writes in the same setup.
+
 The NES has 29780.67 CPU cycles a frame: a total over that means the game
 misses the next NMI (one frame lost), over twice that two, and so on.
 """
@@ -61,7 +66,7 @@ def measure(prg, ram):
     mpu.processorCycles = 7
     for _ in range(2_000_000):
         if mpu.pc == STOP:
-            return mpu.processorCycles
+            return mpu.processorCycles, bytes(mem[i] for i in range(8))
         mpu.step()
     raise ValueError(f'did not reach ${STOP:04X}')
 
@@ -71,8 +76,8 @@ def main():
         sys.exit(__doc__)
     prg = open(sys.argv[1], 'rb').read()[16:16 + 0x8000]
     for path in sys.argv[2:]:
-        c = measure(prg, bytearray(open(path, 'rb').read()))
-        print(f'{os.path.basename(path):24s} {c:6d} cycles  {c / FRAME:.3f} frames')
+        c, temps = measure(prg, bytearray(open(path, 'rb').read()))
+        print(f'{os.path.basename(path):24s} {c:6d} cycles  {c / FRAME:.3f} frames  $00-$07 left {temps.hex(" ")}')
 
 
 if __name__ == '__main__':

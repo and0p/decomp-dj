@@ -61,6 +61,7 @@ int gameModeState_initGameBackground(void)
     disableNmi();
     /* game_palette, game_nametable, the type, the top score; for B-type,
      * game_typeb_nametable_patch and the height */
+    drawLeftovers(0xC39C, 0x8607);
     busyUntil(gameType ? GAME_SCREEN_DRAW_B : GAME_SCREEN_DRAW_A);
     screen_clearPlayfields();
     /* gameModeState_initGameBackground_finish */
@@ -412,6 +413,8 @@ int gameModeState_startButtonHandling(void)
         renderMode = 0x00;
         PT_WAIT_NMI(0xA3B5); /* updateAudioAndWaitForNmi */
         T->screen.paused = 1; /* the background goes off; the "PAUSE" sprite stays */
+        tmp1 = 0x00; /* memset_page of the OAM page, which the decomp doesn't keep */
+        tmp2 = 0x01;
         for (;;) { /* @pauseLoop */
             if (newlyPressedButtons_player1 == BUTTON_START)
                 break;

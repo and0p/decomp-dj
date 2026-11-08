@@ -56,8 +56,14 @@ frame to draw, and the NES loses one there.
 
 Dropped: drawing to the PPU, sprites, the mapper and the audio engine. Scratch bytes those
 leave in RAM are not reproduced: the OAM page, `oamStagingLength`, the sprite offsets
-(`$A0`-`$A2`), the audio area (`$0680`-`$06FF`, `$E0`-`$EF`), and `generalCounter*` and
-`originalY` values left by sprite staging during play.
+(`$A0`-`$A2`), the audio area (`$0680`-`$06FF`, `$E0`-`$EF`), and `generalCounter`-
+`generalCounter5` and `originalY` as sprite staging leaves them. What the PPU copies leave
+in zero page is reproduced, because the demo reads it as input on its first frames.
+
+`tetris_check_nes_parity(&t, nesRam, why, sizeof why)` compares the game with a real
+Tetris at the same frame (see `src/parity.c`): where the code is (the original's stack
+against the decomp's resume points, so a frame lost on either side shows on that frame)
+and every byte of RAM above that is kept.
 
 `tetris_load_nes_snapshot` copies the RAM, then walks the stack page from `$01FF` down,
 matching each return address to a resume point. It declines (returns 1, with a reason)
@@ -99,6 +105,14 @@ For decomp-dj:
   RAM with `tetris_load_nes_snapshot`, returning 1 with the reason when it can't.
 - **`dj_write`**: region `RAM` is written into the game's RAM. Other regions are ignored (it
   returns 1).
+- **`dj_check_parity`**: `tetris_check_nes_parity` against the baseline's RAM. It judges
+  every frame and never skips. In the two frames after power-on, the original has nothing
+  on the stack yet, so only RAM is compared. When the original is partway through a draw
+  that takes more than a frame (the power-on clear, the level menu, name entry), the few
+  bytes that draw writes are left out of that one frame.
+- **`dj_run`**: one frame. It stops playback where the decomp can't follow the original:
+  gameModeState 9 (the two-player game over, which has no handler), or a wait for an NMI
+  with NMIs off.
 
 In `examples/tetris/config.toml`:
 
@@ -126,6 +140,10 @@ The first differences after that were the dropped sprite-staging scratch above, 
 gameplay wasn't checked further. `tetris_load_nes_snapshot` accepted Mesen's RAM at every
 frame it was tried on (every 7th, through the attract mode and into a game). The runs that
 followed matched Mesen up to that same scratch.
+
+With `tetris_check_nes_parity`, the built core matched Mesen on every frame (code position
+and RAM) of 9,000-frame scripted A-type and B-type games, including level 9, high-score
+name entry and both endings, from power-on and after syncs at seven points along the way.
 
 `frameCounter` matched Mesen frame for frame through a scripted A-type game (from the menus
 through play, game over and name entry with up and down held) and through B-type games,

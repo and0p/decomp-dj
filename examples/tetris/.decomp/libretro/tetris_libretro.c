@@ -13,8 +13,10 @@
  *
  * For decomp-dj it also exports the comparison-core functions (see
  * docs/connectors.md in emu_coverage): dj_sync takes over the game from the
- * baseline's RAM (tetris_load_nes_snapshot), and dj_write follows writes to
- * the baseline's RAM.
+ * baseline's RAM (tetris_load_nes_snapshot), dj_write follows writes to
+ * the baseline's RAM, dj_check_parity compares the two every frame
+ * (tetris_check_nes_parity) and dj_run stops playback where the decomp can't
+ * follow the original.
  */
 #include <stdarg.h>
 #include <stdio.h>
@@ -193,7 +195,7 @@ static uint8_t readPad(unsigned port)
     return b;
 }
 
-RETRO_API void retro_run(void)
+static void runFrame(void)
 {
     bool updated = false;
     if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated && readOptions()) {
@@ -218,6 +220,8 @@ RETRO_API void retro_run(void)
     if (audio_batch_cb)
         audio_batch_cb(silence, n);
 }
+
+RETRO_API void retro_run(void) { runFrame(); }
 
 /* ---- save states --------------------------------------------------------- */
 
@@ -277,6 +281,19 @@ struct dj_baseline {
 
 #define DJ_SYNC_BOOT 1u
 
+/* The baseline's 2 KB of system RAM, or NULL with the reason. */
+static const uint8_t *baselineRam(const struct dj_baseline *b, char *reason, size_t len)
+{
+    void *(*getData)(unsigned) = b && b->get_proc ? (void *(*)(unsigned))b->get_proc(b->ctx, "retro_get_memory_data") : NULL;
+    size_t (*getSize)(unsigned) = b && b->get_proc ? (size_t(*)(unsigned))b->get_proc(b->ctx, "retro_get_memory_size") : NULL;
+    const uint8_t *ram = getData ? getData(RETRO_MEMORY_SYSTEM_RAM) : NULL;
+    if (!ram || !getSize || getSize(RETRO_MEMORY_SYSTEM_RAM) < 0x800) {
+        snprintf(reason, len, "the baseline doesn't give its 2 KB of system RAM");
+        return NULL;
+    }
+    return ram;
+}
+
 /* Brings the game to the baseline's state at the start of a frame. At a
  * fresh power-on it powers on too; otherwise it takes over from the
  * baseline's RAM, which works whenever the original is waiting for the next
@@ -288,13 +305,9 @@ RETRO_API int dj_sync(const struct dj_baseline *b, uint64_t frame, uint32_t flag
         tetris_init(&game);
         return 0;
     }
-    void *(*getData)(unsigned) = b && b->get_proc ? (void *(*)(unsigned))b->get_proc(b->ctx, "retro_get_memory_data") : NULL;
-    size_t (*getSize)(unsigned) = b && b->get_proc ? (size_t(*)(unsigned))b->get_proc(b->ctx, "retro_get_memory_size") : NULL;
-    const uint8_t *ram = getData ? getData(RETRO_MEMORY_SYSTEM_RAM) : NULL;
-    if (!ram || !getSize || getSize(RETRO_MEMORY_SYSTEM_RAM) < 0x800) {
-        snprintf(reason, len, "the baseline doesn't give its 2 KB of system RAM");
+    const uint8_t *ram = baselineRam(b, reason, len);
+    if (!ram)
         return 2;
-    }
     return tetris_load_nes_snapshot(&game, ram, reason, len) ? 1 : 0;
 }
 
@@ -311,5 +324,36 @@ RETRO_API int dj_write(const struct dj_baseline *b, const char *region, uint64_t
         return 2;
     }
     memcpy(&game.ram.b[address], bytes, n);
+    return 0;
+}
+
+/* Compares the game with the baseline after a frame: where the code is and
+ * the RAM the decomp keeps (tetris_check_nes_parity, in decomp/src/parity.c).
+ * Every frame is judged; nothing returns "skip". */
+RETRO_API int dj_check_parity(const struct dj_baseline *b, uint64_t frame, char *reason, size_t len)
+{
+    (void)frame;
+    const uint8_t *ram = baselineRam(b, reason, len);
+    if (!ram)
+        return 3;
+    return tetris_check_nes_parity(&game, ram, reason, len) ? 1 : 0;
+}
+
+/* One frame, as retro_run, stopping where the decomp can't follow the
+ * original: a gameModeState with no handler (9, the two-player game over, which
+ * jumps through whatever follows the table), or NMIs left off with the game
+ * waiting for one, where the original hangs. */
+RETRO_API int dj_run(char *reason, size_t len)
+{
+    runFrame();
+    if (game.ram.v.gameModeState > 0x08) {
+        snprintf(reason, len, "gameModeState is %u, which has no handler (the original jumps through the bytes after its table)",
+                 game.ram.v.gameModeState);
+        return 1;
+    }
+    if (game.ctl.waiting == 1 && !(game.ram.v.currentPpuCtrl & 0x80)) {
+        snprintf(reason, len, "the game waits for an NMI with NMIs off: the original hangs here");
+        return 1;
+    }
     return 0;
 }

@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crate::collection::{sha256_file, Collection};
 use crate::format::Command;
-use crate::libretro::{Core, Frame, COMPARISON};
+use crate::libretro::{Core, Frame, COMPARISON, MEMORY_SYSTEM_RAM};
 use crate::player::{restore_inputs_on, write_memory};
 
 /// How a comparison core is brought to the baseline's state after a jump.
@@ -75,6 +75,13 @@ const DJ_SYNC_FAILED: i32 = 1;
 const DJ_WRITE_OK: i32 = 0;
 const DJ_WRITE_IGNORED: i32 = 1;
 
+const DJ_PARITY_MATCH: i32 = 0;
+const DJ_PARITY_MISMATCH: i32 = 1;
+const DJ_PARITY_SKIP: i32 = 2;
+const DJ_RUN_OK: i32 = 0;
+
+type CheckFn = unsafe extern "C" fn(*const DjBaseline, u64, *mut c_char, usize) -> i32;
+type RunFn = unsafe extern "C" fn(*mut c_char, usize) -> i32;
 type SyncFn = unsafe extern "C" fn(*const DjBaseline, u64, u32, *mut c_char, usize) -> i32;
 type WriteFn = unsafe extern "C" fn(*const DjBaseline, *const c_char, u64, *const u8, usize, *mut c_char, usize) -> i32;
 
@@ -110,6 +117,18 @@ pub struct Stepped {
     /// The frame had a line the comparison couldn't follow (a `[WRITE]` without
     /// `dj_write`): sync it again before trusting it.
     pub needs_sync: bool,
+    /// The core's `dj_run` failed this frame, with its reason.
+    pub tick_failed: Option<String>,
+}
+
+/// A parity check of one frame (docs/connectors.md#parity).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Verdict {
+    Match,
+    /// The cores disagree after this frame, with the reason.
+    Mismatch(String),
+    /// Not checked: the core can't judge this frame (a loading screen, say), with the reason.
+    Skip(String),
 }
 
 /// A loaded comparison core.
@@ -119,6 +138,10 @@ pub struct Comparison {
     pub mode: SyncMode,
     sync_fn: Option<SyncFn>,
     write_fn: Option<WriteFn>,
+    check_fn: Option<CheckFn>,
+    run_fn: Option<RunFn>,
+    /// The sha256 of the core library as loaded: the build parity results belong to.
+    pub build: String,
     /// A private copy of the library, when it is the baseline's own file.
     copy: Option<PathBuf>,
 }
@@ -134,11 +157,9 @@ impl Comparison {
         if !path.is_file() {
             bail!("the core library {} doesn't exist", path.display());
         }
-        if !cfg.sha256.is_empty() {
-            let got = sha256_file(&path)?;
-            if got != cfg.sha256 {
-                bail!("core {} has sha256 {got}, but [[compare]] \"{name}\" is pinned to {}", path.display(), cfg.sha256);
-            }
+        let build = sha256_file(&path)?;
+        if !cfg.sha256.is_empty() && build != cfg.sha256 {
+            bail!("core {} has sha256 {build}, but [[compare]] \"{name}\" is pinned to {}", path.display(), cfg.sha256);
         }
         let work = col.local_dir().join("compare").join(sanitize(name));
         std::fs::create_dir_all(&work)?;
@@ -166,6 +187,10 @@ impl Comparison {
             let write_ptr = core.proc("dj_write");
             let sync_fn: Option<SyncFn> = (!sync_ptr.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, SyncFn>(sync_ptr) });
             let write_fn: Option<WriteFn> = (!write_ptr.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, WriteFn>(write_ptr) });
+            let check_ptr = core.proc("dj_check_parity");
+            let run_ptr = core.proc("dj_run");
+            let check_fn: Option<CheckFn> = (!check_ptr.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, CheckFn>(check_ptr) });
+            let run_fn: Option<RunFn> = (!run_ptr.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, RunFn>(run_ptr) });
             match cfg.sync {
                 SyncMode::DjSync if sync_fn.is_none() => bail!("the core has no dj_sync, which [[compare]] \"{name}\" asks for (sync = \"dj_sync\", the default). For the same emulator as the baseline, sync = \"state\" syncs by save state instead"),
                 SyncMode::State => {
@@ -173,7 +198,7 @@ impl Comparison {
                 }
                 _ => {}
             }
-            Ok(Comparison { name: name.to_string(), core, mode: cfg.sync, sync_fn, write_fn, copy: None })
+            Ok(Comparison { name: name.to_string(), core, mode: cfg.sync, sync_fn, write_fn, check_fn, run_fn, build: build.clone(), copy: None })
         })();
         match loaded {
             Ok(mut c) => {
@@ -263,11 +288,50 @@ impl Comparison {
                 Command::Rng { .. } => bail!("[RNG] is not supported yet"),
             }
         }
-        let out = self.core.run_frame(capture);
+        let (out, tick_failed) = match self.run_fn {
+            Some(f) => {
+                let mut buf = vec![0u8; 512];
+                let (out, r) = self.core.run_frame_with(capture, || unsafe { f(buf.as_mut_ptr() as *mut c_char, buf.len()) });
+                (out, (r != DJ_RUN_OK).then(|| reason(&buf).unwrap_or_else(|| format!("dj_run returned {r}"))))
+            }
+            None => (self.core.run_frame(capture), None),
+        };
         for k in impulses {
             self.core.set_input(k, 0);
         }
-        Ok(Stepped { frame: out, needs_sync })
+        Ok(Stepped { frame: out, needs_sync, tick_failed })
+    }
+
+    /// Checks parity after a frame both cores ran from a synced state: the core's own
+    /// `dj_check_parity` when it has one, otherwise the two cores' system RAM byte for byte.
+    /// `power_on_frame` is the frame just run, counted from power-on. An error is a check
+    /// that went wrong (a failure too, for the player).
+    pub fn check(&mut self, baseline: &mut Core, power_on_frame: u64) -> Result<Verdict> {
+        if let Some(f) = self.check_fn {
+            let h = handle(baseline);
+            let mut buf = vec![0u8; 512];
+            let r = unsafe { f(&h, power_on_frame, buf.as_mut_ptr() as *mut c_char, buf.len()) };
+            return match r {
+                DJ_PARITY_MATCH => Ok(Verdict::Match),
+                DJ_PARITY_MISMATCH => Ok(Verdict::Mismatch(reason(&buf).unwrap_or_else(|| "the core reports a mismatch".into()))),
+                DJ_PARITY_SKIP => Ok(Verdict::Skip(reason(&buf).unwrap_or_else(|| "not checked here".into()))),
+                _ => bail!("dj_check_parity failed: {}", reason(&buf).unwrap_or_else(|| format!("error {r}"))),
+            };
+        }
+        let base = baseline.memory(MEMORY_SYSTEM_RAM).map(|m| m.to_vec());
+        let mine = self.core.memory(MEMORY_SYSTEM_RAM);
+        Ok(match (base, mine) {
+            (Some(a), Some(b)) if a.len() == b.len() => match a.iter().zip(b.iter()).position(|(x, y)| x != y) {
+                None => Verdict::Match,
+                Some(i) => Verdict::Mismatch(format!("system RAM differs at 0x{i:X}: 0x{:02X} here, 0x{:02X} in the baseline", b[i], a[i])),
+            },
+            (Some(a), Some(b)) => Verdict::Skip(format!("system RAM sizes differ ({} bytes here, {} in the baseline) and the core has no dj_check_parity", b.len(), a.len())),
+            _ => Verdict::Skip("no system RAM to compare, and the core has no dj_check_parity".into()),
+        })
+    }
+
+    pub fn has_check(&self) -> bool {
+        self.check_fn.is_some()
     }
 
     /// The core's preferred display aspect ratio (0 if unset).

@@ -97,6 +97,10 @@ pub struct CovState {
     rom: Option<(PathBuf, Vec<u8>)>,
     /// How long building the last report took, for the tooltip.
     took_ms: u128,
+    /// Per cell: parity with the loaded comparison core (crate::parity::Counts).
+    pub parity_cells: Vec<crate::parity::Counts>,
+    /// The cells or what ran changed: count parity again.
+    parity_stale: bool,
 }
 
 impl Default for CovState {
@@ -116,11 +120,13 @@ impl Default for CovState {
             live: Live::default(),
             rom: None,
             took_ms: 0,
+            parity_cells: vec![],
+            parity_stale: true,
         }
     }
 }
 
-fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+pub(crate) fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
     let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
     Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
@@ -322,6 +328,7 @@ impl CovState {
             }
         }
         self.live.new_per_cell = vec![0; self.cells.len()];
+        self.parity_stale = true;
     }
 
     /// Recounts live coverage against the report. Returns the cells that gained some.
@@ -350,6 +357,7 @@ impl CovState {
         self.live.new_per_cell = per;
         self.live.new = total;
         self.live.segment = segment;
+        self.parity_stale = true;
         gained
     }
 
@@ -360,6 +368,66 @@ impl CovState {
         self.recount_live();
         self.live.flash.clear();
         self.live.glow.clear();
+    }
+
+    /// ORs connector flags read just now into live coverage: the glow, and the flash where
+    /// they reach new code.
+    pub(crate) fn absorb(&mut self, flags: &[u8], now: f64) {
+        if !flags.iter().any(|b| *b != 0) {
+            return;
+        }
+        let live = &mut self.live;
+        if live.prg.len() < flags.len() {
+            live.prg.resize(flags.len(), 0);
+        }
+        let mut grew = false;
+        for (a, b) in live.prg.iter_mut().zip(flags) {
+            if *a | *b != *a {
+                *a |= *b;
+                grew = true;
+            }
+        }
+        for (cell, off) in &self.unit_cells {
+            if flags.get(*off as usize).is_some_and(|b| b & FLAG_OPCODE != 0) {
+                self.live.glow.insert(*cell, now);
+            }
+        }
+        if grew {
+            for c in self.recount_live() {
+                self.live.flash.insert(c, now);
+            }
+        }
+    }
+
+    /// Counts each cell's parity: failed (this build, an older one), passed, ran unchecked.
+    fn count_parity(&mut self, p: &crate::parity::Parity) {
+        use crate::parity::St;
+        let mut per = vec![[0usize; 4]; self.cells.len()];
+        if let Some(r) = &self.report {
+            for (cell, off) in &self.unit_cells {
+                let o = *off as usize;
+                let i = match p.status(o) {
+                    St::FailedNow => 0,
+                    St::FailedOld => 1,
+                    St::Passed => 2,
+                    St::Untested => {
+                        let ran = r.detail.hit(*off) || r.detail.dirty_hit(*off) || r.detail.unsaved_hit(*off) || self.live.prg.get(o).is_some_and(|b| b & FLAG_OPCODE != 0);
+                        if !ran {
+                            continue;
+                        }
+                        3
+                    }
+                };
+                per[*cell][i] += 1;
+            }
+        }
+        self.parity_cells = per;
+        self.parity_stale = false;
+    }
+
+    /// The parity view's colour for cell `i`, if parity is shown.
+    fn parity_fill(&self, i: usize) -> Color32 {
+        crate::parity::color(self.parity_cells.get(i).unwrap_or(&[0; 4]))
     }
 
     fn visible_cells(&self) -> Vec<usize> {
@@ -377,6 +445,19 @@ impl CovState {
         }
         v
     }
+}
+
+/// The connector's PRG flags since they were last cleared, clearing them (None: the core
+/// has no PRG coverage, or nothing ran).
+pub(crate) fn take_prg_flags(core: &mut decomp_dj::libretro::Core) -> Option<Vec<u8>> {
+    let i = core.coverage_region_index("PRG")?;
+    let flags = core.coverage_slice(i)?;
+    if !flags.iter().any(|b| *b != 0) {
+        return None;
+    }
+    let v = flags.to_vec();
+    core.coverage_clear();
+    Some(v)
 }
 
 impl App {
@@ -410,34 +491,18 @@ impl App {
         // cleared every screen refresh, so they say what ran since the last one (the glow),
         // and are OR'd into `live.prg` for everything since the segment started. Clearing is
         // safe for the pass being recorded: it gathers the flags after every frame.
-        let Some(i) = s.core.coverage_region_index("PRG") else { return };
-        let Some(flags) = s.core.coverage_slice(i) else { return };
-        if flags.iter().any(|b| *b != 0) {
-            let live = &mut self.cov.live;
-            if live.prg.len() < flags.len() {
-                live.prg.resize(flags.len(), 0);
-            }
-            let mut grew = false;
-            for (a, b) in live.prg.iter_mut().zip(flags) {
-                if *a | *b != *a {
-                    *a |= *b;
-                    grew = true;
-                }
-            }
-            for (cell, off) in &self.cov.unit_cells {
-                if flags.get(*off as usize).is_some_and(|b| b & FLAG_OPCODE != 0) {
-                    self.cov.live.glow.insert(*cell, now);
-                }
-            }
-            s.core.coverage_clear();
-            if grew {
-                for c in self.cov.recount_live() {
-                    self.cov.live.flash.insert(c, now);
-                }
-            }
+        if let Some(flags) = take_prg_flags(&mut s.core) {
+            self.cov.absorb(&flags, now);
         }
         self.cov.live.flash.retain(|_, t| now - *t < FLASH_SECS);
         self.cov.live.glow.retain(|_, t| now - *t < GLOW_SECS);
+        if let Some(p) = &mut self.parity {
+            if self.cov.parity_stale || p.changed {
+                p.changed = false;
+                self.cov.count_parity(p);
+            }
+            p.save(s.cache.as_ref(), now, false);
+        }
     }
 
     /// Clears the connector and live coverage, so live counts start again from here.
@@ -495,9 +560,15 @@ impl App {
             let r = cov.report.as_ref().unwrap();
             let w = ui.available_width();
             ui.add_space(2.0);
-            ui.horizontal(|ui| {
+            let show_parity = self.show_parity && self.parity.is_some();
+            ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
-                for (color, label) in [(COVERED, "covered"), (LIVE, "new, unsaved"), (DIRTY_ONLY, "dirty only"), (EMPTY, "never run"), (UNREACHABLE, "unreachable"), (DATA, "data")] {
+                let legend: Vec<(Color32, &str)> = if show_parity {
+                    crate::parity::legend().to_vec()
+                } else {
+                    vec![(COVERED, "covered"), (LIVE, "new, unsaved"), (DIRTY_ONLY, "dirty only"), (EMPTY, "never run"), (UNREACHABLE, "unreachable"), (DATA, "data")]
+                };
+                for (color, label) in legend {
                     let (rr, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
                     ui.painter().rect_filled(rr, 1.0, color);
                     ui.label(RichText::new(label).small().weak());
@@ -540,7 +611,7 @@ impl App {
                         continue;
                     }
                     let live_new = cov.live.new_per_cell.get(i).copied().unwrap_or(0);
-                    let mut fill = cell_color(c, live_new);
+                    let mut fill = if show_parity { cov.parity_fill(i) } else { cell_color(c, live_new) };
                     if let Some(t0) = cov.live.glow.get(&i) {
                         // Ran just now: brighter, fading back over GLOW_SECS.
                         fill = mix(fill, Color32::WHITE, 0.4 * (1.0 - (now - t0) / GLOW_SECS).clamp(0.0, 1.0) as f32);
@@ -577,6 +648,10 @@ impl App {
                         }
                         if live_new > 0 {
                             ui.label(RichText::new(format!("+{live_new} new, counted once saved")).color(LIVE));
+                        }
+                        if show_parity {
+                            let pc = cov.parity_cells.get(i).copied().unwrap_or_default();
+                            ui.label(RichText::new(crate::parity::describe(&pc)).color(crate::parity::color(&pc)));
                         }
                         if c.dirty > 0 {
                             ui.label(RichText::new(format!("+{} run only by dirty segments", c.dirty)).color(DIRTY_ONLY.gamma_multiply(1.6)));
@@ -632,6 +707,7 @@ impl App {
         // (cell, picked on the map): a pick on the map scrolls the list to it.
         let mut pick: Option<(usize, bool)> = None;
         let mut go: Option<FirstHit> = None;
+        let mut go_fail: Option<(String, u64)> = None;
         {
             let cov = &self.cov;
             let r = cov.report.as_ref().unwrap();
@@ -725,6 +801,19 @@ impl App {
                         }
                     }
                 }
+                if let Some(p) = &self.parity {
+                    let pc = cov.parity_cells.get(i).copied().unwrap_or_default();
+                    ui.label(RichText::new(crate::parity::describe(&pc)).small().color(crate::parity::color(&pc)));
+                    // The failure that ran it: this build's first, then the oldest.
+                    let touches = |f: &&decomp_dj::parity::Failure| cov.unit_cells.iter().any(|(cell, off)| *cell == i && f.flags.get(*off as usize).is_some_and(|b| b & FLAG_OPCODE != 0));
+                    let first = p.failures.iter().filter(|f| !p.is_old(f)).find(touches).or_else(|| p.failures.iter().find(touches));
+                    if let Some(f) = first {
+                        let title = crate::col_title(self.col.as_ref(), &f.segment);
+                        if ui.link(RichText::new(format!("First failing frame: {title}, frame {}", f.frame)).small()).on_hover_text(&f.reason).clicked() {
+                            go_fail = Some((f.segment.clone(), f.frame));
+                        }
+                    }
+                }
                 match cov.hits.as_ref().filter(|(c, _)| *c == i).map(|(_, h)| h) {
                     Some(Ok(hits)) if hits.is_empty() => {
                         ui.label(RichText::new("No current segment runs this yet.").small().weak());
@@ -785,6 +874,7 @@ impl App {
             }
             ui.separator();
         }
+        self.parity_section(ui);
 
         // Sort and filter.
         ui.horizontal(|ui| {
@@ -826,7 +916,8 @@ impl App {
                         ui.set_height(row_h);
                         ui.spacing_mut().item_spacing.x = 6.0;
                         let (sq, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-                        ui.painter().rect_filled(sq, 1.0, cell_color(c, live_new));
+                        let fill = if self.show_parity && self.parity.is_some() { self.cov.parity_fill(i) } else { cell_color(c, live_new) };
+                        ui.painter().rect_filled(sq, 1.0, fill);
                         let name: String = if c.name.chars().count() > 26 { format!("{}…", c.name.chars().take(25).collect::<String>()) } else { c.name.clone() };
                         let r = ui.selectable_label(sel, RichText::new(name).small().monospace());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -853,6 +944,9 @@ impl App {
         }
         if let Some(h) = go {
             self.go_to_hit(&h);
+        }
+        if let Some((id, f)) = go_fail {
+            self.go_to(&id, f);
         }
     }
 }

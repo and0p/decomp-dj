@@ -600,7 +600,7 @@ pub fn refresh_segments_now(conn: &mut Connection, col: &Collection, setup: &str
     Ok(())
 }
 
-const SCHEMA: &str = "
+pub(crate) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS setups(id TEXT PRIMARY KEY, info TEXT);
 CREATE TABLE IF NOT EXISTS contents(
     key TEXT PRIMARY KEY, setup TEXT NOT NULL, segment_id TEXT, start_hash TEXT NOT NULL,
@@ -620,6 +620,12 @@ DROP TABLE IF EXISTS unreachable;
 CREATE TABLE IF NOT EXISTS annotation(kind TEXT NOT NULL, region TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, name TEXT, why TEXT);
 CREATE TABLE IF NOT EXISTS runs(id INTEGER PRIMARY KEY, created INTEGER NOT NULL, setup TEXT NOT NULL, core TEXT NOT NULL, kind TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS run_results(run_id INTEGER NOT NULL, segment_id TEXT NOT NULL, content TEXT, outcome TEXT, PRIMARY KEY(run_id, segment_id));
+-- Parity with comparison cores (docs/gui.md#parity): what frames that passed ran, per core and
+-- build, and each failure with how to reproduce it and what its frame ran.
+CREATE TABLE IF NOT EXISTS parity_passed(core TEXT NOT NULL, build TEXT NOT NULL, region TEXT NOT NULL, flags BLOB NOT NULL, PRIMARY KEY(core, build, region));
+CREATE TABLE IF NOT EXISTS parity_failures(
+    id INTEGER PRIMARY KEY, core TEXT NOT NULL, build TEXT NOT NULL, synced_segment TEXT NOT NULL, synced_frame INTEGER NOT NULL,
+    segment TEXT NOT NULL, frame INTEGER NOT NULL, reason TEXT NOT NULL, created INTEGER NOT NULL, region TEXT NOT NULL, flags BLOB NOT NULL);
 -- Stable views for agents and `dj sql` (docs/database.md#views). Their columns are a promise:
 -- add columns at the end, and drop and recreate a view only together with a note in the docs.
 CREATE VIEW IF NOT EXISTS v_first_hits AS

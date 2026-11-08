@@ -95,6 +95,16 @@ void tetris_tick(struct tetris *t, uint8_t pad1, uint8_t pad2);
 int tetris_load_nes_snapshot(struct tetris *t, const uint8_t nesRam[0x800], char *why, size_t whyLen);
 
 /*
+ * Compares the game with a real Tetris (USA) at the same frame: `nesRam` is
+ * its 2 KB of RAM at the start of the frame, as for tetris_load_nes_snapshot.
+ * Judges where the code is (the original's stack against the decomp's resume
+ * points, so a frame lost on one side is caught on that frame) and every byte
+ * of RAM the decomp keeps. Returns 0 if they match (`why` may then note what
+ * wasn't compared), 1 if not, with the difference in `why`. See parity.c.
+ */
+int tetris_check_nes_parity(const struct tetris *t, const uint8_t nesRam[0x800], char *why, size_t whyLen);
+
+/*
  * Game data that a front end needs to draw the game.
  *
  * tetris_piece_squares: the four squares of a piece orientation (0-0x12, as

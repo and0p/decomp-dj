@@ -20,6 +20,10 @@ lines (for a root, also its `sram` and `snapshot` blob ids). An edit gives a seg
 - **Snapshots** of the core state at frame 0, every `diff_every` frames, at markers, and at the end of segments with children. Each is split into pages that are stored once by hash and compressed with zstd.
 - **Previews** (PNG) at the start of each segment and at markers.
 - **Coverage** flags for each segment, and the frame at which each ROM byte first ran in it, which `dj xref` reads ([coverage.md](coverage.md)).
+- **Parity** with comparison cores ([gui.md](gui.md#parity)), not keyed by content:
+  `parity_passed` holds, per `[[compare]]` entry and build, the PRG coverage flags of every
+  frame that passed; `parity_failures` holds each failing frame with its build, where the
+  comparison core was synced, the reason and that frame's flags.
 
 How many snapshots and previews it keeps is set by the `[cache]` table and its presets,
 in `config.toml` or per machine in `.local/local.toml` ([config.md](config.md#cache-optional)).

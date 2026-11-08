@@ -107,6 +107,23 @@ void busyUntil(uint32_t total)
         busy(total - T->ctl.cycles);
 }
 
+/*
+ * drawLeftovers: what the original's copies to the PPU leave in zero page
+ * when a screen is drawn. bulkCopyToPpu keeps its caller's return address in
+ * tmpBulkCopyToPpuReturnAddr ($05) and the copy walks tmp1/tmp2 ($00) through
+ * the data, so both end up pointing into the last thing copied. Nothing reads
+ * them afterwards, except the demo: for its first frames demoButtonsAddr is
+ * still $0000, and it takes its input from these bytes. The values are
+ * measured with tools/measure_draws.py.
+ */
+void drawLeftovers(uint16_t tmp, uint16_t bulkCopyReturn)
+{
+    R(0x0000) = (uint8_t)tmp;
+    R(0x0001) = (uint8_t)(tmp >> 8);
+    R(0x0005) = (uint8_t)bulkCopyReturn;
+    R(0x0006) = (uint8_t)(bulkCopyReturn >> 8);
+}
+
 /* ------------------------------------------------------------------------ */
 /* Reset and boot                                                           */
 /* ------------------------------------------------------------------------ */

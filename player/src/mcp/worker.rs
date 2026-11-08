@@ -145,7 +145,7 @@ impl Worker {
 
     fn session(&mut self) -> Result<&mut Session> {
         if self.s.is_none() {
-            let local = self.col.load_local()?;
+            let local = self.col.settings()?;
             let rom = local.rom.clone().ok_or_else(|| anyhow!("no ROM set for this project; run a dj command with --rom once"))?;
             let core = local.core.clone().ok_or_else(|| anyhow!("no core set for this project; run a dj command with --core once"))?;
             let s = Session::open(&self.col, &rom, &core)?;

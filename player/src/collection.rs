@@ -91,12 +91,16 @@ pub struct SymbolsConfig {
     pub cpu_base: Option<u64>,
 }
 
-/// Local, uncommitted settings: where the ROM and core live on this machine.
+/// The machine-side settings: where the ROM and core live, and preferences. Read with
+/// `Collection::settings` (config.toml and local.toml layered, docs/config.md#layering),
+/// or `load_local` and `save_local` to change local.toml alone.
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct LocalConfig {
-    #[serde(default)]
+    /// `rom = "path"`, or `path` in a `[rom]` table.
+    #[serde(default, deserialize_with = "path_or_table")]
     pub rom: Option<PathBuf>,
-    #[serde(default)]
+    /// `core = "path"`, or `path` in a `[core]` table.
+    #[serde(default, deserialize_with = "path_or_table")]
     pub core: Option<PathBuf>,
     /// false = run without the local database, as the tools did before it existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -116,6 +120,87 @@ pub struct LocalConfig {
     /// `[record]`: the options in the GUI's Record dropdown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record: Option<RecordLocal>,
+}
+
+/// `rom` and `core` are a path in local.toml's short form, or a table with a `path` key
+/// (config.toml's `[rom]` and `[core]`, which hold other keys too).
+fn path_or_table<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Option<PathBuf>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum P {
+        Path(PathBuf),
+        Table {
+            #[serde(default)]
+            path: Option<PathBuf>,
+        },
+    }
+    Ok(match Option::<P>::deserialize(d)? {
+        Some(P::Path(p)) => Some(p),
+        Some(P::Table { path }) => path,
+        None => None,
+    })
+}
+
+/// The keys `LocalConfig` owns: `save_local` writes these and keeps every other key of
+/// local.toml as it is.
+const LOCAL_KEYS: [&str; 8] = ["rom", "core", "database", "max_memory_mb", "cache", "mcp", "keyboard", "record"];
+
+fn read_table(p: &Path) -> Result<toml::Table> {
+    if !p.exists() {
+        return Ok(toml::Table::new());
+    }
+    let text = std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?;
+    toml::from_str(&text).with_context(|| format!("parsing {}", p.display()))
+}
+
+/// local.toml's short `rom = "path"` and `core = "path"` as config.toml's tables.
+fn expand_paths(t: &mut toml::Table) {
+    for k in ["rom", "core"] {
+        if let Some(toml::Value::String(p)) = t.get(k) {
+            let mut tab = toml::Table::new();
+            tab.insert("path".into(), toml::Value::String(p.clone()));
+            t.insert(k.into(), toml::Value::Table(tab));
+        }
+    }
+}
+
+/// Lays `top` over `base`: tables merge key by key, arrays of tables whose entries all have
+/// a `name` merge entry by entry on that name, and any other value in `top` replaces the
+/// one in `base`.
+pub fn merge_toml(base: &mut toml::Table, top: toml::Table) {
+    fn named(a: &[toml::Value]) -> bool {
+        a.iter().all(|v| v.get("name").is_some_and(|n| n.is_str()))
+    }
+    for (k, v) in top {
+        match (base.get_mut(&k), v) {
+            (Some(toml::Value::Table(b)), toml::Value::Table(t)) => merge_toml(b, t),
+            (Some(toml::Value::Array(b)), toml::Value::Array(t)) if !b.is_empty() && named(b) && named(&t) => {
+                for item in t {
+                    let name = item.get("name").and_then(|n| n.as_str()).unwrap_or_default().to_string();
+                    match b.iter_mut().find(|x| x.get("name").and_then(|n| n.as_str()) == Some(name.as_str())) {
+                        Some(toml::Value::Table(bt)) => {
+                            if let toml::Value::Table(it) = item {
+                                merge_toml(bt, it);
+                            }
+                        }
+                        _ => b.push(item),
+                    }
+                }
+            }
+            (_, v) => {
+                base.insert(k, v);
+            }
+        }
+    }
+}
+
+/// config.toml with .local/local.toml laid over it (docs/config.md#layering).
+pub fn layered_table(root: &Path) -> Result<toml::Table> {
+    let mut t = read_table(&root.join("config.toml"))?;
+    let mut local = read_table(&root.join(".local").join("local.toml"))?;
+    expand_paths(&mut local);
+    merge_toml(&mut t, local);
+    Ok(t)
 }
 
 /// `[keyboard]` in .local/local.toml: which key plays each button of the controller being
@@ -212,8 +297,11 @@ impl Collection {
                 }
             }
         }
-        let text = std::fs::read_to_string(&cfg_path).with_context(|| format!("reading {}", cfg_path.display()))?;
-        let config: Config = toml::from_str(&text).with_context(|| format!("parsing {}", cfg_path.display()))?;
+        if !cfg_path.is_file() {
+            bail!("reading {}: no such file", cfg_path.display());
+        }
+        // Every setting may be in either file; local.toml's win.
+        let config: Config = toml::Value::Table(layered_table(root)?).try_into().with_context(|| format!("reading the settings in {} and .local/local.toml", cfg_path.display()))?;
         if config.format != 1 {
             bail!("collection format {} is not supported", config.format);
         }
@@ -268,6 +356,19 @@ impl Collection {
         self.root.join(".local")
     }
 
+    /// The machine-side settings in effect: config.toml's, with local.toml's on top.
+    /// Relative `rom` and `core` paths are taken from the project folder.
+    pub fn settings(&self) -> Result<LocalConfig> {
+        let mut s: LocalConfig = toml::Value::Table(layered_table(&self.root)?).try_into().context("reading the settings in config.toml and .local/local.toml")?;
+        for p in [&mut s.rom, &mut s.core].into_iter().flatten() {
+            if p.is_relative() {
+                *p = self.root.join(&*p);
+            }
+        }
+        Ok(s)
+    }
+
+    /// local.toml alone, to change and write back with `save_local`.
     pub fn load_local(&self) -> Result<LocalConfig> {
         let p = self.local_dir().join("local.toml");
         if !p.exists() {
@@ -276,9 +377,29 @@ impl Collection {
         Ok(toml::from_str(&std::fs::read_to_string(&p)?)?)
     }
 
+    /// Writes the keys `LocalConfig` owns into local.toml (removing those it leaves unset),
+    /// and keeps every other key there, such as project settings overridden on this machine.
     pub fn save_local(&self, local: &LocalConfig) -> Result<()> {
         std::fs::create_dir_all(self.local_dir())?;
-        std::fs::write(self.local_dir().join("local.toml"), toml::to_string_pretty(local)?)?;
+        let p = self.local_dir().join("local.toml");
+        let mut t = read_table(&p)?;
+        let new = toml::Table::try_from(local)?;
+        for k in LOCAL_KEYS {
+            let v = new.get(k).cloned();
+            // A `[rom]` or `[core]` table in local.toml keeps its other keys.
+            if let (true, Some(toml::Value::Table(tab))) = (k == "rom" || k == "core", t.get_mut(k)) {
+                match v {
+                    Some(v) => tab.insert("path".into(), v),
+                    None => tab.remove("path"),
+                };
+                continue;
+            }
+            match v {
+                Some(v) => t.insert(k.into(), v),
+                None => t.remove(k),
+            };
+        }
+        std::fs::write(&p, toml::to_string_pretty(&t)?)?;
         let gi = self.root.join(".gitignore");
         if !gi.exists() {
             std::fs::write(gi, ".local/\n")?;
@@ -516,4 +637,79 @@ pub fn write_atomic(path: &std::path::Path, text: &str) -> std::io::Result<()> {
     let tmp = path.with_extension(format!("tmp{}", std::process::id()));
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, path)
+}
+
+#[cfg(test)]
+mod layering_tests {
+    use super::*;
+
+    fn table(s: &str) -> toml::Table {
+        toml::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn merges_tables_and_named_arrays() {
+        let mut base = table("name = \"g\"\n[core]\nname = \"mesen\"\nbuild = \"1\"\n[core.options]\na = \"1\"\nb = \"2\"\n[[compare]]\nname = \"x\"\ncore = \"x.so\"\n[[symbols]]\nfile = \"a\"\nformat = \"csv\"\n");
+        let top = table("[core.options]\nb = \"3\"\n[[compare]]\nname = \"x\"\npath = \"/x.so\"\n[[compare]]\nname = \"y\"\n[[symbols]]\nfile = \"b\"\nformat = \"csv\"\n");
+        merge_toml(&mut base, top);
+        assert_eq!(base["core"]["name"].as_str(), Some("mesen"));
+        assert_eq!(base["core"]["options"]["a"].as_str(), Some("1"));
+        assert_eq!(base["core"]["options"]["b"].as_str(), Some("3"));
+        let cmp = base["compare"].as_array().unwrap();
+        assert_eq!(cmp.len(), 2);
+        assert_eq!(cmp[0]["core"].as_str(), Some("x.so"));
+        assert_eq!(cmp[0]["path"].as_str(), Some("/x.so"));
+        // Arrays without names are replaced.
+        let sym = base["symbols"].as_array().unwrap();
+        assert_eq!(sym.len(), 1);
+        assert_eq!(sym[0]["file"].as_str(), Some("b"));
+    }
+
+    fn project(config: &str, local: Option<&str>) -> (PathBuf, Collection) {
+        let dir = std::env::temp_dir().join(format!("dj-layer-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join(".local")).unwrap();
+        std::fs::write(dir.join("config.toml"), config).unwrap();
+        if let Some(l) = local {
+            std::fs::write(dir.join(".local/local.toml"), l).unwrap();
+        }
+        let col = Collection::open(&dir).unwrap();
+        (dir, col)
+    }
+
+    const CONFIG: &str = "format = 1\nname = \"g\"\ndatabase = false\n[rom]\nsha256 = \"\"\npath = \"roms/g.nes\"\n[core]\nname = \"mesen\"\nbuild = \"1\"\npath = \"/cores/mesen.so\"\n[hash]\nalgorithm = \"blake3\"\nregions = [\"RAM\"]\n";
+
+    #[test]
+    fn config_alone_holds_machine_settings() {
+        let (dir, col) = project(CONFIG, None);
+        let s = col.settings().unwrap();
+        assert_eq!(s.rom, Some(dir.join("roms/g.nes")));
+        assert_eq!(s.core, Some(PathBuf::from("/cores/mesen.so")));
+        assert_eq!(s.database, Some(false));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn local_wins_and_save_keeps_its_other_keys() {
+        let local = "rom = \"/mine/g.nes\"\nname = \"mine\"\n[core]\npath = \"/mine/core.so\"\n[core.options]\nx = \"y\"\n";
+        let (dir, col) = project(CONFIG, Some(local));
+        assert_eq!(col.config.name, "mine");
+        assert_eq!(col.config.core.name, "mesen");
+        assert_eq!(col.config.core.options.get("x").map(String::as_str), Some("y"));
+        let s = col.settings().unwrap();
+        assert_eq!(s.rom, Some(PathBuf::from("/mine/g.nes")));
+        assert_eq!(s.core, Some(PathBuf::from("/mine/core.so")));
+        // Writing a machine setting keeps the overrides in local.toml.
+        let mut l = col.load_local().unwrap();
+        assert_eq!(l.core, Some(PathBuf::from("/mine/core.so")));
+        l.core = Some(PathBuf::from("/other.so"));
+        l.database = Some(true);
+        col.save_local(&l).unwrap();
+        let again = Collection::open(&dir).unwrap();
+        assert_eq!(again.config.name, "mine");
+        assert_eq!(again.config.core.options.get("x").map(String::as_str), Some("y"));
+        let s = again.settings().unwrap();
+        assert_eq!(s.core, Some(PathBuf::from("/other.so")));
+        assert_eq!(s.database, Some(true));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

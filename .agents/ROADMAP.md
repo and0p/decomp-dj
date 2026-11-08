@@ -12,6 +12,10 @@ When one ships, its user-facing description moves into `docs/` and the entry her
 - `exclude` in `[cache]` is recorded but not applied to snapshots yet.
 
 ## GUI
+- **Replay everything as a pausable list play.** Segment > Replay everything runs as a
+  one-off job today. Make it ordinary playback in **List** end mode, started from frame 0 of
+  the first root segment (the first branch in tree order), so it can be paused, resumed and
+  watched like any other playback, and the transport's controls work on it.
 - **Rewinding up the chain.** Stepping or seeking back past frame 0 goes into the
   parent's last frames (loading a snapshot of the parent, from memory or the local
   database), and playing forward from there follows the sticky segments back down. A
@@ -109,15 +113,6 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   with the N64 connector.
 
 ## Project and CLI
-- **One config shape for config.toml and local.toml, local on top.** Today the split is
-  fixed: config.toml holds the project (ROM hash, core identity and options, ports, hash
-  regions) and local.toml holds this machine's paths and GUI settings, with only `[cache]`
-  able to appear in both. Instead, let both files hold any setting, with local.toml
-  overriding config.toml key by key, the way `[cache]` already works. One author can commit
-  a repo with everything set up (core paths into the repo, comparison cores and their
-  options); another can commit only the baseline and segments of a popular game, so others
-  bring their own ports in their local.toml. Comparison cores (`[[compare]]`, merged by
-  `name`) would follow the same rule. Worth doing before comparison cores land.
 
 - **Versioning projects.** A project should say which version of the format and the
   tools it needs, and the tools should handle the difference both ways. Today

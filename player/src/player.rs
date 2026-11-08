@@ -106,9 +106,9 @@ pub struct Session {
 }
 
 impl Session {
-    /// Opens a session with the local database unless .local/local.toml says `database = false`.
+    /// Opens a session with the local database unless the settings say `database = false`.
     pub fn open(col: &Collection, rom: &Path, core_path: &Path) -> Result<Session> {
-        let use_db = col.load_local()?.database.unwrap_or(true);
+        let use_db = col.settings()?.database.unwrap_or(true);
         Self::open_with(col, rom, core_path, use_db)
     }
 
@@ -151,7 +151,7 @@ impl Session {
         let setup_id = h.finalize().to_hex()[..16].to_string();
         let core_version = core.library_version.clone();
         let cache = if use_db {
-            let local = col.load_local()?;
+            let local = col.settings()?;
             let settings = CacheSettings::resolve(col.config.cache.as_ref(), local.cache.as_ref())?;
             let info = [
                 ("rom_sha256", rom_sha.clone()),

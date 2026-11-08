@@ -5,9 +5,31 @@ A project has two settings files:
 | File | Committed | What it holds |
 | --- | --- | --- |
 | `config.toml` | yes | The pinned setup everyone shares: ROM, core build, core options, ports, hash rules, ticks, symbol maps and cache defaults. |
-| `.local/local.toml` | never | This machine's paths and preferences. Its `[cache]` table wins over the one in `config.toml`. |
+| `.local/local.toml` | never | This machine's paths and preferences, and anything from `config.toml` overridden on this machine. |
 
 `dj init` writes both. Edit them by hand afterwards; the tools read them each time they open the project.
+
+## Layering
+
+Either file may hold any setting described on this page, and `local.toml` wins. The two are merged key by key: tables merge table by table (so `local.toml` can set one `[core.options]` key and keep the rest), arrays of tables whose entries all have a `name` merge entry by entry on that name, and any other value in `local.toml` replaces the one in `config.toml`.
+
+That allows both kinds of project. One can commit everything, paths included:
+
+```toml
+# config.toml
+[rom]
+sha256 = "…"
+path = "roms/game.nes"          # relative paths are from the project folder
+
+[core]
+name = "mesen"
+build = "…"
+path = "cores/mesen_libretro.so"
+```
+
+Another can commit only the pinned setup and the segments, and leave paths and anything else personal to each `local.toml`. In `local.toml`, `rom = "path"` and `core = "path"` are short for `path` in the `[rom]` and `[core]` tables.
+
+Settings the tools write (Set ROM…, Set core…, `--rom`, `--core`, the GUI's toggles, key bindings) always go to `local.toml`, and writing them keeps whatever else is there.
 
 ## config.toml
 
@@ -59,7 +81,8 @@ format = "ca65-dbg"
 | Key | Required | Meaning |
 | --- | --- | --- |
 | `sha256` | yes | SHA-256 of the ROM file exactly as the core loads it (headers included). The tools refuse a ROM that doesn't match. |
-| `file` | no | A file name hint for people. The hash is what counts; the actual path goes in `.local/local.toml`. |
+| `file` | no | A file name hint for people. The hash is what counts. |
+| `path` | no | Where the ROM is, usually set in `.local/local.toml` ([layering](#layering)). |
 
 ### `[core]`
 
@@ -68,6 +91,7 @@ format = "ca65-dbg"
 | `name` | yes | The libretro core's name, for example `mesen`. |
 | `build` | yes | A free-form id of the exact build, such as `mesen@<commit>+dj1`. State hashes are only meaningful for one build, so a different build is a different setup. |
 | `sha256` | no | Hash of the core library. Usually empty, because it differs per OS. |
+| `path` | no | Where the core library is, usually set in `.local/local.toml` ([layering](#layering)). |
 
 ### `[core.options]`
 
@@ -162,11 +186,13 @@ diff_every = 300
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `rom` | none | Path to the ROM. Set by `--rom`, remembered after the first use. |
-| `core` | none | Path to the core library. Set by `--core`, remembered after the first use. |
+| `rom` | none | Path to the ROM (short for `[rom] path`). Set by `--rom`, remembered after the first use. |
+| `core` | none | Path to the core library (short for `[core] path`). Set by `--core`, remembered after the first use. |
 | `database` | `true` | `false` plays without the local database, like `--no-db` on every command. The GUI's Emulation > Use the local database writes it. |
 | `max_memory_mb` | `512` | How much memory the GUI's in-memory snapshots for the current segment may use (Emulation > Snapshot memory). |
 | `[cache]` | none | Any key from `config.toml`'s `[cache]`, overriding it on this machine only. |
+| `[keyboard]`, `[record]` | defaults | The GUI's recording keys and options ([gui.md](gui.md#recording)). |
+| anything else | | Any setting from `config.toml`, overriding it on this machine ([layering](#layering)). |
 | `[mcp] allow` | `"draft"` | What `dj mcp` lets an agent do: `"query"`, `"draft"` or `"save"` ([mcp.md](mcp.md#what-an-agent-may-do)). `--allow` overrides it. |
 | `[mcp] gui` | `false` | Whether the GUI works with agents: their drafts, sessions and the shared view. MCP > Enable MCP writes it. |
 

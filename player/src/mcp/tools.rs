@@ -291,12 +291,9 @@ pub fn error_result(msg: &str) -> Value {
     json!({"content": [{"type": "text", "text": msg}], "isError": true})
 }
 
-/// The `[mcp] allow` setting in .local/local.toml, read as plain TOML so that the
-/// shared LocalConfig type needn't know about it.
+/// The `[mcp] allow` setting (config.toml, or local.toml on top), read as plain TOML.
 fn local_allow(root: &Path) -> Result<Option<Allow>> {
-    let p = root.join(".local").join("local.toml");
-    let Ok(text) = std::fs::read_to_string(&p) else { return Ok(None) };
-    let v: toml::Value = toml::from_str(&text)?;
+    let v = decomp_dj::collection::layered_table(root)?;
     match v.get("mcp").and_then(|m| m.get("allow")).and_then(|a| a.as_str()) {
         Some(a) => Ok(Some(a.parse()?)),
         None => Ok(None),

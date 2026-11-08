@@ -705,7 +705,7 @@ impl App {
     fn open_collection(&mut self, dir: &Path) {
         match Collection::open(dir) {
             Ok(mut col) => {
-                self.mcp_on = col.load_local().ok().and_then(|l| l.mcp).and_then(|m| m.gui).unwrap_or(false);
+                self.mcp_on = col.settings().ok().and_then(|l| l.mcp).and_then(|m| m.gui).unwrap_or(false);
                 self.agent_sessions.clear();
                 self.share_view = false;
                 self.shared = None;
@@ -729,8 +729,8 @@ impl App {
                 self.roll.forget();
                 let first = col.tree_order().first().map(|(id, _)| id.to_string());
                 let n = col.replays.len();
-                self.max_memory_mb = col.load_local().ok().and_then(|l| l.max_memory_mb).unwrap_or(512);
-                let local = col.load_local().unwrap_or_default();
+                self.max_memory_mb = col.settings().ok().and_then(|l| l.max_memory_mb).unwrap_or(512);
+                let local = col.settings().unwrap_or_default();
                 self.bindings = record::Bindings::from_local(local.keyboard.as_ref());
                 self.rec_cfg = record::Settings::from_local(local.record.as_ref());
                 self.set_recording(false);
@@ -752,7 +752,13 @@ impl App {
     fn open_session(&mut self) {
         let Some(col) = &self.col else { return };
         self.session = None;
-        let local = col.load_local().unwrap_or_default();
+        let local = match col.settings() {
+            Ok(l) => l,
+            Err(e) => {
+                self.core_error = Some(format!("{e:#}"));
+                return;
+            }
+        };
         let (rom, core) = match (&local.rom, &local.core) {
             (Some(r), Some(c)) => (abs_path(&col.root, r), abs_path(&col.root, c)),
             (None, _) => {
@@ -2874,7 +2880,7 @@ impl App {
                 ui.separator();
                 ui.separator();
                 let idle = self.hydrating.is_none();
-                let mut use_db = self.col.as_ref().and_then(|c| c.load_local().ok()).and_then(|l| l.database).unwrap_or(true);
+                let mut use_db = self.col.as_ref().and_then(|c| c.settings().ok()).and_then(|l| l.database).unwrap_or(true);
                 if ui.add_enabled(self.col.is_some() && idle, egui::Checkbox::new(&mut use_db, "Use the local database")).keep_open().on_hover_text("Off: play from power-on and keep snapshots only in memory, as before the database existed").changed() {
                     self.set_database(use_db);
                 }
@@ -4012,7 +4018,8 @@ impl App {
     fn set_database(&mut self, on: bool) {
         let Some(col) = &self.col else { return };
         let mut local = col.load_local().unwrap_or_default();
-        local.database = if on { None } else { Some(false) };
+        // Explicit either way, so it also wins over a `database` in config.toml.
+        local.database = Some(on);
         if let Err(e) = col.save_local(&local) {
             self.error(e);
             return;

@@ -38,7 +38,7 @@ impl Project {
             .context("the local database is empty; run `dj clean` first")?;
         let rom_path = match rom {
             Some(r) => Some(r.to_path_buf()),
-            None => col.load_local()?.rom,
+            None => col.settings()?.rom,
         };
         let (rom, rom_problem) = match rom_path {
             None => (None, None),

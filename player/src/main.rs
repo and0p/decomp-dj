@@ -279,7 +279,7 @@ fn real_main() -> Result<()> {
 }
 
 fn resolve_local(col: &Collection, local: &Local) -> Result<(PathBuf, PathBuf)> {
-    let saved = col.load_local()?;
+    let saved = col.settings()?;
     let rom = local.rom.clone().or(saved.rom).ok_or_else(|| anyhow!("no ROM given; pass --rom (it is then remembered)"))?;
     let core = local.core.clone().or(saved.core).ok_or_else(|| anyhow!("no core given; pass --core (it is then remembered)"))?;
     if local.rom.is_some() || local.core.is_some() {
@@ -293,7 +293,7 @@ fn resolve_local(col: &Collection, local: &Local) -> Result<(PathBuf, PathBuf)> 
 
 fn open_session(col: &Collection, local: &Local) -> Result<Session> {
     let (rom, core) = resolve_local(col, local)?;
-    let use_db = !local.no_db && col.load_local()?.database.unwrap_or(true);
+    let use_db = !local.no_db && col.settings()?.database.unwrap_or(true);
     Session::open_with(col, &rom, &core, use_db)
 }
 
@@ -702,7 +702,7 @@ fn cache_stats(dir: &Path) -> Result<()> {
     let conn = cache::Cache::open_readonly(&col)?;
     let size = std::fs::metadata(cache::cache_path(&col)).map(|m| m.len()).unwrap_or(0);
     println!("{} ({})", cache::cache_path(&col).display(), human(size as i64));
-    let settings = cache::CacheSettings::resolve(col.config.cache.as_ref(), col.load_local()?.cache.as_ref())?;
+    let settings = cache::CacheSettings::resolve(col.config.cache.as_ref(), col.settings()?.cache.as_ref())?;
     println!(
         "settings: preset {}, pages {}, a snapshot every {} frames{}, previews {:?}",
         settings.preset,

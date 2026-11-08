@@ -58,9 +58,8 @@ When one ships, its user-facing description moves into `docs/` and the entry her
 - **More ways to join.** Merge into children (copy the parent's frames onto the front of every child, then remove
   the parent: no hash changes, but the frames are duplicated). (Join a chain is done:
   Edit > Join chain….)
-- **Instead of deleting,** merge a segment into its children, or move its children up to the
-  grandparent, which turns everything below dirty.
-- **Moving segments** to another parent from the GUI.
+- **Instead of deleting,** merge a segment into its children (Delete, keep children, which
+  moves them up to the grandparent, is done).
 - **Focus on tagged segments.** The tree filters by tag (`#tag`, the **#** menu) and can show
   what's below the matches. Still open: a Focus-like view of every segment with a tag at
   once (Focus here takes one segment), clearing the tag filter as it focuses.
@@ -83,8 +82,8 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   first-hit link) and which don't (stepping, playback); whether history survives an edit
   that removes a segment (skip entries that no longer exist); and whether it's kept per
   session only.
-- **Markers tab:** group repeated texts, follow the tree's Focus here, and list a marker's
-  "first frame where a watched value differs" once that exists.
+- **Markers tab:** group repeated texts, and list a marker's "first frame where a watched
+  value differs" once that exists. (Following Focus here is done.)
 - **Cancelling a long load** without selecting another segment, and MAX speed off the UI
   thread.
 

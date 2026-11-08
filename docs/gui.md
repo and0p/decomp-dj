@@ -55,7 +55,9 @@ Every event in the project alphabetically, then RAM writes, resets, device chang
 lines, each with its frame and segment (and the parent when another segment has the same
 title). The filter matches marker text and segment titles. Clicking a row goes to that
 segment and frame, so a marker can do the job of a tiny segment that only exists to name a
-moment. Checkpoints and screenshots aren't listed, since they have no names.
+moment. Checkpoints and screenshots aren't listed, since they have no names. While the tree
+is focused (**Focus here**), the tab lists only the markers in the focused segment and
+below it, and says so above the list.
 
 ## Transport
 
@@ -119,7 +121,7 @@ lines. The project lists them as `[[compare]]` entries ([config.md](config.md#co
 | Menu | Holds |
 | --- | --- |
 | File | Open project…, Save (Ctrl/Cmd+S): writes every unsaved segment and moves drafts into `segments/`; when that would leave segments dirty it offers **Clean, then save** or **Save anyway**. Clean, then save saves at once only if the clean changed no ending; otherwise it stops with the changed endings marked **!** and offers **Save**, **Save anyway** or **Review first**, so nothing unreviewed is saved without asking. Save selected segment (writes only that segment's file), Revert selected segment (drops only its unsaved changes and puts back its file; undo brings them back), Reload all from disk (every segment, dropping all unsaved edits), Options… (not yet: GUI preferences), Keyboard mapping… ([below](#recording)), Quit. With unsaved edits, Open, Reload all and Quit (also the window's close button) ask first: **Save and …**, **Discard and …** or **Cancel**. Drafts nobody edited here don't count: they stay in `.local/drafts/`. |
-| Edit | Undo, Redo, Cut, Copy, Paste at play cursor ([editing.md](editing.md#undo-cut-copy-and-paste)), Select all (Ctrl/Cmd+A: every press in the piano roll); then the segment edits and Add event at playhead (E) ([editing.md](editing.md#segment-editing)) |
+| Edit | Undo, Redo, Cut, Copy, Paste at play cursor ([editing.md](editing.md#undo-cut-copy-and-paste)), Select all (Ctrl/Cmd+A: every press in the piano roll), Drag to draw inputs (off to begin with; [editing.md](editing.md#piano-roll)); then the segment edits and Add event at playhead (E) ([editing.md](editing.md#segment-editing)) |
 | View | Zoom in, Zoom out, Follow playhead, Return to the edit ([editing.md](editing.md#return-to-the-edit)), Show every joypad button |
 | Project | Clean all segments, Replay everything, Use the local database ([database.md](database.md#in-the-gui)), Comparison core (the same choice as the Compare dropdown), Set ROM…, Set core…, Project settings… (not yet) |
 | Emulation | Play/pause, step, go to start or end, Snapshot memory |

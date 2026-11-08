@@ -44,7 +44,16 @@ checkpoint at the join frame. The same frames run with the same inputs, so every
 below stays valid. Tools may add an `[EVENT]` at the join frame, by default named
 after the child, to keep the moment the split marked.
 
-**Delete.** Removes a segment and everything below it.
+**Delete.** Removes a segment and everything below it. **Delete, keep children** removes
+only the segment: its children move up to its parent (or become root segments, starting
+from power-on), and since they now start from another state they lose their hashes and
+turn dirty, with everything below them.
+
+**Move.** Gives a segment another parent, or makes it a root segment. It now starts where
+the new parent ends, so its `start-hash`, checkpoints and `end-hash` go and it and
+everything below turn dirty; its inputs stay as they are. A segment that gets a parent
+drops its own save file or snapshot, which only a root segment has. A segment can't move
+below itself.
 
 **Properties.** Changing `title` changes no state. Changing `frames` drops the
 `end-hash` and any checkpoints past the new end. A segment cannot be shortened
@@ -86,7 +95,8 @@ The Edit menu (below Undo, Cut, Copy, Paste and Select all), and right-click in 
 - **Join with parent** (only for a segment with no siblings): the confirmation has "Leave a marker", on by default, with an editable text that starts as the child's title. An event at the join frame keeps whatever moment made the author split there ("menu fully open", "victory pose finished").
 - **Join with only child** (only for a segment with exactly one child): the same join, offered on the parent. It opens the same confirmation.
 - **Join chain…** (when the only child has an only child of its own): joins every only child below the segment into it, down to the first segment with no children or several. The confirmation lists the segments and total frames, and "Leave markers" puts an event with each joined segment's title at its join frame. One undo takes it all back.
-- **Delete…**: removes the segment and everything below it, after a confirmation that names the segment, says how many segments go with it and gives the total frames. The files are removed on Save. If the segment being shown was deleted, its parent is shown.
+- **Move to…**: a list of every segment the selected one can go under, as paths (Root › A › B) with a filter, plus "No parent" to make it a root segment. See **Move** above.
+- **Delete…**: removes the segment and everything below it, after a confirmation that names the segment, says how many segments go with it and gives the total frames. When it has children, **Delete, keep children** removes only the segment and moves its children up to its parent. The files are removed on Save. If the segment being shown was deleted, its parent is shown.
 
 In the tree, Enter (or F2) renames the selected segment in place; Enter or clicking away
 keeps the new name, Escape cancels. Segments can't be moved to another parent from the GUI
@@ -104,10 +114,10 @@ their controller's header.
 - Click or drag on the ruler to seek.
 - **Neighbours.** Left of frame 0 the roll shows the end of the parent segment, and past the last frame the start of the next one (the sticky segment, or the only child), faded and read-only, with their titles in the marker lane and their own frame numbers on the ruler. Clicking or dragging there does nothing. Only stepping (the arrow keys or the step buttons), playing on, or the start and end buttons cross the boundary, and that switches over fully: the other segment becomes the selected one, so it can be edited. The view stays put as you cross. No edit ever spans two segments.
 - There is one editing mode (hover the ⓘ in the roll's toolbar for a summary):
-    - Click an empty cell to add a press as long as the last press made or resized (4 frames to begin with), or drag from an empty cell to draw a press as long as the drag.
+    - Click an empty cell to add a press as long as the last press made or resized (4 frames to begin with). A drag from an empty cell selects an area; with **Edit > Drag to draw inputs** turned on (it starts off) it draws a press as long as the drag instead. Holding Ctrl/Cmd does whichever of the two the setting doesn't.
     - Drag a press to move it in time, and drag either edge to lengthen or shorten it (only while at most one press is selected; the grab zone is a thin strip on the edge). Plain drags never change rows.
     - Transpose (move presses to another button row of the same controller) only on purpose: hold Alt (Option on a Mac) while dragging, or press Alt+Up / Alt+Down with presses selected.
-    - Click selects a press; Shift+click adds or removes it. To select an area, Ctrl/Cmd+drag (anywhere), or Shift+drag from empty space to add to the selection (Shift+Alt+drag removes); a drag on a controller's header row or past the last frame selects too.
+    - Click selects a press; Shift+click adds or removes it. To select an area, drag from empty space (Ctrl/Cmd+drag while drawing is on, or from a press), or Shift+drag to add to the selection (Shift+Alt+drag removes); a drag on a controller's header row or past the last frame selects too.
     - Right-click a press, or press Delete, to remove it. Escape clears the selection, and Cmd+A (Ctrl+A elsewhere, also Edit > Select all) selects every press of the segment, unless a text field has focus. Presses that end up overlapping merge into one. Holding a drag near either end of the roll scrolls it.
 
 ### Return to the edit

@@ -203,6 +203,8 @@ struct App {
     renaming: Option<(String, String, bool)>,
     /// The segment waiting for delete confirmation.
     delete_dialog: Option<String>,
+    /// Move to…: the segment being moved and the text filtering the list of new parents.
+    move_dialog: Option<(String, String)>,
     /// Duplicate of a segment with children, waiting on whether to copy them too.
     dup_dialog: Option<String>,
     /// Save was asked for while it would leave this many segments dirty: offer to clean first.
@@ -381,6 +383,7 @@ const UNDO_LIMIT: usize = 200;
 const NEW_ROOT_TIP: &str = "A new empty segment with no parent: it starts from power-on (or from a save file set in its properties)";
 const JOIN_CHAIN_TIP: &str = "Join every only-child below this segment into it, down to the first segment with no children or several, as one undo step";
 const DUP_TIP: &str = "A copy of this segment beside it (same parent, same inputs); with children, it asks whether to copy them too";
+const MOVE_TIP: &str = "Give this segment (and what is below it) another parent, or make it a root segment. It and everything below turn dirty.";
 const JOIN_TIP: &str = "Merge this segment into its parent: the parent keeps its name and grows by this segment's frames. Only for a segment with no siblings.";
 const JOIN_CHILD_TIP: &str = "Merge this segment's only child into it: this segment keeps its name and grows by the child's frames. Only for a segment with exactly one child.";
 
@@ -471,6 +474,7 @@ impl Default for App {
             node_dialog: None,
             renaming: None,
             delete_dialog: None,
+            move_dialog: None,
             dup_dialog: None,
             save_dialog: None,
             discard_dialog: None,
@@ -591,11 +595,16 @@ struct ListedMarker<'a> {
 }
 
 /// The sidebar's Markers tab: every event (then writes, resets, device changes and RNG
-/// lines) in the collection, alphabetically, with a filter on the marker and segment text.
+/// lines) in the collection, or only in `scope` and below it (the tree's Focus here),
+/// alphabetically, with a filter on the marker and segment text.
 /// Returns the segment and frame to show when a row is clicked.
-fn marker_list(ui: &mut egui::Ui, col: &Collection, filter: &mut String, at: Option<(&str, u64)>) -> Option<(String, u64)> {
+fn marker_list(ui: &mut egui::Ui, col: &Collection, filter: &mut String, at: Option<(&str, u64)>, scope: Option<&str>) -> Option<(String, u64)> {
     let mut all: Vec<ListedMarker> = vec![];
+    let inside: Option<HashSet<&str>> = scope.map(|h| subtree_ids(col, h).into_iter().collect());
     for (id, r) in &col.replays {
+        if inside.as_ref().is_some_and(|s| !s.contains(id.as_str())) {
+            continue;
+        }
         for l in &r.lines {
             let (glyph, color, text, event) = match &l.command {
                 Command::Event { text, .. } => ("⚑", Color32::from_rgb(240, 210, 90), text.clone(), true),
@@ -626,7 +635,11 @@ fn marker_list(ui: &mut egui::Ui, col: &Collection, filter: &mut String, at: Opt
         .filter(|m| needle.is_empty() || m.text.to_lowercase().contains(&needle) || col.replays[m.id].title().to_lowercase().contains(&needle))
         .collect();
     let what = if needle.is_empty() { "markers" } else { "matching markers" };
-    ui.label(RichText::new(format!("{} {what}", shown.len())).weak().small());
+    let place = match scope {
+        Some(h) => format!(" in the focused branch, \"{}\" and below", col_title(Some(col), h)),
+        None => String::new(),
+    };
+    ui.label(RichText::new(format!("{} {what}{place}", shown.len())).weak().small());
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         let mut was_event = true;
         for m in shown {
@@ -2881,6 +2894,162 @@ impl App {
         self.info(format!("Deleted {n} segment{}. Save to remove the files, or undo.", if n == 1 { "" } else { "s" }));
     }
 
+    /// Gives each of `ids` the parent `to` (none: a root starting from power-on). They now
+    /// start from another state, so what was recorded from their start on no longer holds:
+    /// their hashes go and they, and everything below, turn dirty. A save file or snapshot
+    /// only belongs to a root, so a segment that gets a parent drops its own. No undo step.
+    fn set_parent(&mut self, ids: &[String], to: Option<&str>) {
+        let Some(col) = &mut self.col else { return };
+        for id in ids {
+            let Some(r) = col.replays.get_mut(id) else { continue };
+            match to {
+                Some(p) => {
+                    r.set("parent", p);
+                    r.remove_all("sram");
+                    r.remove_all("snapshot");
+                }
+                None => r.set("parent", "none"),
+            }
+            r.remove_all("start-hash");
+            r.remove_all("checkpoint");
+            r.remove_all("end-hash");
+            self.dirty_from.insert(id.clone(), 0);
+            self.edited.insert(id.clone());
+        }
+        if let Some(p) = to {
+            self.tree_closed.remove(p);
+        }
+        self.roll.invalidate();
+        self.coverage_stale();
+        // The shown segment starts from somewhere else now if it is one of them or below one.
+        if let Some(sel) = self.selected.clone() {
+            let moved = self.col.as_ref().and_then(|c| c.chain(&sel).ok()).is_some_and(|ch| ch.iter().any(|c| ids.iter().any(|i| i == c)));
+            if moved {
+                let here = self.playhead().unwrap_or(0);
+                self.select(&sel);
+                self.seek(here);
+                self.roll.follow_to(here);
+            }
+        }
+    }
+
+    /// Move to…: `id` (and everything below it) goes under `to`, or becomes a root.
+    fn move_node(&mut self, id: &str, to: Option<&str>) {
+        let Some(col) = &self.col else { return };
+        if to.is_some_and(|t| subtree_ids(col, id).contains(&t)) {
+            self.info("A segment can't move below itself.");
+            return;
+        }
+        let had_start = col.replays.get(id).is_some_and(|r| r.get("sram").is_some() || r.get("snapshot").is_some());
+        let below = subtree_ids(col, id).len() - 1;
+        let dest = to.map(|t| format!("under \"{}\"", col_title(Some(col), t))).unwrap_or_else(|| "to a root segment, starting from power-on".to_string());
+        if !self.remember("Move", &[id]) {
+            return;
+        }
+        self.set_parent(&[id.to_string()], to);
+        let mut msg = format!("Moved {dest}. It{} must be played again to record new hashes", if below > 0 { format!(" and the {below} segment{} below it", if below == 1 { "" } else { "s" }) } else { String::new() });
+        msg.push('.');
+        if had_start && to.is_some() {
+            msg.push_str(" Its save file or snapshot was dropped: only a root segment has one.");
+        }
+        self.info(msg);
+    }
+
+    /// The Move to… window: pick the new parent from every segment not below this one.
+    fn move_dialog_ui(&mut self, ctx: &egui::Context) {
+        let Some((id, mut filter)) = self.move_dialog.take() else { return };
+        let Some(col) = self.col.as_ref().filter(|c| c.replays.contains_key(&id)) else { return };
+        let r = &col.replays[&id];
+        let title = r.title().to_string();
+        let parent = r.parent().map(String::from);
+        let below: HashSet<&str> = subtree_ids(col, &id).into_iter().collect();
+        // Every other segment as "Root › A › B", in tree order.
+        let mut targets: Vec<(String, String)> = vec![];
+        let mut stack: Vec<(&str, String)> = col.children(None).into_iter().rev().map(|k| (k, String::new())).collect();
+        while let Some((k, pre)) = stack.pop() {
+            if below.contains(k) {
+                continue;
+            }
+            let path = if pre.is_empty() { col.replays[k].title().to_string() } else { format!("{pre} › {}", col.replays[k].title()) };
+            for c in col.children(Some(k)).into_iter().rev() {
+                stack.push((c, path.clone()));
+            }
+            targets.push((k.to_string(), path));
+        }
+        let needle = filter.trim().to_lowercase();
+        let mut open = true;
+        let mut pick: Option<Option<String>> = None;
+        let mut cancel = false;
+        egui::Window::new("Move segment").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).show(ctx, |ui| {
+            ui.label(RichText::new(format!("Move \"{title}\" and what is below it to:")).strong());
+            ui.label(RichText::new("It then starts where the new parent ends, so it and everything below turn dirty.").weak());
+            ui.add(egui::TextEdit::singleline(&mut filter).hint_text("Filter by title").desired_width(380.0)).request_focus();
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                ui.set_min_width(380.0);
+                if parent.is_some() && needle.is_empty() && ui.selectable_label(false, RichText::new("No parent: a root segment, from power-on").italics()).clicked() {
+                    pick = Some(None);
+                }
+                for (k, path) in &targets {
+                    if !needle.is_empty() && !path.to_lowercase().contains(&needle) {
+                        continue;
+                    }
+                    let here = parent.as_deref() == Some(k.as_str());
+                    let label = if here { format!("{path}  (current parent)") } else { path.clone() };
+                    if ui.add_enabled(!here, egui::Button::selectable(false, label)).clicked() {
+                        pick = Some(Some(k.clone()));
+                    }
+                }
+            });
+            ui.add_space(4.0);
+            if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                cancel = true;
+            }
+        });
+        match pick {
+            Some(to) => self.move_node(&id, to.as_deref()),
+            None if cancel || !open => {}
+            None => self.move_dialog = Some((id, filter)),
+        }
+    }
+
+    /// Delete, keep children: `id` goes and its children move up to its parent (or become
+    /// roots), as one undo step.
+    fn delete_keep_children(&mut self, id: &str) {
+        let Some(col) = &self.col else { return };
+        let Some(r) = col.replays.get(id) else { return };
+        let parent = r.parent().map(String::from);
+        let kids: Vec<String> = col.children(Some(id)).into_iter().map(String::from).collect();
+        let mut ids: Vec<&str> = vec![id];
+        ids.extend(kids.iter().map(String::as_str));
+        if !self.remember("Delete, keep children", &ids) {
+            return;
+        }
+        let was_shown = self.selected.as_deref() == Some(id);
+        if let Some(col) = &mut self.col {
+            col.replays.remove(id);
+        }
+        self.edited.insert(id.to_string());
+        self.tree_closed.remove(id);
+        if self.hoist.as_deref() == Some(id) {
+            self.hoist = parent.clone();
+        }
+        if was_shown {
+            self.end_pass();
+            self.pb = None;
+            self.texture = None;
+            self.selected = None;
+        }
+        self.set_parent(&kids, parent.as_deref());
+        if was_shown {
+            if let Some(next) = parent.as_ref().or(kids.first()) {
+                self.select(&next.clone());
+            }
+        }
+        let n = kids.len();
+        let to = if parent.is_some() { "moved up to its parent" } else { "are now root segments, starting from power-on" };
+        self.info(format!("Deleted; its {n} child{} {to} and must be played again to record new hashes.", if n == 1 { "" } else { "ren" }));
+    }
+
     fn new_id() -> String {
         uuid::Uuid::new_v4().to_string()
     }
@@ -3347,10 +3516,11 @@ impl App {
             let title = r.title().to_string();
             let mut open = true;
             let mut confirm = false;
+            let mut keep = false;
             let mut cancel = false;
+            let below = ids.len() - 1;
             egui::Window::new("Delete segment").open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).show(ctx, |ui| {
                 ui.label(RichText::new(format!("Delete \"{title}\"?")).strong());
-                let below = ids.len() - 1;
                 if below > 0 {
                     ui.label(RichText::new(format!("This also deletes the {below} segment{} below it.", if below == 1 { "" } else { "s" })).color(Color32::from_rgb(240, 160, 60)));
                 }
@@ -3359,6 +3529,14 @@ impl App {
                 ui.horizontal(|ui| {
                     if ui.button(RichText::new(if ids.len() == 1 { "Delete".to_string() } else { format!("Delete {} segments", ids.len()) }).color(Color32::from_rgb(240, 110, 100))).clicked() {
                         confirm = true;
+                    }
+                    if below > 0
+                        && ui
+                            .button("Delete, keep children")
+                            .on_hover_text("Delete only this segment: its children move up to its parent (or become root segments) and turn dirty")
+                            .clicked()
+                    {
+                        keep = true;
                     }
                     if ui.button("Cancel").clicked() {
                         cancel = true;
@@ -3371,10 +3549,14 @@ impl App {
             if confirm {
                 self.delete_dialog = None;
                 self.delete_nodes(&id, ids);
+            } else if keep {
+                self.delete_dialog = None;
+                self.delete_keep_children(&id);
             } else if cancel || !open {
                 self.delete_dialog = None;
             }
         }
+        self.move_dialog_ui(ctx);
         if let Some((top, mut markers)) = self.chain_dialog.take() {
             let run = self.only_child_run(&top);
             let col = self.col.as_ref();
@@ -3638,6 +3820,9 @@ impl App {
                 if ui.add_enabled(self.selected.is_some(), egui::Button::new("Select all").shortcut_text(sc(Modifiers::COMMAND, Key::A))).on_hover_text("Select every press of the selected segment in the piano roll").clicked() {
                     self.roll.select_all();
                 }
+                ui.checkbox(&mut self.roll.draw, "Drag to draw inputs").on_hover_text(
+                    "In the piano roll, a drag on an empty cell draws a press instead of selecting an area. Hold Ctrl/Cmd for the other one.",
+                );
                 ui.separator();
                 let sel = self.selected.clone();
                 let has = sel.is_some() && self.pb.is_some();
@@ -3677,7 +3862,10 @@ impl App {
                     self.chain_dialog = Some((sel.clone().unwrap(), true));
                 }
                 ui.separator();
-                if ui.add_enabled(sel.is_some(), egui::Button::new("Delete…")).on_hover_text("Delete this segment and everything below it").clicked() {
+                if ui.add_enabled(sel.is_some(), egui::Button::new("Move to…")).on_hover_text(MOVE_TIP).clicked() {
+                    self.move_dialog = sel.clone().map(|s| (s, String::new()));
+                }
+                if ui.add_enabled(sel.is_some(), egui::Button::new("Delete…")).on_hover_text("Delete this segment and everything below it, or just it, keeping its children").clicked() {
                     self.delete_dialog = sel.clone();
                 }
             }));
@@ -3864,7 +4052,8 @@ impl App {
         }
         if self.side_tab == SideTab::Markers {
             let shown = self.selected.as_deref().zip(self.pb.as_ref().and_then(|b| b.shown()));
-            if let Some((id, f)) = marker_list(ui, col, &mut self.marker_filter, shown) {
+            let scope = self.hoist.as_deref().filter(|h| col.replays.contains_key(*h));
+            if let Some((id, f)) = marker_list(ui, col, &mut self.marker_filter, shown, scope) {
                 if self.selected.as_deref() != Some(id.as_str()) {
                     self.select(&id);
                 }
@@ -4225,7 +4414,10 @@ impl App {
                         if ui.add_enabled(grand_only, egui::Button::new("Join chain…")).on_hover_text(JOIN_CHAIN_TIP).on_disabled_hover_text("Only where at least two only-children follow in a row").clicked() {
                             context = Some((id.to_string(), "joinchain"));
                         }
-                        if ui.button("Delete…").on_hover_text("Delete this segment and everything below it").clicked() {
+                        if ui.button("Move to…").on_hover_text(MOVE_TIP).clicked() {
+                            context = Some((id.to_string(), "move"));
+                        }
+                        if ui.button("Delete…").on_hover_text("Delete this segment and everything below it, or just it, keeping its children").clicked() {
                             context = Some((id.to_string(), "delete"));
                         }
                         ui.separator();
@@ -4327,6 +4519,7 @@ impl App {
             }
             Some((_, "unhoist")) => self.hoist = None,
             Some((id, "delete")) => self.delete_dialog = Some(id),
+            Some((id, "move")) => self.move_dialog = Some((id, String::new())),
             Some((id, "join")) => self.join_with_parent(&id),
             Some((id, "joinchild")) => {
                 if let Some(c) = self.only_child(&id) {

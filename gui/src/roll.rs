@@ -173,6 +173,9 @@ pub struct RollState {
     /// Marker lane expanded: every marker gets room for its whole label,
     /// events in the top rows and everything else (RAM writes, resets, ...) below.
     pub markers_open: bool,
+    /// Edit > Drag to draw inputs: a drag on an empty cell draws a press (otherwise it
+    /// selects an area). Ctrl/Cmd does the other one.
+    pub draw: bool,
     open: HashMap<(u32, u32), bool>,
     gen: u64,
     model: Option<Model>,
@@ -191,7 +194,7 @@ pub struct RollState {
 
 impl Default for RollState {
     fn default() -> Self {
-        RollState { px_per_frame: 4.0, scroll_x: 0.0, scroll_y: 0.0, follow: true, all_buttons: false, labels: true, markers_open: false, open: HashMap::new(), gen: 0, model: None, drag: None, last_len: 4, sel: BTreeSet::new(), gesture: None, scrubbing: false, jump_to: None, recording: false }
+        RollState { px_per_frame: 4.0, scroll_x: 0.0, scroll_y: 0.0, follow: true, all_buttons: false, labels: true, markers_open: false, draw: false, open: HashMap::new(), gen: 0, model: None, drag: None, last_len: 4, sel: BTreeSet::new(), gesture: None, scrubbing: false, jump_to: None, recording: false }
     }
 }
 
@@ -792,8 +795,8 @@ impl RollState {
                     self.scrubbing = true;
                 } else if p.y < rows_top && p.x >= tl_left {
                     // The marker lane, between markers: nothing.
-                } else if p.x >= tl_left && !header_at(p) && hit(p).is_some() && mods.command {
-                    // Ctrl/Cmd+drag: select an area.
+                } else if p.x >= tl_left && !header_at(p) && hit(p).is_some() && mods.command && press_at(p).is_some() {
+                    // Ctrl/Cmd+drag from a press: select an area.
                     let a = (ff_at(p.x), p.y - rows_top + self.scroll_y);
                     self.gesture = Some(Gesture::Marquee { a, b: a, op, cell: None });
                 } else if p.x >= tl_left && !header_at(p) && hit(p).is_some() {
@@ -827,12 +830,14 @@ impl RollState {
                             }
                         }
                         None => {
-                            // An empty cell: a drag draws a press as long as the drag (a click
-                            // makes one as long as the last); with Shift or Alt a drag selects
-                            // an area instead (as Ctrl/Cmd+drag does anywhere).
+                            // An empty cell: a drag selects an area, or with drawing on (Edit >
+                            // Drag to draw inputs) draws a press as long as the drag (a click
+                            // makes one as long as the last). Ctrl/Cmd swaps the two; Shift or
+                            // Alt always select.
                             let f = frame_at(p.x);
                             let cell = row_here.filter(|_| f < m.frames && ff_at(p.x) >= 0.0).map(|(gi, ri)| (gi, ri, f));
-                            match cell.filter(|_| !mods.shift && !mods.alt) {
+                            let draw = self.draw != mods.command && !mods.shift && !mods.alt;
+                            match cell.filter(|_| draw) {
                                 Some((group, row, f)) => {
                                     self.sel.clear();
                                     self.drag = Some(Drag { group, row, anchor: f, current: f, moved: false });
@@ -1397,10 +1402,10 @@ impl RollState {
             Some(Gesture::Marquee { .. }) => None,
             None if self.drag.is_some() => Some(egui::CursorIcon::Crosshair),
             None if resp.hovered() => match pointer {
-                Some(p) if mods.command && in_rows(p) => None,
+                Some(p) if mods.command && in_rows(p) && press_at(p).is_some() => None,
                 Some(p) => match press_at(p) {
                     Some((_, _, edge)) => Some(if edge.is_some() { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::Grab }),
-                    None if in_rows(p) => Some(egui::CursorIcon::Crosshair),
+                    None if in_rows(p) && self.draw != mods.command && !mods.shift && !mods.alt => Some(egui::CursorIcon::Crosshair),
                     None => None,
                 },
                 None => None,

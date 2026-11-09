@@ -774,6 +774,53 @@ impl App {
     }
 
     /// The Functions tab.
+    /// The Functions tab with no symbol map: what to add, and a button that adds one.
+    fn no_symbols_panel(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.label(RichText::new("No symbol map: add one to see functions and blocks").strong());
+        ui.label(RichText::new("dj rolls coverage up into the functions your symbols name; it doesn't find functions itself. Until then the map and the totals count the opcode bytes that ran.").small().weak());
+        ui.add_space(4.0);
+        for (format, from) in [
+            ("ca65-dbg", "cc65's .dbg (ld65 --dbgfile)"),
+            ("mesen-mlb", "a Mesen label file (.mlb), saved as you name code in Mesen's debugger"),
+            ("splat", "a decomp's symbol_addrs.txt"),
+            ("ld-map", "a GNU ld map (-Map=) from building the decomp"),
+            ("elf", "the ELF the decomp builds"),
+            ("csv", "name,region,offset,size[,cpu_addr] in hex, from anything else (a Ghidra export, say)"),
+        ] {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.label(RichText::new(format).small().monospace());
+                ui.label(RichText::new(from).small());
+            });
+        }
+        ui.add_space(4.0);
+        ui.label(RichText::new("In config.toml (or dj init --symbols FILE for a new project):").small());
+        ui.label(RichText::new("[[symbols]]\nfile = \"symbols/game.dbg\"\nformat = \"ca65-dbg\"").small().monospace().weak());
+        ui.label(RichText::new("More in docs/coverage.md, Symbol maps.").small().weak());
+        ui.add_space(4.0);
+        let busy = self.hydrating.is_some() || self.job.is_some();
+        if ui
+            .add_enabled(self.col.is_some() && !busy, egui::Button::new("Add symbol map…"))
+            .on_hover_text("Pick a symbol map: its format comes from the name, and a [[symbols]] entry is added to config.toml. A file outside the project is copied into symbols/ first.")
+            .on_disabled_hover_text("Busy: wait for the clean or seek to finish")
+            .clicked()
+        {
+            if let Some(f) = rfd::FileDialog::new().set_title("Choose a symbol map").pick_file() {
+                let r = self.col.as_mut().map(|c| c.add_symbol_map(&f));
+                match r {
+                    Some(Ok((e, copied))) => {
+                        self.coverage_stale();
+                        let how = if copied { ", copied into the project" } else { "" };
+                        self.info(format!("Added symbol map {} ({}){how}", e.file, e.format));
+                    }
+                    Some(Err(e)) => self.error(format!("Could not add the symbol map: {e:#}")),
+                    None => {}
+                }
+            }
+        }
+    }
+
     pub(crate) fn coverage_tab(&mut self, ui: &mut egui::Ui) {
         // Nothing here may widen the sidebar.
         ui.set_max_width(ui.available_width());
@@ -965,62 +1012,67 @@ impl App {
         }
         self.parity_section(ui);
 
-        // Sort and filter.
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            egui::ComboBox::from_id_salt("cov_sort")
-                .selected_text(match self.cov.sort {
-                    Sort::Rom => "ROM order",
-                    Sort::MostUncovered => "Most uncovered",
-                    Sort::LeastCovered => "Least covered",
-                    Sort::Name => "Name",
-                })
-                .width(110.0)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.cov.sort, Sort::Rom, "ROM order");
-                    ui.selectable_value(&mut self.cov.sort, Sort::MostUncovered, "Most uncovered").on_hover_text("Most instructions left to cover first");
-                    ui.selectable_value(&mut self.cov.sort, Sort::LeastCovered, "Least covered").on_hover_text("Lowest percentage first");
-                    ui.selectable_value(&mut self.cov.sort, Sort::Name, "Name");
-                });
-            let w = ui.available_width();
-            ui.add(egui::TextEdit::singleline(&mut self.cov.filter).id_salt("cov_filter").hint_text("Filter by name").desired_width(w));
-        });
-
-        // The list.
-        let visible = self.cov.visible_cells();
-        let row_h = 18.0;
-        let scroll_row = if self.cov.scroll_to_selected { self.cov.selected.and_then(|s| visible.iter().position(|v| *v == s)) } else { None };
-        self.cov.scroll_to_selected = false;
-        let mut area = egui::ScrollArea::vertical().id_salt("cov_list").auto_shrink([false, false]);
-        if let Some(r) = scroll_row {
-            area = area.vertical_scroll_offset((r as f32 * (row_h + ui.spacing().item_spacing.y) - 60.0).max(0.0));
-        }
-        area.show_rows(ui, row_h, visible.len(), |ui, range| {
-            for &i in &visible[range] {
-                let c = &self.cov.cells[i];
-                let live_new = self.cov.live.new_per_cell.get(i).copied().unwrap_or(0);
-                let sel = self.cov.selected == Some(i);
-                let resp = ui
-                    .horizontal(|ui| {
-                        ui.set_height(row_h);
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        let (sq, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-                        let fill = self.cov.fill(i, self.map_view, self.parity.is_some());
-                        ui.painter().rect_filled(sq, 1.0, fill);
-                        let name: String = if c.name.chars().count() > 26 { format!("{}…", c.name.chars().take(25).collect::<String>()) } else { c.name.clone() };
-                        let r = ui.selectable_label(sel, RichText::new(name).small().monospace());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.add_sized([62.0, row_h], egui::Label::new(RichText::new(format!("{}/{}", c.covered, c.units)).small().monospace().weak()).halign(egui::Align::RIGHT));
-                            bar(ui, (ui.available_width() - 2.0).clamp(20.0, 80.0), c.covered, live_new, if live_new > 0 { 0 } else { c.dirty }, c.units);
-                        });
-                        r
+        // Without a symbol map there are no functions to list: say how to add one.
+        if !self.cov.report.as_ref().is_some_and(|r| r.symbols) {
+            self.no_symbols_panel(ui);
+        } else {
+            // Sort and filter.
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                egui::ComboBox::from_id_salt("cov_sort")
+                    .selected_text(match self.cov.sort {
+                        Sort::Rom => "ROM order",
+                        Sort::MostUncovered => "Most uncovered",
+                        Sort::LeastCovered => "Least covered",
+                        Sort::Name => "Name",
                     })
-                    .inner;
-                if resp.clicked() {
-                    pick = Some((i, false));
-                }
+                    .width(110.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.cov.sort, Sort::Rom, "ROM order");
+                        ui.selectable_value(&mut self.cov.sort, Sort::MostUncovered, "Most uncovered").on_hover_text("Most instructions left to cover first");
+                        ui.selectable_value(&mut self.cov.sort, Sort::LeastCovered, "Least covered").on_hover_text("Lowest percentage first");
+                        ui.selectable_value(&mut self.cov.sort, Sort::Name, "Name");
+                    });
+                let w = ui.available_width();
+                ui.add(egui::TextEdit::singleline(&mut self.cov.filter).id_salt("cov_filter").hint_text("Filter by name").desired_width(w));
+            });
+
+            // The list.
+            let visible = self.cov.visible_cells();
+            let row_h = 18.0;
+            let scroll_row = if self.cov.scroll_to_selected { self.cov.selected.and_then(|s| visible.iter().position(|v| *v == s)) } else { None };
+            self.cov.scroll_to_selected = false;
+            let mut area = egui::ScrollArea::vertical().id_salt("cov_list").auto_shrink([false, false]);
+            if let Some(r) = scroll_row {
+                area = area.vertical_scroll_offset((r as f32 * (row_h + ui.spacing().item_spacing.y) - 60.0).max(0.0));
             }
-        });
+            area.show_rows(ui, row_h, visible.len(), |ui, range| {
+                for &i in &visible[range] {
+                    let c = &self.cov.cells[i];
+                    let live_new = self.cov.live.new_per_cell.get(i).copied().unwrap_or(0);
+                    let sel = self.cov.selected == Some(i);
+                    let resp = ui
+                        .horizontal(|ui| {
+                            ui.set_height(row_h);
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            let (sq, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                            let fill = self.cov.fill(i, self.map_view, self.parity.is_some());
+                            ui.painter().rect_filled(sq, 1.0, fill);
+                            let name: String = if c.name.chars().count() > 26 { format!("{}…", c.name.chars().take(25).collect::<String>()) } else { c.name.clone() };
+                            let r = ui.selectable_label(sel, RichText::new(name).small().monospace());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.add_sized([62.0, row_h], egui::Label::new(RichText::new(format!("{}/{}", c.covered, c.units)).small().monospace().weak()).halign(egui::Align::RIGHT));
+                                bar(ui, (ui.available_width() - 2.0).clamp(20.0, 80.0), c.covered, live_new, if live_new > 0 { 0 } else { c.dirty }, c.units);
+                            });
+                            r
+                        })
+                        .inner;
+                    if resp.clicked() {
+                        pick = Some((i, false));
+                    }
+                }
+            });
+        }
 
         if let Some((i, from_map)) = pick {
             if self.cov.selected == Some(i) && !from_map {

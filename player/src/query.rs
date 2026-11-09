@@ -7,10 +7,14 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use crate::analysis::{self, AnalyzedFunction, CodeEdge, FixedPrg, Function};
+use crate::analysis::{self, AnalyzedFunction, FixedPrg, Function};
 use crate::cache;
 use crate::collection::{Collection, Status};
 use crate::coverage::{self, Report};
+
+/// How to add a symbol map, for what `function`, `frontier` and `gaps` say without one: dj rolls coverage
+/// up into functions from the maps a project brings, and doesn't find functions itself.
+pub const ADD_SYMBOLS: &str = "Add a [[symbols]] entry to config.toml (file = \"symbols/game.dbg\", format = \"ca65-dbg\"), or start a project with dj init --symbols FILE. Formats: ca65-dbg (cc65's .dbg), mesen-mlb (a Mesen label file), splat (symbol_addrs.txt), ld-map (a GNU ld map), elf, and csv (name,region,offset,size[,cpu_addr]). See docs/coverage.md#symbol-maps.";
 
 /// A project opened for queries: the files, the database (read-only) and the symbol maps.
 pub struct Project {
@@ -72,7 +76,7 @@ impl Project {
     fn analyzed(&mut self) -> Result<&[AnalyzedFunction]> {
         let rep = self.report()?;
         if !rep.symbols {
-            bail!("this needs a symbol map (config.toml [[symbols]]) and the ROM");
+            bail!("this needs a symbol map. {ADD_SYMBOLS}");
         }
         Ok(&self.report.as_ref().unwrap().detail.analyzed)
     }
@@ -90,12 +94,13 @@ impl Project {
         })
     }
 
-    /// The PRG bytes and the flags of what ran, for working from coverage alone. That means
-    /// reading the bytes as 6502, so only NES ROMs can do without symbols.
-    fn need_sweep(&mut self) -> Result<(Vec<u8>, Vec<u8>)> {
+    /// The PRG bytes and the flags of what ran, for listing uncovered bytes without a symbol
+    /// map. Telling which bytes an instruction that ran occupies means knowing 6502
+    /// instruction lengths, so only NES ROMs can do without symbols.
+    fn need_flags(&mut self) -> Result<(Vec<u8>, Vec<u8>)> {
         let prg = self.need_prg()?;
         if !self.rom.as_deref().is_some_and(|r| r.starts_with(b"NES\x1a")) {
-            bail!("this needs a symbol map (config.toml [[symbols]]): without one it only works on NES ROMs, whose code it can read as 6502");
+            bail!("this needs a symbol map. {ADD_SYMBOLS}");
         }
         let flags = self.report()?.detail.prg.clone();
         Ok((prg, flags))
@@ -103,15 +108,6 @@ impl Project {
 
     fn cpu_text(&self, offset: u64) -> Option<String> {
         self.fixed_prg.and_then(|m| m.cpu_of(offset)).map(|c| format!("${c:04X}"))
-    }
-
-    fn where_text(&self, offset: u64) -> String {
-        self.cpu_text(offset).unwrap_or_else(|| format!("PRG:{offset:#x}"))
-    }
-
-    fn sweep_note(&self) -> String {
-        let cpu = if self.fixed_prg.is_some() { "" } else { " PRG here is bankable, so CPU addresses and JSR/JMP targets are unknown: calls aren't followed." };
-        format!("no symbol map: worked out by sweeping linearly from the instructions that ran, so uncovered bytes shown as code may be data. Add [[symbols]] to config.toml for real functions.{cpu}")
     }
 
     /// Resolves an address: `PRG:0x1F3A` (a region offset), `0x1F3A` (a PRG offset),
@@ -261,33 +257,19 @@ impl Project {
     }
 
     /// Uncovered PRG with no symbol map to divide it up: the runs of bytes no instruction that
-    /// ran occupies, with how covered code leads into them. Data shows up here too.
-    pub fn uncovered_ranges(&mut self, sort: GapSort, limit: usize, cursor: usize) -> Result<Page<UncoveredRange>> {
-        let (prg, flags) = self.need_sweep()?;
-        let edges = analysis::covered_edges_6502(&prg, &flags, self.fixed_prg);
+    /// ran occupies, largest first (`sort` doesn't apply: nearness needs functions). Data
+    /// shows up here too.
+    pub fn uncovered_ranges(&mut self, _sort: GapSort, limit: usize, cursor: usize) -> Result<Page<UncoveredRange>> {
+        let (prg, flags) = self.need_flags()?;
         let mut exec = analysis::executed_bytes_6502(&prg, &flags);
         self.mark_annotated(&mut exec)?;
         let mut rows: Vec<UncoveredRange> = analysis::uncovered_ranges(&exec)
             .into_iter()
-            .map(|(start, end)| {
-                let into: Vec<&CodeEdge> = edges.iter().filter(|e| e.to >= start && e.to < end).collect();
-                let best = into.iter().max_by_key(|e| analysis::sweep_len_6502(&prg, &flags, e.to));
-                UncoveredRange {
-                    at: format!("PRG:{start:#x}"),
-                    end: format!("PRG:{:#x}", end - 1),
-                    cpu: self.cpu_text(start),
-                    bytes: end - start,
-                    ways_in: into.len(),
-                    best_way_in: best.map(|e| format!("PRG:{:#x}", e.from)),
-                }
-            })
+            .map(|(start, end)| UncoveredRange { at: format!("PRG:{start:#x}"), end: format!("PRG:{:#x}", end - 1), cpu: self.cpu_text(start), bytes: end - start })
             .collect();
-        match sort {
-            GapSort::Size => rows.sort_by(|a, b| b.bytes.cmp(&a.bytes).then(a.at.cmp(&b.at))),
-            GapSort::Nearness => rows.sort_by(|a, b| (b.ways_in > 0).cmp(&(a.ways_in > 0)).then(b.bytes.cmp(&a.bytes)).then(a.at.cmp(&b.at))),
-        }
+        rows.sort_by(|a, b| b.bytes.cmp(&a.bytes).then(a.at.cmp(&b.at)));
         let total = rows.len();
-        let note = format!("no symbol map: these are PRG byte ranges that no instruction that ran occupies, and they include any data annotations.toml doesn't mark. ways_in counts covered branches and calls that lead into them (frontier lists them). Add [[symbols]] to config.toml for gaps by function.{}", if self.fixed_prg.is_some() { "" } else { " PRG here is bankable, so calls aren't followed." });
+        let note = format!("no symbol map: these are PRG byte ranges that no instruction that ran occupies, largest first, and they include any data annotations.toml doesn't mark. For gaps by function, add a symbol map: {ADD_SYMBOLS}");
         Ok(Page::new(rows.into_iter().skip(cursor).take(limit).collect(), total, cursor).with_note(note))
     }
 
@@ -340,11 +322,11 @@ impl Project {
 
     /// One function in detail: its blocks, who enters it, and its covered callers.
     pub fn function(&mut self, what: &str, segments_limit: usize) -> Result<FunctionInfo> {
+        if !self.has_symbols()? {
+            bail!("this needs a symbol map. {ADD_SYMBOLS}");
+        }
         let a = self.resolve(what)?;
         let prg = self.need_prg()?;
-        if !self.has_symbols()? {
-            return self.function_by_sweep(&a, segments_limit);
-        }
         self.analyzed()?;
         let rep = self.report.as_ref().unwrap();
         let d = &rep.detail;
@@ -388,70 +370,6 @@ impl Project {
         let mut info = info;
         info.entered_by = self.hits(&entry.1, entry.2, entry.2, segments_limit, 0)?;
         Ok(info)
-    }
-
-    /// `function` with no symbol map: the routine a linear sweep finds around the address.
-    fn function_by_sweep(&mut self, a: &Addr, segments_limit: usize) -> Result<FunctionInfo> {
-        let (prg, flags) = self.need_sweep()?;
-        let size = flags.len().min(prg.len()) as u64;
-        if a.region != "PRG" || a.offset >= size {
-            bail!("{} is not in PRG ({size} bytes)", a.text);
-        }
-        const SWEEP_BYTES: u64 = 0x400;
-        let (start, end) = analysis::sweep_bounds_6502(&prg, &flags, a.offset, SWEEP_BYTES);
-        // Branches resolve through CPU addresses, so a ROM with none gets a stand-in; rows
-        // only show it when it is real.
-        let known = self.cpu_text(start).is_some();
-        let cpu_addr = self.fixed_prg.and_then(|m| m.cpu_of(start)).unwrap_or(0x8000);
-        let func = Function { name: format!("sweep_{start:04X}"), region: "PRG".into(), offset: start, size: end - start, cpu_addr: Some(cpu_addr) };
-        let data = self.report()?.detail.data.clone();
-        let analyzed = analysis::analyze_6502_with(std::slice::from_ref(&func), &prg, &data);
-        let f = analyzed.first().ok_or_else(|| anyhow!("nothing to read at {}", a.text))?;
-        let firsts = self.first_frames("PRG", start, end)?;
-        let succ = analysis::block_successors_6502(f, &prg);
-        let hit = |o: u64| flags.get(o as usize).is_some_and(|b| b & coverage::FLAG_OPCODE != 0);
-        let show = |o: u64, c: Option<u64>| match c.filter(|_| known) {
-            Some(c) => format!("${c:04X}"),
-            None => format!("PRG:{o:#x}"),
-        };
-        let blocks = f
-            .blocks
-            .iter()
-            .zip(&succ)
-            .map(|(b, s)| BlockRow {
-                at: format!("PRG:{:#x}", b.offset),
-                cpu: b.cpu_addr.filter(|_| known).map(|c| format!("${c:04X}")),
-                instructions: b.instructions.len(),
-                covered: hit(b.offset),
-                first_run: firsts.get(&b.offset).map(|(id, fr)| FirstRun { segment: id.clone(), short: self.short(id), title: self.title(id), frame: *fr }),
-                next: s.iter().map(|o| show(*o, f.blocks.iter().find(|b| b.offset == *o).and_then(|b| b.cpu_addr))).collect(),
-            })
-            .collect();
-        // A call or jump that ran, wherever it is, and lands on this routine's first byte.
-        let mut callers = vec![];
-        if let Some(map) = self.fixed_prg {
-            for (off, _) in flags.iter().enumerate().filter(|(_, b)| **b & coverage::FLAG_OPCODE != 0) {
-                let bytes = &prg[off.min(prg.len())..(off + 3).min(prg.len())];
-                if let Some((t, call)) = analysis::call_target_6502(bytes) {
-                    if map.offset_of(t) == Some(start) {
-                        let off = off as u64;
-                        callers.push(Caller { function: "(no symbols)".into(), at: format!("PRG:{off:#x}"), cpu: self.cpu_text(off), kind: if call { "JSR" } else { "JMP" }.into(), covered: true });
-                    }
-                }
-            }
-        }
-        Ok(FunctionInfo {
-            note: Some(self.sweep_note()),
-            name: func.name.clone(),
-            at: format!("PRG:{start:#x}"),
-            cpu: self.cpu_text(start),
-            size: end - start,
-            instructions: f.instructions.len(),
-            instructions_covered: f.instructions.iter().filter(|i| hit(i.offset)).count(),
-            blocks,
-            callers,
-            entered_by: self.hits("PRG", start, start, segments_limit, 0)?,
-        })
     }
 
     /// The first segment (best first) and frame to run each offset of `start..end`.
@@ -507,11 +425,11 @@ impl Project {
     /// the covered blocks that branch or fall into it; for a function never entered, its
     /// covered callers; with no address, the largest such edges across the ROM.
     pub fn frontier(&mut self, what: Option<&str>, limit: usize, cursor: usize) -> Result<Page<FrontierEdge>> {
+        if !self.has_symbols()? {
+            bail!("this needs a symbol map. {ADD_SYMBOLS}");
+        }
         let prg = self.need_prg()?;
         let target = what.map(|w| self.resolve(w)).transpose()?;
-        if !self.has_symbols()? {
-            return self.frontier_by_sweep(target.as_ref(), limit, cursor);
-        }
         self.analyzed()?;
         let rep = self.report.as_ref().unwrap();
         let d = &rep.detail;
@@ -594,41 +512,6 @@ impl Project {
             bail!("no covered code leads directly into it: either it is covered already, or nothing that runs branches or calls there (an indirect jump, an interrupt or a table may reach it)");
         }
         Ok(Page::new(page, total, cursor))
-    }
-
-    /// `frontier` with no symbol map: edges out of the instructions that ran. For an address,
-    /// those into the uncovered range that holds it.
-    fn frontier_by_sweep(&mut self, target: Option<&Addr>, limit: usize, cursor: usize) -> Result<Page<FrontierEdge>> {
-        let (prg, flags) = self.need_sweep()?;
-        let mut exec = analysis::executed_bytes_6502(&prg, &flags);
-        self.mark_annotated(&mut exec)?;
-        let mut edges = analysis::covered_edges_6502(&prg, &flags, self.fixed_prg);
-        // No way into data or unreachable code counts (they are marked taken in `exec` now).
-        edges.retain(|e| !exec.get(e.to as usize).copied().unwrap_or(false) || flags.get(e.to as usize).is_some_and(|b| b & coverage::FLAG_OPCODE != 0));
-        if let Some(t) = target {
-            let range = analysis::uncovered_ranges(&exec).into_iter().find(|(s, e)| t.region == "PRG" && t.offset >= *s && t.offset < *e);
-            edges.retain(|e| range.is_some_and(|(s, end)| e.to >= s && e.to < end));
-            if edges.is_empty() {
-                bail!("no covered code leads directly into it: either it is covered already, or nothing that runs branches or calls there (an indirect jump, an interrupt or a table may reach it)");
-            }
-        }
-        let mut rows: Vec<(usize, CodeEdge)> = edges.into_iter().map(|e| (analysis::sweep_len_6502(&prg, &flags, e.to), e)).collect();
-        rows.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.from.cmp(&b.1.from)).then(a.1.to.cmp(&b.1.to)));
-        let total = rows.len();
-        let mut page = vec![];
-        for (size, e) in rows.into_iter().skip(cursor).take(limit) {
-            page.push(FrontierEdge {
-                kind: e.kind.to_string(),
-                function: "(no symbols)".into(),
-                uncovered: self.where_text(e.to),
-                uncovered_instructions: size,
-                from_block: self.where_text(e.from),
-                branch: self.where_text(e.from),
-                branch_at: format!("PRG:{:#x}", e.from),
-                reached_by: self.hits("PRG", e.from, e.from, 3, 0)?.items,
-            });
-        }
-        Ok(Page::new(page, total, cursor).with_note(self.sweep_note()))
     }
 }
 
@@ -819,10 +702,6 @@ pub struct UncoveredRange {
     pub end: String,
     pub cpu: Option<String>,
     pub bytes: u64,
-    /// Covered branches and calls that lead into it.
-    pub ways_in: usize,
-    /// The instruction of those that opens up the most, a good argument for `where_runs`.
-    pub best_way_in: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -966,25 +845,21 @@ mod tests {
         let g = p.uncovered_ranges(GapSort::Nearness, 10, 0).unwrap();
         assert_eq!(g.total, 1);
         let r = &g.items[0];
-        assert_eq!((r.at.as_str(), r.end.as_str(), r.cpu.as_deref(), r.bytes, r.ways_in), ("PRG:0x4", "PRG:0x7fff", Some("$8004"), 0x7FFC, 2));
-        assert_eq!(r.best_way_in.as_deref(), Some("PRG:0x2"));
-        assert!(g.note.unwrap().contains("no symbol map"));
+        assert_eq!((r.at.as_str(), r.end.as_str(), r.cpu.as_deref(), r.bytes), ("PRG:0x4", "PRG:0x7fff", Some("$8004"), 0x7FFC));
+        let v = serde_json::to_value(&g).unwrap();
+        assert!(v["items"][0].get("ways_in").is_none());
+        let note = g.note.unwrap();
+        assert!(note.contains("no symbol map") && note.contains("[[symbols]]"), "{note}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn function_without_symbols_sweeps() {
+    fn function_and_frontier_need_symbols() {
         let (dir, mut p) = project("func", true);
-        for addr in ["PRG:0x2", "$8002", "0x3"] {
-            let f = p.function(addr, 5).unwrap();
-            assert_eq!((f.at.as_str(), f.cpu.as_deref(), f.size, f.instructions, f.instructions_covered), ("PRG:0x0", Some("$8000"), 10, 6, 2), "{addr}");
-            assert!(f.blocks[0].covered && f.blocks[0].first_run.is_some());
-            assert_eq!(f.blocks[0].next, vec!["$8004", "$8007"]);
-            assert!(!f.blocks[1].covered);
-            assert_eq!(f.entered_by.total, 1);
-            assert!(f.note.is_some());
+        for e in [p.function("$8002", 5).err().unwrap(), p.frontier(None, 10, 0).err().unwrap(), p.frontier(Some("$8004"), 10, 0).err().unwrap(), p.gaps(GapSort::Size, GapFilter::All, 10, 0).err().unwrap()] {
+            let e = e.to_string();
+            assert!(e.contains("needs a symbol map") && e.contains("dj init --symbols") && e.contains("docs/coverage.md#symbol-maps"), "{e}");
         }
-        assert!(p.function("PRG:0x8000", 5).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -992,13 +867,8 @@ mod tests {
     fn a_bankable_rom_has_no_cpu_addresses() {
         let (dir, mut p) = project_with("bank", true, 4);
         assert!(p.resolve("$8000").is_err());
-        let f = p.function("PRG:0x2", 5).unwrap();
-        assert_eq!(f.cpu, None);
-        assert_eq!(f.blocks[0].cpu, None);
-        assert_eq!(f.blocks[0].next, vec!["PRG:0x4", "PRG:0x7"]);
-        assert!(f.note.unwrap().contains("bankable"));
-        let e = p.frontier(None, 10, 0).unwrap();
-        assert_eq!(e.items[0].branch, "PRG:0x2");
+        let g = p.uncovered_ranges(GapSort::Size, 10, 0).unwrap();
+        assert_eq!(g.items[0].cpu, None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1009,12 +879,10 @@ mod tests {
         let s = p.summary().unwrap();
         assert_eq!((s.instructions.covered, s.instructions.total, s.unreachable_instructions, s.data_bytes), (2, 0x100 - 3, 3, 0x7F00));
         assert!(s.annotation_warnings.is_empty());
-        // Neither is a gap, nor a way into one.
+        // Neither is a gap.
         let g = p.uncovered_ranges(GapSort::Size, 10, 0).unwrap();
         let ranges: Vec<(&str, &str)> = g.items.iter().map(|r| (r.at.as_str(), r.end.as_str())).collect();
         assert_eq!(ranges, vec![("PRG:0xa", "PRG:0xff"), ("PRG:0x4", "PRG:0x6")]);
-        let f = p.frontier(None, 10, 0).unwrap();
-        assert_eq!(f.items.iter().map(|e| e.uncovered.as_str()).collect::<Vec<_>>(), vec!["$8004"]);
         let d = &p.report().unwrap().detail;
         assert_eq!(d.annotation_at(0x8).map(|e| e.why.as_str()), Some("dead"));
         assert!(d.is_data(0x100) && !d.is_data(0xFF));
@@ -1063,22 +931,6 @@ mod tests {
         let s = p.summary().unwrap();
         assert_eq!((s.functions.covered, s.functions.total, s.annotated_functions), (1, 1, 2));
         assert!(p.function("dead", 5).err().unwrap().to_string().contains("wholly unreachable or data"));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn frontier_without_symbols_lists_edges() {
-        let (dir, mut p) = project("front", true);
-        let all = p.frontier(None, 10, 0).unwrap();
-        assert_eq!(all.total, 2);
-        assert_eq!(all.items[0].branch, "$8002");
-        assert_eq!(all.items[0].branch_at, "PRG:0x2");
-        assert_eq!(all.items[0].kind, "branch");
-        assert_eq!(all.items[0].uncovered, "$8004");
-        assert_eq!(all.items[0].reached_by.len(), 1);
-        assert_eq!(p.frontier(Some("$8007"), 10, 0).unwrap().total, 2);
-        // Covered already.
-        assert!(p.frontier(Some("PRG:0x0"), 10, 0).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

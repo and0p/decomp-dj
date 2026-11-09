@@ -380,6 +380,63 @@ impl Collection {
         Ok(toml::from_str(&std::fs::read_to_string(&p)?)?)
     }
 
+    /// Adds a symbol map: a `[[symbols]]` entry for `file`, appended to config.toml so the
+    /// rest of the file stays as written, and to `self.config`. The format comes from the
+    /// file's name (`analysis::known_format`). A file outside the project is copied into
+    /// `symbols/` first, as `dj init --symbols` does. Returns the entry and whether it copied.
+    pub fn add_symbol_map(&mut self, file: &Path) -> Result<(SymbolsConfig, bool)> {
+        let format = crate::analysis::known_format(file).ok_or_else(|| {
+            anyhow!("can't tell the format of {} from its name: name it .dbg, .mlb, .map, .elf, .csv or symbol_addrs.txt, or add the [[symbols]] entry to config.toml by hand", file.display())
+        })?;
+        let root = std::fs::canonicalize(&self.root)?;
+        let abs = std::fs::canonicalize(file).with_context(|| format!("reading {}", file.display()))?;
+        let (rel, copied) = match abs.strip_prefix(&root) {
+            Ok(r) => (r.to_path_buf(), false),
+            Err(_) => {
+                let name = abs.file_name().ok_or_else(|| anyhow!("bad symbol map path {}", abs.display()))?;
+                let to = root.join("symbols").join(name);
+                if to.exists() {
+                    bail!("{} already exists; pick that file instead, or rename one of them", to.display());
+                }
+                std::fs::create_dir_all(root.join("symbols"))?;
+                std::fs::copy(&abs, &to).with_context(|| format!("copying {} to {}", abs.display(), to.display()))?;
+                (Path::new("symbols").join(name), true)
+            }
+        };
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        if self.config.symbols.iter().any(|s| s.file == rel) {
+            bail!("{rel} is already a symbol map of this project");
+        }
+        let cfg_path = self.root.join("config.toml");
+        let old = std::fs::read_to_string(&cfg_path).with_context(|| format!("reading {}", cfg_path.display()))?;
+        let mut text = old.clone();
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&format!("\n[[symbols]]\nfile = {}\nformat = {}\n", toml::Value::String(rel.clone()), toml::Value::String(format.into())));
+        std::fs::write(&cfg_path, &text)?;
+        let config: Result<Config> = toml::Value::Table(layered_table(&self.root)?).try_into().map_err(anyhow::Error::from);
+        match config {
+            Ok(c) => {
+                let entry = c.symbols.iter().find(|s| s.file == rel).cloned().ok_or_else(|| anyhow!("the new [[symbols]] entry didn't read back"));
+                match entry {
+                    Ok(e) => {
+                        self.config.symbols = c.symbols;
+                        Ok((e, copied))
+                    }
+                    Err(e) => {
+                        std::fs::write(&cfg_path, &old)?;
+                        Err(e)
+                    }
+                }
+            }
+            Err(e) => {
+                std::fs::write(&cfg_path, &old)?;
+                Err(e.context("config.toml didn't read back with the new [[symbols]] entry, so it was left as it was"))
+            }
+        }
+    }
+
     /// Writes the keys `LocalConfig` owns into local.toml (removing those it leaves unset),
     /// and keeps every other key there, such as project settings overridden on this machine.
     pub fn save_local(&self, local: &LocalConfig) -> Result<()> {
@@ -680,6 +737,31 @@ mod layering_tests {
     }
 
     const CONFIG: &str = "format = 1\nname = \"g\"\ndatabase = false\n[rom]\nsha256 = \"\"\npath = \"roms/g.nes\"\n[core]\nname = \"mesen\"\nbuild = \"1\"\npath = \"/cores/mesen.so\"\n[hash]\nalgorithm = \"blake3\"\nregions = [\"RAM\"]\n";
+
+    #[test]
+    fn add_symbol_map_appends_an_entry() {
+        let commented = format!("# keep me\n{CONFIG}");
+        let (dir, mut col) = project(&commented, None);
+        std::fs::write(dir.join("game.dbg"), "").unwrap();
+        let (e, copied) = col.add_symbol_map(&dir.join("game.dbg")).unwrap();
+        assert_eq!((e.file.as_str(), e.format.as_str(), copied), ("game.dbg", "ca65-dbg", false));
+        assert_eq!(col.config.symbols.len(), 1);
+        let text = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+        assert!(text.starts_with("# keep me\n") && text.ends_with("[[symbols]]\nfile = \"game.dbg\"\nformat = \"ca65-dbg\"\n"), "{text}");
+        assert_eq!(Collection::open(&dir).unwrap().config.symbols.len(), 1);
+        // Twice is refused, and so is a name that doesn't say the format.
+        assert!(col.add_symbol_map(&dir.join("game.dbg")).is_err());
+        std::fs::write(dir.join("notes.txt"), "").unwrap();
+        assert!(col.add_symbol_map(&dir.join("notes.txt")).unwrap_err().to_string().contains("can't tell the format"));
+        // A file outside the project is copied into symbols/.
+        let outside = std::env::temp_dir().join(format!("dj-outside-{}.mlb", uuid::Uuid::new_v4()));
+        std::fs::write(&outside, "").unwrap();
+        let (e, copied) = col.add_symbol_map(&outside).unwrap();
+        assert!(copied && e.file.starts_with("symbols/") && e.format == "mesen-mlb");
+        assert!(dir.join(&e.file).is_file());
+        let _ = std::fs::remove_file(&outside);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn config_alone_holds_machine_settings() {

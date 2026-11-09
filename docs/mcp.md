@@ -87,19 +87,12 @@ there is more.
 
 ### Without a symbol map
 
-`where_runs`, `coverage_summary` and the play tools need no symbols. `gaps`, `function` and
-`frontier` work from coverage instead, on NES ROMs (they read the bytes as 6502), and say so
-in a `note` field; on other ROMs they report that they need `[[symbols]]`.
-
-| Tool | Returns |
-| --- | --- |
-| `gaps(sort)` | The runs of PRG bytes that no instruction that ran occupies, with their size, `ways_in` (covered branches and calls that lead into them) and `best_way_in`. `sort=size` puts the largest first; `sort=nearness` puts first those with a way in. `only` doesn't apply. These include data, such as tables and padding |
-| `function(addr)` | The routine a linear sweep finds around the address, named `sweep_XXXX`: back through instructions that ran and lead to it, forward to the first place control can't pass, up to 1 KB each way. Blocks and first runs as usual; callers are only those that ran, since code that hasn't can't be told from data |
-| `frontier(addr?)` | Branches and calls that ran and lead into code that hasn't. With an address, those into the uncovered range that holds it. Its `uncovered_instructions` counts straight on from the target, to the first place control can't pass |
-
-A sweep can read data as code when it starts in uncovered bytes. Targets of covered branches
-and calls are real code, so start there. With more than 32 KB of PRG, CPU addresses are
-unknown without the bank: results use `PRG:` offsets, and calls aren't followed.
+dj expects the project to bring its symbols ([coverage.md](coverage.md#symbol-maps)).
+Without a `[[symbols]]` entry, `where_runs`, `coverage_summary` and the play tools work as
+usual, `function` and `frontier` return an error that says how to add a map, and `gaps`
+lists, on NES ROMs, the runs of PRG bytes that no instruction that ran occupies, largest
+first (`sort` and `only` don't apply), with a `note` saying so. These include data, such as
+tables and padding. On other ROMs `gaps` returns the same error as `function`.
 
 Agents can also read the project directly: segment files, `config.toml`, symbol maps and
 `report/` are plain text, and `dj sql` or `sqlite3` read `.local/cache.db` (query its

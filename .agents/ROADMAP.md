@@ -105,23 +105,11 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   seven `switch_s_plus_2a` jump tables.
 - **Editing annotations in the GUI (later phase).** Right-click a map square or a range
   in the Functions tab to mark it unreachable or data, or to name or resize a function, and
-  write the entry (with a `why` prompt) to annotations.toml. Possibly a jump-table helper
-  that, given the `jsr`, works out the table's end from the words that follow.
-- **Find functions without a symbol map.** For games with no decomp or disassembly (most
-  NES games), generate a symbol map instead of requiring one. Seed a recursive-descent
-  disassembly from the reset, NMI and IRQ vectors and every `JSR` target, following branches
-  and jumps to find blocks and function bounds. Add the coverage flags: every byte flagged
-  as an executed opcode is a proven instruction start, and anything reached from one is
-  proven code, which resolves indirect jumps and inline jump tables (Tetris's
-  `switch_s_plus_2a`) that static analysis can only guess at. Everything else is "not
-  seen", neither code nor data. Output a map in the `csv` format with `auto_8161`-style
-  names, kept until a real map replaces it, and regenerate it as coverage grows (new
-  coverage can extend or split functions). Builds on `sweep_bounds_6502` and
-  `call_target_6502`. Related: a connector flag for ROM bytes read as data (0x04; Mesen's
-  code/data logger already tracks this), or importing Mesen `.cdl` files, to mark data
-  positively. splat is no help here: it is MIPS only (N64, PS1, PS2, PSP) and needs the
-  code/data split written by hand; its output is already readable via `[[symbols]]`. A
-  headless Ghidra export (CSV) is another source for larger systems.
+  write the entry (with a `why` prompt) to annotations.toml.
+- **Symbol sources to accept.** Users bring their own symbols, so more formats are the way
+  to cover more projects: importing Mesen `.cdl` files (its code/data logger marks data
+  positively; or a connector flag for ROM bytes read as data, 0x04), and a headless Ghidra
+  export (CSV), for larger systems.
 
 - **A coverage report that can be committed.** `dj report --write` (or a step of `dj run`)
   writes a `report/` folder in the project that goes into version control, so a
@@ -149,6 +137,13 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   per function or larger block, sum it in a cache (`coverage_sum`, [CACHE_PLAN.md](CACHE_PLAN.md)), and
   update only the sums for segments whose clean or dirty status changed. Parity colors
   (purple and red) join the map once comparison cores exist.
+- **Turning coverage off.** A setting (`coverage = false`) for projects that only set up
+  segments for later analysis or compare cores by eye. Off: no `dj_clear` or flag reads, no
+  coverage or first hits stored, the Functions tab and map hidden in the GUI, and the
+  coverage CLI and MCP tools saying it's off. Plain libretro cores with no connector already
+  work as the baseline (`dj init` and `dj run` only print a note); this makes that a choice.
+  Segments don't hold coverage, so turning it on later and cleaning fills it in. Open:
+  per project (config.toml) or per machine (local.toml), and a GUI toggle.
 - **Tracking coverage lost.** When an edit, a delete or a re-recorded segment means code
   that used to be covered no longer is, nothing says so: the totals just drop. Keep the
   previous coverage per segment (or per report), and show what a change cost: in the GUI
@@ -186,6 +181,8 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   best balance of accuracy and speed, with deterministic save states and a debugger to
   hook execution into), then write its connector. First step: the list of consoles and the
   chosen core for each, with the reasons.
+  Planning notes for a second core (bsnes-mercury) and where decoding should live:
+  [CONNECTOR_PLAN.md](CONNECTOR_PLAN.md).
 - **Versioning projects.** A project should say which version of the format and the
   tools it needs, and the tools should handle the difference both ways. Today
   `config.toml` has `format = 1` and `dj-replay 1` heads each segment, and older
@@ -330,9 +327,8 @@ When one ships, its user-facing description moves into `docs/` and the entry her
 - **Revisit: frames that don't apply.** Many NES games aren't fully set up for the first
   frames after power-on, and a decomp may not want parity there. For now those frames are
   left to `dj_check_parity`'s SKIP, and the code only they run shows as "not checked". To
-  decide later: a "not applicable" colour of its own, kept out of the not-checked count; a
-  `[[compare]]` setting (say `parity_from = 60`) that skips a power-on's first frames without
-  core code; and showing skip counts so skips can't hide gaps.
+  decide later: a "not applicable" colour of its own, kept out of the not-checked count, and
+  showing skip counts so skips can't hide gaps.
 - **More in the Compare menu.** Pause on first failure, the later keep-playing-after-a-failure
   setting, and a Clear all failures action (Clear is per failure, in the Functions tab).
 - **Comparison core error messages.** Done: `dj_run` ([connectors.md](../docs/connectors.md#parity)), and the same faded message for failed syncs, ticks and parity checks.
@@ -399,3 +395,10 @@ When one ships, its user-facing description moves into `docs/` and the entry her
 Not planned for now. They're kept so the idea and its reasoning aren't lost if it comes up again.
 
 - **Markers tab: group repeated texts.** Collapse markers with the same text into one row.
+- **A `[[compare]]` setting to skip a power-on's first frames** (say `parity_from = 60`).
+  Not needed: the comparison core decides which frames to skip, with `dj_check_parity`'s SKIP.
+- **Finding functions without a symbol map, and a jump-table helper.** A recursive-descent
+  disassembly from the vectors and `JSR` targets, refined by coverage, writing a generated
+  map; and working out a jump table's end from the words after its `jsr`. Set aside because
+  users bring their own symbols: dj doesn't do static analysis. The linear sweeps the MCP
+  tools used without a map were removed for the same reason.

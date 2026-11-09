@@ -93,10 +93,10 @@ pub fn gaps(dir: &Path, sort: GapSort, only: GapFilter, q: &QueryArgs) -> Result
             return json(&g);
         }
         note(&g);
-        println!("  {:<24} {:>7} {:>8}  {}", "range", "bytes", "ways in", "best way in");
+        println!("  {:<24} {:>7}", "range", "bytes");
         for r in &g.items {
             let range = format!("{}-{}", r.at, r.end.trim_start_matches("PRG:"));
-            println!("  {:<24} {:>7} {:>8}  {}", range, r.bytes, r.ways_in, r.best_way_in.clone().unwrap_or_default());
+            println!("  {:<24} {:>7}", range, r.bytes);
         }
         more(&g);
         return Ok(());

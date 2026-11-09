@@ -239,16 +239,23 @@ pub fn load_csv(path: &Path) -> Result<Vec<Function>> {
 
 /// The format `dj init` assumes from a symbol file's name.
 pub fn guess_format(path: &Path) -> &'static str {
+    known_format(path).unwrap_or("csv")
+}
+
+/// The symbol map format a file's name says, or None when it says nothing (`guess_format`
+/// then assumes csv).
+pub fn known_format(path: &Path) -> Option<&'static str> {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_ascii_lowercase();
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-    match ext.as_str() {
+    Some(match ext.as_str() {
         "dbg" => "ca65-dbg",
         "mlb" => "mesen-mlb",
         "map" => "ld-map",
         "elf" | "o" => "elf",
+        "csv" => "csv",
         _ if name.contains("symbol_addrs") => "splat",
-        _ => "csv",
-    }
+        _ => return None,
+    })
 }
 
 /// Bytes before the region's data in `rom` when the config doesn't say: an iNES header is 16.
@@ -708,18 +715,6 @@ fn ran(flags: &[u8], off: u64) -> bool {
     flags.get(off as usize).is_some_and(|b| b & crate::coverage::FLAG_OPCODE != 0)
 }
 
-/// Offset a relative branch at `off` goes to, if that is inside `0..limit`.
-fn branch_target(prg: &[u8], off: u64, limit: u64) -> Option<u64> {
-    let rel = *prg.get(off as usize + 1)? as i8 as i64;
-    let to = off as i64 + 2 + rel;
-    (to >= 0 && (to as u64) < limit).then_some(to as u64)
-}
-
-/// Whether control can go on to the next instruction after this one.
-fn falls_through(op: u8) -> bool {
-    !matches!(flow_6502(op, &[op, 0, 0], 0), Flow::Stop) && !matches!(op, 0x4C | 0x6C)
-}
-
 /// The bytes of every instruction that ran, operands included.
 pub fn executed_bytes_6502(prg: &[u8], flags: &[u8]) -> Vec<bool> {
     let n = flags.len().min(prg.len());
@@ -751,105 +746,6 @@ pub fn uncovered_ranges(executed: &[bool]) -> Vec<(u64, u64)> {
         out.push((s as u64, executed.len() as u64));
     }
     out
-}
-
-/// A way from an instruction that ran to code that hasn't.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CodeEdge {
-    pub from: u64,
-    pub to: u64,
-    /// "branch" (either side of a branch, or the return from a call), "jsr" or "jmp".
-    pub kind: &'static str,
-}
-
-/// Every edge out of code that ran into code that hasn't. JSR and JMP targets need `map`.
-pub fn covered_edges_6502(prg: &[u8], flags: &[u8], map: Option<FixedPrg>) -> Vec<CodeEdge> {
-    let n = flags.len().min(prg.len()) as u64;
-    let mut out = vec![];
-    for from in (0..n).filter(|o| ran(flags, *o)) {
-        let op = prg[from as usize];
-        let next = from + op_len_6502(op) as u64;
-        let mut push = |to: u64, kind| {
-            if to < n && !ran(flags, to) && !out.iter().any(|e: &CodeEdge| e.from == from && e.to == to) {
-                out.push(CodeEdge { from, to, kind });
-            }
-        };
-        let bytes = &prg[from as usize..(next as usize).min(prg.len())];
-        match flow_6502(op, bytes, 0) {
-            Flow::Branch(_) => {
-                push(next, "branch");
-                if let Some(to) = branch_target(prg, from, n) {
-                    push(to, "branch");
-                }
-            }
-            Flow::Next | Flow::Jump(_) | Flow::Stop => {}
-        }
-        if let Some((cpu, call)) = call_target_6502(bytes) {
-            if let Some(to) = map.and_then(|m| m.offset_of(cpu)) {
-                push(to, if call { "jsr" } else { "jmp" });
-            }
-            if call {
-                push(next, "branch");
-            }
-        }
-    }
-    out
-}
-
-/// The span (`start..end`) to read as one routine around `at`: back through the instructions
-/// that ran and lead into it, then forward to the first place control can't pass, past any
-/// forward branch seen on the way. At most `max` bytes each way.
-pub fn sweep_bounds_6502(prg: &[u8], flags: &[u8], at: u64, max: u64) -> (u64, u64) {
-    let n = flags.len().min(prg.len()) as u64;
-    // Inside an instruction that ran: from its opcode.
-    let holder = (at.saturating_sub(2)..=at).rev().find(|o| ran(flags, *o) && *o + op_len_6502(prg[*o as usize]) as u64 > at);
-    let at = holder.unwrap_or(at);
-    let mut start = at;
-    'back: while at - start < max {
-        for c in start.saturating_sub(3)..start {
-            if ran(flags, c) && c + op_len_6502(prg[c as usize]) as u64 == start && falls_through(prg[c as usize]) {
-                start = c;
-                continue 'back;
-            }
-        }
-        break;
-    }
-    let limit = n.min(at + max);
-    let (mut off, mut far) = (start, at);
-    while off < limit {
-        let op = prg[off as usize];
-        let next = off + op_len_6502(op) as u64;
-        // An instruction known to run starts inside this one: the bytes here aren't code.
-        if next > limit || (off + 1..next).any(|o| ran(flags, o)) {
-            break;
-        }
-        if matches!(flow_6502(op, &[op, 0, 0], 0), Flow::Branch(_)) {
-            if let Some(to) = branch_target(prg, off, limit) {
-                far = far.max(to);
-            }
-        }
-        off = next;
-        if !falls_through(op) && off > far {
-            break;
-        }
-    }
-    (start, off.max(start + 1).min(n.max(start + 1)))
-}
-
-/// How many instructions run straight on from `start`, up to the first place control can't
-/// pass or code that already ran: the size of what an edge into `start` would open up.
-pub fn sweep_len_6502(prg: &[u8], flags: &[u8], start: u64) -> usize {
-    let n = flags.len().min(prg.len()) as u64;
-    let (mut off, mut count) = (start, 0);
-    while off < n && !ran(flags, off) {
-        let op = prg[off as usize];
-        count += 1;
-        off += op_len_6502(op) as u64;
-        if !falls_through(op) {
-            break;
-        }
-    }
-    count
 }
 
 /// The CPU address a `JSR abs` or `JMP abs` at the start of `bytes` targets.
@@ -918,31 +814,6 @@ mod tests {
     }
 
     #[test]
-    fn edges_go_from_covered_code_into_uncovered_code() {
-        // Ran: the LDA and BNE, so both of its sides are uncovered.
-        let e = covered_edges_6502(&SWEEP, &ran_at(&[0, 2]), None);
-        assert_eq!(e, vec![CodeEdge { from: 2, to: 4, kind: "branch" }, CodeEdge { from: 2, to: 6, kind: "branch" }]);
-        // A JSR that ran: its target needs the map; its return doesn't.
-        let f = ran_at(&[12]);
-        assert_eq!(covered_edges_6502(&SWEEP, &f, None), vec![CodeEdge { from: 12, to: 15, kind: "branch" }]);
-        let m = FixedPrg { size: 0x8000 };
-        assert_eq!(covered_edges_6502(&SWEEP, &f, Some(m)), vec![CodeEdge { from: 12, to: 8, kind: "jsr" }, CodeEdge { from: 12, to: 15, kind: "branch" }]);
-    }
-
-    #[test]
-    fn sweep_reads_one_routine() {
-        let f = ran_at(&[0, 2, 4, 6]);
-        // From the middle of covered code: back to the start, on past the branch to its RTS.
-        assert_eq!(sweep_bounds_6502(&SWEEP, &f, 4, 0x100), (0, 7));
-        // An operand of an instruction that ran resolves to that instruction.
-        assert_eq!(sweep_bounds_6502(&SWEEP, &f, 5, 0x100), (0, 7));
-        // Uncovered code stands on its own, ending at its RTS.
-        assert_eq!(sweep_bounds_6502(&SWEEP, &f, 8, 0x100), (8, 11));
-        assert_eq!(sweep_len_6502(&SWEEP, &f, 8), 2);
-        assert_eq!(sweep_len_6502(&SWEEP, &f, 4), 0);
-    }
-
-    #[test]
     fn blocks_split_at_branches() {
         // C000 LDA $10; CMP #5; BNE C00A; INC $11; RTS; C00A DEC $11; RTS
         let rom = [0xA5, 0x10, 0xC9, 0x05, 0xD0, 0x04, 0xE6, 0x11, 0x60, 0x00, 0xC6, 0x11, 0x60];
@@ -954,7 +825,7 @@ mod tests {
     }
 
     #[test]
-    fn sweep_skips_data() {
+    fn decoding_skips_data() {
         // C000 JSR $AC82; .word C009, C00B; C007 (two stray bytes) ; C009 INC $11; RTS; C00C DEC $11; RTS
         // Read as code, the table's $09 $C0 would be ORA #$C0 and swallow the real code's start.
         let rom = [0x20, 0x82, 0xAC, 0x09, 0xC0, 0x0C, 0xC0, 0x00, 0x00, 0xE6, 0x11, 0x60, 0xC6, 0x11, 0x60];
@@ -1057,5 +928,8 @@ OUTPUT(a.elf elf64-x86-64)
         assert_eq!(guess_format(Path::new("build/us.map")), "ld-map");
         assert_eq!(guess_format(Path::new("build/us.elf")), "elf");
         assert_eq!(guess_format(Path::new("funcs.csv")), "csv");
+        assert_eq!(known_format(Path::new("funcs.csv")), Some("csv"));
+        assert_eq!(known_format(Path::new("notes.txt")), None);
+        assert_eq!(guess_format(Path::new("notes.txt")), "csv");
     }
 }

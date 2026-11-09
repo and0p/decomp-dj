@@ -13,7 +13,7 @@ Query tools (where_runs, function, gaps, frontier, coverage_summary) read the lo
 Play tools work on sessions: open_session parks a core at a segment and frame, then step, play_text, screenshot and read_memory drive it; \
 everything a session plays is written to its draft, a segment that lives in .local/drafts/. \
 save_draft writes a draft to segments/, but needs allow = \"save\" (--allow save, or [mcp] allow in .local/local.toml); without it the tool isn't offered, and the person saves drafts in dj-gui. \
-With no symbol map, gaps lists uncovered PRG byte ranges, and function and frontier sweep linearly from covered code; bytes they call code may be data. \
+With no symbol map ([[symbols]] in config.toml), gaps lists uncovered PRG byte ranges (data included), and function and frontier say they need one: dj doesn't find functions itself. \
 Calls that run until a condition always take max_frames; reaching it is a normal result. \
 Segment text is the .segment body format: `<frame> P1 JOYPAD A 1` presses A, `... A 0` releases it (see docs/segments.md).";
 
@@ -435,19 +435,19 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "gaps",
-            description: "Functions with uncovered code. sort=size puts the most uncovered instructions first; sort=nearness puts first the code that a covered branch skips (the easiest to reach). only=never|partial|all. With no symbol map: uncovered PRG byte ranges (which include data), biggest first or, for nearness, those covered code leads into; only is ignored.",
+            description: "Functions with uncovered code. sort=size puts the most uncovered instructions first; sort=nearness puts first the code that a covered branch skips (the easiest to reach). only=never|partial|all. With no symbol map: uncovered PRG byte ranges (which include data), biggest first; sort and only are ignored.",
             schema: props(merge(json!({"sort": {"type": "string", "enum": ["size", "nearness"]}, "only": {"type": "string", "enum": ["all", "never", "partial"]}}), page()), &[]),
             allow: Query,
         },
         ToolDef {
             name: "function",
-            description: "One function: every basic block with whether it runs, the first segment and frame that runs it and where control goes next; its callers (JSR/JMP sites) and whether they run; the segments that enter it. With no symbol map, a linear sweep of the code around a PRG address, and only callers that run.",
+            description: "One function: every basic block with whether it runs, the first segment and frame that runs it and where control goes next; its callers (JSR/JMP sites) and whether they run; the segments that enter it. Needs a symbol map.",
             schema: props(json!({"addr": addr.clone(), "limit": {"type": "integer", "description": "Segments to list (default 10)"}}), &["addr"]),
             allow: Query,
         },
         ToolDef {
             name: "frontier",
-            description: "Where to start exploring toward uncovered code: covered branches (or calls) that lead into it, with the segments and frames that run that branch. Give an address in uncovered code or a function, or nothing for the largest frontiers in the ROM. Works with no symbol map too, from the covered instructions.",
+            description: "Where to start exploring toward uncovered code: covered branches (or calls) that lead into it, with the segments and frames that run that branch. Give an address in uncovered code or a function, or nothing for the largest frontiers in the ROM. Needs a symbol map.",
             schema: props(merge(json!({"addr": addr.clone()}), page()), &[]),
             allow: Query,
         },

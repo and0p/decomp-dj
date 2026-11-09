@@ -33,7 +33,11 @@ are left out of the totals.
 
 ## Symbol maps
 
-Coverage rolls up into basic blocks and functions when a symbol map is given:
+Coverage rolls up into basic blocks and functions when a symbol map is given. Bring your
+own: dj doesn't find functions itself (no static analysis beyond splitting the functions
+you name into instructions and blocks). Without a map, coverage counts the opcode bytes
+that ran, and the queries that need functions (`function`, `frontier`, `gaps` by function)
+say how to add one. These formats are read:
 
 - `ca65-dbg`: the `.dbg` file from the cc65 linker (`ld65 --dbgfile`). Each
   `.proc` scope becomes a function, and so does each top-level label in a
@@ -95,7 +99,7 @@ dj snapshot <dir> SEGMENT FRAME --out FILE        # the core state there, to sta
 - `report` reads the local database, not the files: it counts only clean segments whose current content has been played into it, and lists how many were dirty or not played yet. Drafts are left out, with what they would add once saved; so is what dirty segments ran the last time each played ("+N if cleaned"). Run `dj clean` first ([database.md](database.md)).
 - `--gaps` writes the gap list as CSV.
 - `xref` (also `where`) takes an address (`PRG:0x1234`, `0x1234` for a PRG offset, `$C123` for a CPU address, or a symbol, optionally `name+0x10`) and lists the segments where that code first runs, best first, with the frame and the nearest snapshot. `snapshot` then writes the core state at that frame, to start a trace from.
-- `gaps --sort nearness` puts first the functions whose uncovered code a covered branch skips: the cheapest to reach. `frontier` lists those branches with the segments and frames that run them; given an uncovered address, it lists the ways into its block. With no symbol map, on a NES ROM, they work from the instructions that ran instead ([mcp.md](mcp.md#without-a-symbol-map)).
+- `gaps --sort nearness` puts first the functions whose uncovered code a covered branch skips: the cheapest to reach. `frontier` lists those branches with the segments and frames that run them; given an uncovered address, it lists the ways into its block. Both need a symbol map; without one, on a NES ROM, `gaps` lists the uncovered PRG byte ranges instead, largest first, and `function` and `frontier` say how to add a map ([mcp.md](mcp.md#without-a-symbol-map)).
 - Every query takes `--json`, `--limit` and `--cursor`. An agent gets the same queries, and can trace and play too, through [`dj mcp`](mcp.md).
 
 ## In the GUI
@@ -139,6 +143,13 @@ filter by segment title when there are more than 20. The
 report reads the segments in the editor, saved or not, so deleting an unsaved segment takes
 its coverage with it. It is rebuilt after any edit, undo, save, finished pass or clean, which takes milliseconds at NES
 sizes. Coverage needs the local database to be on (Project > Use the local database).
+
+With no symbol map, the totals count opcode bytes and the function list is replaced by a
+short panel: the formats above, where to get each, an example `[[symbols]]` entry, and
+**Add symbol map…**. That picks a file, takes the format from its name (`.dbg`, `.mlb`,
+`.map`, `.elf`, `.csv`, `symbol_addrs.txt`; anything else is refused, so add the entry by
+hand), copies it into `symbols/` if it's outside the project, appends a `[[symbols]]`
+entry to config.toml (the rest of the file stays as written) and rebuilds the coverage.
 
 **Tree badges.** In the Segments tab, "+N" after a segment is how many instructions only
 that segment runs.

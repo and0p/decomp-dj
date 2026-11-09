@@ -178,7 +178,7 @@ pub fn check_connector(dir: &Path, q: &QueryArgs) -> Result<()> {
         println!("instructions checked (ran, inside symbol-map functions): {}", r.instructions_checked);
         println!("operand flags: {}", if r.operand_flags { "yes" } else { "none set: only opcodes checked, operand bytes come from instruction lengths" });
         let list = |label: &str, v: &[u64]| {
-            let shown: Vec<String> = v.iter().take(q.limit).map(|o| format!("PRG:{o:#x}")).collect();
+            let shown: Vec<String> = v.iter().take(q.limit).map(|o| format!("{o:#x}")).collect();
             let more = if v.len() > shown.len() { format!(" ... {} more", v.len() - shown.len()) } else { String::new() };
             println!("{label}: {}{}{more}", v.len(), if shown.is_empty() { String::new() } else { format!("  {}", shown.join(" ")) });
         };

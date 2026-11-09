@@ -2,7 +2,8 @@
 
 Patches the [libretro Mupen64Plus-Next core](https://github.com/libretro/mupen64plus-libretro-nx)
 (Nintendo 64) so it reports which code ran, and so its save states line up with frames,
-for decomp-dj. First version: not built or tried with dj yet
+for decomp-dj. First version: built and tried with WWF No Mercy (below); provenance of RAM
+code, ticks and the trace hook are still to come
 ([.agents/CONNECTOR_PLAN.md](../../.agents/CONNECTOR_PLAN.md), N64).
 
 - **Pinned upstream:** `15bada85906593376e8fd697f1b0b3af3a20f512` (2026-10-22).

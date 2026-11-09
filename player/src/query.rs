@@ -114,7 +114,7 @@ impl Project {
     }
 
     fn cpu_text(&self, offset: u64) -> Option<String> {
-        self.fixed_prg.and_then(|m| m.cpu_of(offset)).map(|c| format!("${c:04X}"))
+        self.fixed_prg.and_then(|m| m.cpu_of(offset)).map(|c| cpu_text(c))
     }
 
     /// Resolves an address: `PRG:0x1F3A` (a region offset), `0x1F3A` (a PRG offset),
@@ -167,7 +167,7 @@ impl Project {
             region: region.to_string(),
             offset,
             text: format!("{region}:{offset:#x}"),
-            cpu: f.and_then(|f| f.cpu_addr.map(|c| format!("${:04X}", c + (offset - f.offset)))).or_else(|| if region == "PRG" { self.cpu_text(offset) } else { None }),
+            cpu: f.and_then(|f| f.cpu_addr.map(|c| cpu_text(c + (offset - f.offset)))).or_else(|| if region == "PRG" { self.cpu_text(offset) } else { None }),
             symbol: f.map(|f| if offset == f.offset { f.name.clone() } else { format!("{}+{:#x}", f.name, offset - f.offset) }),
             note: None,
         }
@@ -293,7 +293,7 @@ impl Project {
 
     /// Uncovered code, one row per function that has any, ranked by `sort`.
     pub fn gaps(&mut self, sort: GapSort, only: GapFilter, limit: usize, cursor: usize) -> Result<Page<Gap>> {
-        let prg = self.need_prg()?;
+        self.need_prg()?;
         self.analyzed()?;
         let rep = self.report.as_ref().unwrap();
         let d = &rep.detail;
@@ -310,14 +310,14 @@ impl Project {
                 GapFilter::Partial if !entered => continue,
                 _ => {}
             }
-            let succ = analysis::block_successors_6502(f, &prg);
+            let succ = f.successors.clone();
             let uncovered: Vec<usize> = (0..f.blocks.len()).filter(|i| !d.hit(f.blocks[*i].offset)).collect();
             let near: HashSet<u64> = f.blocks.iter().zip(&succ).filter(|(b, _)| d.hit(b.offset)).flat_map(|(_, s)| s.iter().copied()).filter(|o| !d.hit(*o)).collect();
             let biggest = uncovered.iter().map(|i| &f.blocks[*i]).filter(|b| near.contains(&b.offset)).max_by_key(|b| b.instructions.len());
             rows.push(Gap {
                 function: f.func.name.clone(),
-                at: format!("PRG:{:#x}", f.func.offset),
-                cpu: f.func.cpu_addr.map(|c| format!("${c:04X}")),
+                at: format!("{}:{:#x}", f.func.region, f.func.offset),
+                cpu: f.func.cpu_addr.map(|c| cpu_text(c)),
                 instructions: f.instructions.len(),
                 uncovered_instructions: f.instructions.len() - covered,
                 blocks: f.blocks.len(),
@@ -325,8 +325,8 @@ impl Project {
                 entered,
                 skipped_by_covered_branch: near.len(),
                 best_frontier_block: biggest.map(|b| match b.cpu_addr {
-                    Some(c) => format!("${c:04X}"),
-                    None => format!("PRG:{:#x}", b.offset),
+                    Some(c) => cpu_text(c),
+                    None => format!("{}:{:#x}", f.func.region, b.offset),
                 }),
             });
         }
@@ -344,7 +344,7 @@ impl Project {
             bail!("this needs a symbol map. {ADD_SYMBOLS}");
         }
         let a = self.resolve(what)?;
-        let prg = self.need_prg()?;
+        self.need_prg()?;
         self.analyzed()?;
         let rep = self.report.as_ref().unwrap();
         let d = &rep.detail;
@@ -357,26 +357,26 @@ impl Project {
                 None => anyhow!("{} is not inside a function the symbol maps describe", a.text),
             })?;
         let firsts = self.first_frames(&f.func.region, f.func.offset, f.func.offset + f.func.size)?;
-        let succ = analysis::block_successors_6502(f, &prg);
+        let succ = f.successors.clone();
         let blocks = f
             .blocks
             .iter()
             .zip(&succ)
             .map(|(b, s)| BlockRow {
-                at: format!("PRG:{:#x}", b.offset),
-                cpu: b.cpu_addr.map(|c| format!("${c:04X}")),
+                at: format!("{}:{:#x}", f.func.region, b.offset),
+                cpu: b.cpu_addr.map(|c| cpu_text(c)),
                 instructions: b.instructions.len(),
                 covered: d.hit(b.offset),
                 first_run: firsts.get(&b.offset).map(|(id, fr)| FirstRun { segment: id.clone(), short: self.short(id), title: self.title(id), frame: *fr }),
-                next: s.iter().map(|o| f.blocks.iter().find(|b| b.offset == *o).and_then(|b| b.cpu_addr).map(|c| format!("${c:04X}")).unwrap_or_else(|| format!("PRG:{o:#x}"))).collect(),
+                next: s.iter().map(|o| f.blocks.iter().find(|b| b.offset == *o).and_then(|b| b.cpu_addr).map(|c| cpu_text(c)).unwrap_or_else(|| format!("{}:{o:#x}", f.func.region))).collect(),
             })
             .collect();
-        let callers = self.callers(f, &prg);
+        let callers = self.callers(f);
         let info = FunctionInfo {
             note: None,
             name: f.func.name.clone(),
-            at: format!("PRG:{:#x}", f.func.offset),
-            cpu: f.func.cpu_addr.map(|c| format!("${c:04X}")),
+            at: format!("{}:{:#x}", f.func.region, f.func.offset),
+            cpu: f.func.cpu_addr.map(|c| cpu_text(c)),
             size: f.func.size,
             instructions: f.instructions.len(),
             instructions_covered: f.instructions.iter().filter(|i| d.hit(i.offset)).count(),
@@ -415,24 +415,19 @@ impl Project {
     }
 
     /// JSR and JMP sites anywhere in the analyzed code that target `f`'s entry.
-    fn callers(&self, f: &AnalyzedFunction, prg: &[u8]) -> Vec<Caller> {
+    fn callers(&self, f: &AnalyzedFunction) -> Vec<Caller> {
         let Some(entry) = f.func.cpu_addr else { return vec![] };
         let d = &self.report.as_ref().unwrap().detail;
         let mut out = vec![];
         for g in &d.analyzed {
-            for i in &g.instructions {
-                let bytes = &prg[(i.offset as usize).min(prg.len())..((i.offset + i.len as u64) as usize).min(prg.len())];
-                if let Some((t, call)) = analysis::call_target_6502(bytes) {
-                    if t == entry {
-                        out.push(Caller {
-                            function: g.func.name.clone(),
-                            at: format!("PRG:{:#x}", i.offset),
-                            cpu: g.func.cpu_addr.map(|c| format!("${:04X}", c + (i.offset - g.func.offset))),
-                            kind: if call { "JSR" } else { "JMP" }.into(),
-                            covered: d.hit(i.offset),
-                        });
-                    }
-                }
+            for c in g.calls.iter().filter(|c| c.target == entry) {
+                out.push(Caller {
+                    function: g.func.name.clone(),
+                    at: format!("{}:{:#x}", g.func.region, c.at),
+                    cpu: g.func.cpu_addr.map(|a| cpu_text(a + (c.at - g.func.offset))),
+                    kind: c.kind.into(),
+                    covered: d.hit(c.at),
+                });
             }
         }
         out.sort_by_key(|c| !c.covered);
@@ -446,7 +441,7 @@ impl Project {
         if !self.has_symbols()? {
             bail!("this needs a symbol map. {ADD_SYMBOLS}");
         }
-        let prg = self.need_prg()?;
+        self.need_prg()?;
         let target = what.map(|w| self.resolve(w)).transpose()?;
         self.analyzed()?;
         let rep = self.report.as_ref().unwrap();
@@ -465,7 +460,7 @@ impl Project {
                     continue;
                 }
             }
-            let succ = analysis::block_successors_6502(f, &prg);
+            let succ = f.successors.clone();
             for (bi, (b, s)) in f.blocks.iter().zip(&succ).enumerate() {
                 if !d.hit(b.offset) {
                     continue;
@@ -492,25 +487,25 @@ impl Project {
             let f = &d.analyzed[*fi];
             let b = &f.blocks[*bi];
             let tb = f.blocks.iter().find(|x| x.offset == *to);
-            let cpu = |o: u64| f.func.cpu_addr.map(|c| format!("${:04X}", c + (o - f.func.offset)));
+            let cpu = |o: u64| f.func.cpu_addr.map(|c| cpu_text(c + (o - f.func.offset)));
             out.push(FrontierEdge {
                 kind: "branch".into(),
                 function: f.func.name.clone(),
-                uncovered: tb.and_then(|x| x.cpu_addr).map(|c| format!("${c:04X}")).unwrap_or_else(|| format!("PRG:{to:#x}")),
+                uncovered: tb.and_then(|x| x.cpu_addr).map(|c| cpu_text(c)).unwrap_or_else(|| format!("{}:{to:#x}", f.func.region)),
                 uncovered_instructions: *size,
-                from_block: b.cpu_addr.map(|c| format!("${c:04X}")).unwrap_or_else(|| format!("PRG:{:#x}", b.offset)),
-                branch: cpu(*branch).unwrap_or_else(|| format!("PRG:{branch:#x}")),
-                branch_at: format!("PRG:{branch:#x}"),
+                from_block: b.cpu_addr.map(|c| cpu_text(c)).unwrap_or_else(|| format!("{}:{:#x}", f.func.region, b.offset)),
+                branch: cpu(*branch).unwrap_or_else(|| format!("{}:{branch:#x}", f.func.region)),
+                branch_at: format!("{}:{branch:#x}", f.func.region),
                 reached_by: vec![],
             });
         }
         for fi in callers_of {
             let f = &d.analyzed[fi];
-            for c in self.callers(f, &prg).into_iter().filter(|c| c.covered) {
+            for c in self.callers(f).into_iter().filter(|c| c.covered) {
                 out.push(FrontierEdge {
                     kind: c.kind.to_lowercase(),
                     function: f.func.name.clone(),
-                    uncovered: f.func.cpu_addr.map(|c| format!("${c:04X}")).unwrap_or_else(|| format!("PRG:{:#x}", f.func.offset)),
+                    uncovered: f.func.cpu_addr.map(|c| cpu_text(c)).unwrap_or_else(|| format!("{}:{:#x}", f.func.region, f.func.offset)),
                     uncovered_instructions: f.instructions.len(),
                     from_block: c.function.clone(),
                     branch: c.cpu.clone().unwrap_or_else(|| c.at.clone()),
@@ -994,4 +989,9 @@ mod tests {
         assert!(p.function("dead", 5).err().unwrap().to_string().contains("wholly unreachable or data"));
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// A CPU address as the queries print it: `$C123` for 16-bit CPUs, `$80001234` for wider ones.
+fn cpu_text(a: u64) -> String {
+    if a > 0xFFFF { format!("${a:08X}") } else { format!("${a:04X}") }
 }

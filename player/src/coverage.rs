@@ -288,7 +288,20 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
     if !funcs.is_empty() && !decodable {
         notes.push(format!("no decoder for the {cpu} instruction set yet: {code} is counted in opcode bytes, without functions or blocks"));
     }
-    if !funcs.is_empty() && decodable {
+    if !funcs.is_empty() && cpu == "mips3" {
+        // N64 code runs from RAM; each function's words are read from the ROM file at its
+        // file_offset, which assumes the big-endian .z64 order.
+        let Some(rom) = rom else { bail!("symbols need the ROM to disassemble") };
+        if !rom.starts_with(&[0x80, 0x37, 0x12, 0x40]) {
+            notes.push("the ROM isn't in .z64 (big-endian) order, so its words can't be read as MIPS; convert it to .z64".into());
+        }
+        let these: Vec<_> = funcs.iter().map(|(f, _)| f.clone()).collect();
+        let missing = these.iter().filter(|f| f.file_offset.is_none()).count();
+        if missing > 0 {
+            notes.push(format!("{missing} functions say nowhere where their code lies in the ROM file (the csv's sixth column), so they aren't decoded"));
+        }
+        analyzed.extend(analysis::analyze_mips_with(&these, rom, &data));
+    } else if !funcs.is_empty() && decodable {
         let Some(rom) = rom else { bail!("symbols need the ROM to disassemble") };
         let mut headers: Vec<u64> = funcs.iter().map(|(_, h)| *h).collect();
         headers.sort();

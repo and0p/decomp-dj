@@ -3,7 +3,7 @@ name = "decomp-dj"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Plays libretro input-replay trees, checks state hashes, and records ROM code coverage"
+description = "Plays trees of libretro input segments, checks state hashes, and records ROM code coverage"
 
 [lib]
 name = "decomp_dj"

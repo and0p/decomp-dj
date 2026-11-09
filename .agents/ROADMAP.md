@@ -5,8 +5,10 @@ When one ships, its user-facing description moves into `docs/` and the entry her
 
 ## Known limits
 
-- Only one core has a connector (Mesen, NES).
-- Block and function rollup is 6502-only. Other CPUs get raw executed-byte counts until their disassembler is added.
+- Two cores have connectors: Mesen (NES) and Mupen64Plus-Next (N64, first version;
+  [connectors/mupen64plus/](../connectors/mupen64plus/README.md)).
+- Block and function rollup decodes the 6502 and MIPS (`mips3`). Other CPUs get raw opcode-byte counts until their decoder is added.
+- N64: code in an overlay is credited to whatever the symbol map names at its addresses, whichever overlay was loaded (see "N64 follow-ups").
 - Determinism has been checked on Linux x86_64 and macOS arm64; Windows still needs a run.
 - The GUI is a first prototype: button inputs only (no analog, lightgun or pointer rows yet), keyboard-only recording for one controller at a time, one core at a time. Tested on Linux and macOS; Windows not tried yet.
 - `exclude` in `[cache]` is recorded but not applied to snapshots yet.
@@ -359,6 +361,47 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   `name`); per-platform paths (`path.macos`, `path.linux`); `sha256` per platform, since
   builds differ; and an entry with no `path` here showing in the Compare menu as "not set
   up on this machine" instead of failing on pick. The same applies to `[core]`.
+- **N64 follow-ups** (the connector and the MIPS decoder are in; details and results in
+  [CONNECTOR_PLAN.md](CONNECTOR_PLAN.md), steps 3 and 4):
+  - **Playback speed.** dj plays the N64 core at about 52 fps against 103 fps for the bare
+    core. Likely cause: reading the connector's flags every frame for first hits, about
+    40 MB, 32 MB of it the `ROM` region, which has no flags yet. Hand out no `ROM` flags
+    until provenance sets them, and scan only what changed (the connector could keep a
+    per-page dirty bit, or the player could compare only pages a frame touched).
+  - **Provenance and overlays.** Overlays share addresses, so code that ran there is
+    credited to whatever the map names. `dj_origin` (which ROM offset a RAM word was DMA'd
+    from), flags on the `ROM` region, and a way for symbol maps to say which overlay an
+    address belongs to (splat's segment list). Code the game decompresses or relocates
+    can't be traced this way.
+  - **A fuller symbol map and a real match.** Only 237 main-segment functions are named, so
+    each runs on to the next name; the recomp's `syms/dump.toml` (1,874 function starts)
+    would give real bounds. Record a segment that plays into a match so `ovl_e` is the
+    overlay that ran.
+  - **Rebuild the core for `dj_forced_options`**, so `[core.options]` records the pure
+    interpreter and the other forced options instead of what the options said.
+  - **`[WRITE]` on the N64 baseline is byte-swapped.** The core keeps RDRAM in host-endian
+    32-bit words, so `[WRITE] RAM 0x10 01 02 03 04` lands as `04 03 02 01` on a
+    little-endian host (from reading the code: `retro_get_memory_data(SYSTEM_RAM)` returns
+    `g_dev.rdram.dram`, a `uint32_t` array; not tried yet). The connector should say how a
+    region's bytes are ordered (or hand out a write function), and the player should swap.
+- **Writing RAM in a decomp with another layout.** `[WRITE]` lines reach a comparison core
+  through `dj_write(baseline, region, address, bytes, len, reason)` (0 done, 1 ignored on
+  purpose, else an error); without it, a `dj_sync` core is synced again after the frame.
+  The port decides what a write means, so a decomp that keeps the original layout (the
+  Tetris decomp keeps the NES's 2 KB of RAM 1:1) copies the bytes, and one with its own
+  layout can already translate a baseline address to its own variable inside `dj_write`.
+  That puts the translation in each port's code. Options to share it:
+  - **Leave it in `dj_write`** (now): fine while ports are few and hand-written.
+  - **An address map** in the project (baseline address range → decomp symbol, with type
+    and byte order), read by the player, which calls a new `dj_write_symbol(name, offset,
+    bytes)`. The same map would serve parity's RAM compare for ports with another layout
+    (see "Emulator vs decomp mismatches").
+  - **`[WRITE]` by symbol name** (`[WRITE] RAM g_match_clock 00 10`): resolved to an address
+    through the baseline's symbol map (`[[data]]` entries) and passed to the decomp by name,
+    so a segment says what it pokes rather than where. Needs a format addition (older tools
+    reject unknown forms).
+  Lean: keep `dj_write` as the contract and add the name: `[WRITE]` by symbol name, with
+  the name passed alongside the address so a port can use either.
 - **Later:** the comparison core in the CLI and MCP (`dj parity`), its coverage, sound
   (an A|B toggle), and more than one comparison core at a time.
 - **Emulator vs decomp mismatches** (decided: stop at the first failing frame, no resync;

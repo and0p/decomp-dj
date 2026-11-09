@@ -3,7 +3,7 @@ name = "dj-gui"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Desktop viewer and editor for decomp-dj replay collections"
+description = "Desktop viewer and editor for decomp-dj projects"
 
 [[bin]]
 name = "dj-gui"

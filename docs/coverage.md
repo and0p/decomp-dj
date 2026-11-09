@@ -44,7 +44,10 @@ say how to add one. These formats are read:
   segment whose name contains `CODE`, up to the next label. `rom_header`
   (default 16, the iNES header) is subtracted from file offsets to get PRG
   offsets.
-- `csv`: one function per line, `name,region,offset,size[,cpu_addr]` (numbers in hex).
+- `csv`: one function per line, `name,region,offset,size[,cpu_addr[,file]]` (numbers in
+  hex). `file` is where the function's code lies in the ROM file, for code that runs from a
+  copy in RAM (N64: region `RDRAM`, offset = VRAM - 0x80000000). `scripts/func_toml_to_csv.py`
+  makes one from `[[func]]` TOML symbol files and the decomp's segment layout.
 - `splat`: splat's `symbol_addrs.txt`, the symbol list N64, PS1 and GameCube decomps
   edit as they name functions: `name = 0x80001234; // type:func rom:0x1234 size:0x40`.
   Every entry with a `rom:` offset counts, unless its `type:` is something other
@@ -71,13 +74,20 @@ Where each map's offsets land in the ROM is set per entry with `rom_header`, `re
 A project can list several symbol maps. Where two describe the same bytes, the first one
 listed wins, so a linker map can come first and a hand-edited `symbol_addrs.txt` can fill
 in what isn't matched yet. `dj init --symbols FILE` picks the format from the file's
-name. Only `PRG` functions are rolled up for now, with the 6502 sweep below; other
-regions and CPUs come with their connectors.
+name. Functions are rolled up in the connector's code region (`PRG` on the NES, `RDRAM` on
+the N64), by the decoder for its instruction set: 6502 and MIPS (`mips3`) so far.
 
 For 6502 code the player splits each function into instructions and basic
 blocks by a linear sweep (a block ends at a branch, jump, return or `BRK`, and
 starts at a branch or jump target). A block counts as covered when its first
 instruction ran. Data placed inside a function's range can confuse the sweep.
+
+For MIPS the words are read from the ROM file at each function's `file` offset (a `.z64`
+ROM, big-endian). A block ends after the delay slot of a branch or jump; `jr $ra` and `eret`
+return, other `jr`s are indirect (jump tables); calls (`jal`, `jalr`, `bal` and the other
+linking branches) don't end a block, and `jal` targets feed the callers list. On the N64,
+overlays share addresses: code that ran at an overlay's addresses is credited to whatever
+the symbol map names there, whichever overlay was loaded ([.agents/CONNECTOR_PLAN.md](../.agents/CONNECTOR_PLAN.md)).
 
 ## Gap lists
 
@@ -156,5 +166,6 @@ that segment runs.
 
 ## Limits
 
-- Only one core has a connector (Mesen, NES).
-- Block and function rollup is 6502-only, and only for `PRG`. Other CPUs get raw executed-byte counts until their disassembler is added.
+- Two cores have connectors: Mesen (NES) and Mupen64Plus-Next (N64, first version).
+- Block and function rollup decodes the 6502 and MIPS (`mips3`), in the connector's code region (`PRG`, `RDRAM`). Other CPUs get raw opcode-byte counts until their decoder is added.
+- N64: code that ran at an overlay's addresses is credited to whatever the symbol map names there, whichever overlay was loaded.

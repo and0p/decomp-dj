@@ -128,7 +128,7 @@ And in `.local/local.toml`:
 ```toml
 [[compare]]
 name = "decomp (3D)"
-path = "/Users/andrew/Source/emu_coverage/examples/tetris/build/decomp/tetris_decomp_libretro.dylib"
+path = "build/decomp/tetris_decomp_libretro"   # from the project folder; the suffix is added
 ```
 
 ## Status

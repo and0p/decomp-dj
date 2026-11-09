@@ -15,6 +15,9 @@ pub struct Function {
     pub size: u64,
     /// Address the CPU sees for `offset`, when known (needed to resolve branch targets).
     pub cpu_addr: Option<u64>,
+    /// Where the function's bytes lie in the ROM file, for code that runs from a copy in RAM
+    /// (N64): the decoder reads them there. None: they're the region's own bytes.
+    pub file_offset: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -38,6 +41,20 @@ pub struct AnalyzedFunction {
     pub func: Function,
     pub instructions: Vec<Instruction>,
     pub blocks: Vec<Block>,
+    /// For each block, the offsets of the blocks control can go to next (inside the
+    /// function), as the decoder for the function's instruction set reads them.
+    pub successors: Vec<Vec<u64>>,
+    /// Direct calls and jumps out of the function's instructions, for callers lists.
+    pub calls: Vec<CallSite>,
+}
+
+/// A direct call or jump: the instruction's region offset, the CPU address it goes to, and
+/// how the instruction set spells it ("JSR", "JAL", ...).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallSite {
+    pub at: u64,
+    pub target: u64,
+    pub kind: &'static str,
 }
 
 // ---- symbol maps -------------------------------------------------------------
@@ -133,7 +150,7 @@ pub fn load_ca65_dbg(path: &Path, rom_header: u64) -> Result<Vec<Function>> {
             continue;
         }
         let Some(off) = to_offset(seg, sym.val) else { continue };
-        funcs.push(Function { name: full_name(*sid), region: "PRG".into(), offset: off, size: sc.size, cpu_addr: Some(sym.val) });
+        funcs.push(Function { name: full_name(*sid), region: "PRG".into(), offset: off, size: sc.size, cpu_addr: Some(sym.val), file_offset: None });
         covered.push((off, off + sc.size));
     }
     // Top-level labels in code segments outside any proc.
@@ -167,7 +184,7 @@ pub fn load_ca65_dbg(path: &Path, rom_header: u64) -> Result<Vec<Function>> {
         let seg_end = to_offset(seg, seg.start).unwrap() + seg.size;
         let next = starts.range(off + 1..).next().copied().unwrap_or(seg_end).min(seg_end);
         if next > *off {
-            funcs.push(Function { name: name.clone(), region: "PRG".into(), offset: *off, size: next - off, cpu_addr: Some(*cpu) });
+            funcs.push(Function { name: name.clone(), region: "PRG".into(), offset: *off, size: next - off, cpu_addr: Some(*cpu), file_offset: None });
         }
     }
     funcs.sort_by_key(|f| f.offset);
@@ -228,7 +245,8 @@ pub fn load_csv(path: &Path) -> Result<Vec<Function>> {
             region: f[1].to_ascii_uppercase(),
             offset: hex(f[2])?,
             size: hex(f[3])?,
-            cpu_addr: f.get(4).map(|s| hex(s)).transpose()?,
+            cpu_addr: f.get(4).filter(|s| !s.is_empty()).map(|s| hex(s)).transpose()?,
+            file_offset: f.get(5).filter(|s| !s.is_empty()).map(|s| hex(s)).transpose()?,
         });
     }
     out.sort_by_key(|f| f.offset);
@@ -391,7 +409,7 @@ pub fn load_splat(path: &Path, rom_header: u64, region: &str) -> Result<Vec<Func
         }
         let (Some(rom), false) = (rom, skip) else { continue };
         let Some(offset) = rom.checked_sub(rom_header) else { continue };
-        out.push(Function { name: name.to_string(), region: region.to_string(), offset, size, cpu_addr: Some(vram) });
+        out.push(Function { name: name.to_string(), region: region.to_string(), offset, size, cpu_addr: Some(vram), file_offset: None });
     }
     Ok(finish(out, |_| None))
 }
@@ -412,7 +430,7 @@ pub fn load_mesen_mlb(path: &Path, region: &str) -> Result<Vec<Function>> {
             continue;
         }
         let Some(offset) = hex_u64(addr) else { continue };
-        out.push(Function { name: name.to_string(), region: region.to_string(), offset, size: 0, cpu_addr: None });
+        out.push(Function { name: name.to_string(), region: region.to_string(), offset, size: 0, cpu_addr: None, file_offset: None });
     }
     Ok(finish(out, |_| None))
 }
@@ -470,7 +488,7 @@ pub fn load_ld_map(path: &Path, rom_header: u64, region: &str) -> Result<Vec<Fun
                 let (Some(addr), Some((true, _, end)), Some((vma, lma))) = (hex_u64(words[0]), in_sec, out_sec) else { continue };
                 let Some(offset) = (addr.wrapping_sub(vma).wrapping_add(lma)).checked_sub(rom_header) else { continue };
                 let end_off = end.wrapping_sub(vma).wrapping_add(lma).saturating_sub(rom_header);
-                syms.push((Function { name: words[1].to_string(), region: region.to_string(), offset, size: 0, cpu_addr: Some(addr) }, end_off));
+                syms.push((Function { name: words[1].to_string(), region: region.to_string(), offset, size: 0, cpu_addr: Some(addr), file_offset: None }, end_off));
             }
         }
     }
@@ -503,7 +521,7 @@ pub fn load_elf(path: &Path, rom_header: u64, region: &str) -> Result<Vec<Functi
             let addr = sym.address();
             let load = segs.iter().find(|(v, _, n)| addr >= *v && addr < v + n).map_or(addr, |(v, p, _)| addr - v + p);
             let Some(offset) = load.checked_sub(rom_header) else { continue };
-            out.push(Function { name: name.to_string(), region: region.to_string(), offset, size: sym.size(), cpu_addr: Some(addr) });
+            out.push(Function { name: name.to_string(), region: region.to_string(), offset, size: sym.size(), cpu_addr: Some(addr), file_offset: None });
         }
         Ok(finish(out, |_| None))
     }
@@ -644,7 +662,163 @@ pub fn analyze_6502_with(funcs: &[Function], rom: &[u8], data: &[(u64, u64)]) ->
             }
             blocks.last_mut().unwrap().instructions.push(i.offset);
         }
-        out.push(AnalyzedFunction { func: f.clone(), instructions: insns, blocks });
+        let calls = insns
+            .iter()
+            .filter_map(|i| {
+                let bytes = &rom[i.offset as usize..((i.offset + i.len as u64) as usize).min(rom.len())];
+                call_target_6502(bytes).map(|(t, call)| CallSite { at: i.offset, target: t, kind: if call { "JSR" } else { "JMP" } })
+            })
+            .collect();
+        let mut a = AnalyzedFunction { func: f.clone(), instructions: insns, blocks, successors: vec![], calls };
+        a.successors = block_successors_6502(&a, rom);
+        out.push(a);
+    }
+    out
+}
+
+// ---- MIPS (the N64's VR4300, "mips3") ----------------------------------------------------
+
+/// How a MIPS instruction leaves the straight line. Branches and jumps have a delay slot:
+/// the next instruction runs before control moves (for "likely" branches, only when taken).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MipsFlow {
+    Next,
+    /// A call (JAL, JALR, BAL, BLTZAL ...): control comes back after the delay slot.
+    Call(Option<u64>),
+    /// A conditional branch to the CPU address.
+    Branch(u64),
+    /// An unconditional jump: J, B (BEQ $0,$0), or JR other than `jr $ra` (None: indirect).
+    Jump(Option<u64>),
+    /// JR $ra, ERET.
+    Return,
+    /// BREAK.
+    Stop,
+}
+
+/// Reads one instruction word at CPU address `pc`.
+fn flow_mips(w: u32, pc: u64) -> MipsFlow {
+    let op = w >> 26;
+    let (rs, rt, funct) = ((w >> 21) & 31, (w >> 16) & 31, w & 63);
+    let branch = pc.wrapping_add(4).wrapping_add(((w as u16 as i16 as i64) << 2) as u64) & 0xFFFF_FFFF;
+    let region = (pc.wrapping_add(4) & 0xF000_0000) | (((w & 0x03FF_FFFF) as u64) << 2);
+    match op {
+        0 => match funct {
+            0x08 if rs == 31 => MipsFlow::Return,
+            0x08 => MipsFlow::Jump(None),
+            0x09 => MipsFlow::Call(None),
+            0x0D => MipsFlow::Stop,
+            _ => MipsFlow::Next,
+        },
+        // REGIMM: BLTZ, BGEZ, their likely forms, and the linking ones (BAL is BGEZAL $0).
+        1 => match rt {
+            0x00..=0x03 => MipsFlow::Branch(branch),
+            0x10..=0x13 => MipsFlow::Call(Some(branch)),
+            _ => MipsFlow::Next,
+        },
+        2 => MipsFlow::Jump(Some(region)),
+        3 => MipsFlow::Call(Some(region)),
+        // BEQ $0,$0 (and BEQL) is an unconditional branch.
+        4 | 0x14 if rs == 0 && rt == 0 => MipsFlow::Jump(Some(branch)),
+        4..=7 | 0x14..=0x17 => MipsFlow::Branch(branch),
+        0x10 if rs == 0x10 && funct == 0x18 => MipsFlow::Return,
+        // BC1F, BC1T and their likely forms.
+        0x11 if rs == 8 => MipsFlow::Branch(branch),
+        _ => MipsFlow::Next,
+    }
+}
+
+/// Splits each function into instructions and basic blocks, reading its words from `rom`
+/// (the ROM file, big-endian .z64 order) at the function's `file_offset`. A block ends after
+/// the delay slot of a branch or jump; branch targets inside the function start blocks.
+/// Functions without a `file_offset` are skipped (no bytes to read). `data` ranges (region
+/// offsets, inclusive) aren't read as code.
+pub fn analyze_mips_with(funcs: &[Function], rom: &[u8], data: &[(u64, u64)]) -> Vec<AnalyzedFunction> {
+    let mut out = vec![];
+    for f in funcs {
+        let Some(file) = f.file_offset else { continue };
+        let word_at = |o: u64| -> Option<u32> {
+            let p = (file + (o - f.offset)) as usize;
+            rom.get(p..p + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+        };
+        let cpu_of = |o: u64| f.cpu_addr.map(|c| c + (o - f.offset));
+        let off_of_cpu = |cpu: u64| -> Option<u64> {
+            let base = f.cpu_addr?;
+            (cpu >= base && cpu < base + f.size).then(|| f.offset + (cpu - base))
+        };
+        let in_data = |o: u64| data.iter().any(|(a, b)| o + 3 >= *a && o <= *b);
+        let end = f.offset + f.size;
+        let mut insns = vec![];
+        let mut flows = vec![];
+        let mut leaders: BTreeSet<u64> = BTreeSet::new();
+        leaders.insert(f.offset);
+        let mut off = f.offset;
+        while off + 4 <= end {
+            if in_data(off) {
+                off += 4;
+                leaders.insert(off);
+                continue;
+            }
+            let Some(w) = word_at(off) else { break };
+            let flow = flow_mips(w, cpu_of(off).unwrap_or(0));
+            insns.push(Instruction { offset: off, len: 4 });
+            flows.push(flow);
+            let after_slot = off + 8;
+            match flow {
+                MipsFlow::Next | MipsFlow::Call(_) => {}
+                MipsFlow::Branch(t) => {
+                    leaders.extend(off_of_cpu(t));
+                    leaders.insert(after_slot);
+                }
+                MipsFlow::Jump(t) => {
+                    leaders.extend(t.and_then(off_of_cpu));
+                    leaders.insert(after_slot);
+                }
+                MipsFlow::Return | MipsFlow::Stop => {
+                    leaders.insert(after_slot);
+                }
+            }
+            off += 4;
+        }
+        let mut blocks: Vec<Block> = vec![];
+        for i in &insns {
+            if leaders.contains(&i.offset) || blocks.is_empty() {
+                blocks.push(Block { offset: i.offset, instructions: vec![], cpu_addr: cpu_of(i.offset) });
+            }
+            blocks.last_mut().unwrap().instructions.push(i.offset);
+        }
+        let flow_at = |o: u64| insns.iter().position(|i| i.offset == o).map(|k| flows[k]);
+        let successors = blocks
+            .iter()
+            .map(|b| {
+                let last = *b.instructions.last().unwrap();
+                // The block's control instruction is the last one, or the one before it when
+                // the last is its delay slot.
+                let (ctl, flow) = match b.instructions.len() {
+                    n if n >= 2 && !matches!(flow_at(b.instructions[n - 2]), Some(MipsFlow::Next | MipsFlow::Call(_))) => (b.instructions[n - 2], flow_at(b.instructions[n - 2]).unwrap()),
+                    _ => (last, flow_at(last).unwrap_or(MipsFlow::Next)),
+                };
+                let next = ctl + 8;
+                let mut out = match flow {
+                    MipsFlow::Next | MipsFlow::Call(_) => vec![last + 4],
+                    MipsFlow::Branch(t) => [Some(next), off_of_cpu(t)].into_iter().flatten().collect(),
+                    MipsFlow::Jump(t) => t.and_then(off_of_cpu).into_iter().collect(),
+                    MipsFlow::Return | MipsFlow::Stop => vec![],
+                };
+                out.retain(|o| *o < end && blocks.iter().any(|b| b.offset == *o));
+                out.dedup();
+                out
+            })
+            .collect();
+        let calls = insns
+            .iter()
+            .zip(&flows)
+            .filter_map(|(i, fl)| match fl {
+                MipsFlow::Call(Some(t)) => Some(CallSite { at: i.offset, target: *t, kind: "JAL" }),
+                MipsFlow::Jump(Some(t)) if off_of_cpu(*t).is_none() => Some(CallSite { at: i.offset, target: *t, kind: "J" }),
+                _ => None,
+            })
+            .collect();
+        out.push(AnalyzedFunction { func: f.clone(), instructions: insns, blocks, successors, calls });
     }
     out
 }
@@ -740,7 +914,7 @@ pub struct RegionFacts {
 
 /// Instruction sets the player can decode (split into instructions and blocks).
 pub fn has_decoder(cpu: &str) -> bool {
-    cpu == "6502"
+    matches!(cpu, "6502" | "mips3")
 }
 
 /// The region coverage rolls up into, the first of: a region from the ROM file whose
@@ -945,6 +1119,54 @@ mod tests {
     }
 
     #[test]
+    fn mips_flow_kinds() {
+        let pc = 0x8000_1004;
+        assert_eq!(flow_mips(0x27BD_FFE8, pc), MipsFlow::Next); // addiu $sp,$sp,-0x18
+        assert_eq!(flow_mips(0x1080_0003, pc), MipsFlow::Branch(0x8000_1014)); // beq $a0,$0,+3
+        assert_eq!(flow_mips(0x5080_FFFF, pc), MipsFlow::Branch(0x8000_1004)); // beql $a0,$0,-1
+        assert_eq!(flow_mips(0x1000_0002, pc), MipsFlow::Jump(Some(0x8000_1010))); // b +2
+        assert_eq!(flow_mips(0x0411_0004, pc), MipsFlow::Call(Some(0x8000_1018))); // bal +4
+        assert_eq!(flow_mips(0x0C00_0800, pc), MipsFlow::Call(Some(0x8000_2000))); // jal 0x80002000
+        assert_eq!(flow_mips(0x0800_0400, pc), MipsFlow::Jump(Some(0x8000_1000))); // j 0x80001000
+        assert_eq!(flow_mips(0x03E0_0008, pc), MipsFlow::Return); // jr $ra
+        assert_eq!(flow_mips(0x0100_0008, pc), MipsFlow::Jump(None)); // jr $t0 (a jump table)
+        assert_eq!(flow_mips(0x0100_F809, pc), MipsFlow::Call(None)); // jalr $t0
+        assert_eq!(flow_mips(0x4200_0018, pc), MipsFlow::Return); // eret
+        assert_eq!(flow_mips(0x4501_0003, pc), MipsFlow::Branch(0x8000_1014)); // bc1t +3
+        assert_eq!(flow_mips(0x0000_000D, pc), MipsFlow::Stop); // break
+    }
+
+    #[test]
+    fn mips_blocks_end_after_the_delay_slot() {
+        // 80001000 addiu $sp,-0x18; beq $a0,$0,+3; nop; jal 0x80002000; nop; jr $ra; addiu $sp,0x18
+        let words: [u32; 7] = [0x27BD_FFE8, 0x1080_0003, 0, 0x0C00_0800, 0, 0x03E0_0008, 0x27BD_0018];
+        let mut rom = vec![0xFFu8; 0x10];
+        rom.extend(words.iter().flat_map(|w| w.to_be_bytes()));
+        let f = Function { name: "f".into(), region: "RDRAM".into(), offset: 0x1000, size: 28, cpu_addr: Some(0x8000_1000), file_offset: Some(0x10) };
+        let a = &analyze_mips_with(std::slice::from_ref(&f), &rom, &[])[0];
+        assert_eq!(a.instructions.len(), 7);
+        let blocks: Vec<(u64, usize)> = a.blocks.iter().map(|b| (b.offset, b.instructions.len())).collect();
+        // The branch and its slot; the call, its slot (calls don't end blocks); the return.
+        assert_eq!(blocks, vec![(0x1000, 3), (0x100C, 2), (0x1014, 2)]);
+        assert_eq!(a.successors, vec![vec![0x100C, 0x1014], vec![0x1014], vec![]]);
+        assert_eq!(a.calls, vec![CallSite { at: 0x100C, target: 0x8000_2000, kind: "JAL" }]);
+        // Without a file offset there are no bytes to read; data isn't decoded.
+        assert!(analyze_mips_with(&[Function { file_offset: None, ..f.clone() }], &rom, &[]).is_empty());
+        let a = &analyze_mips_with(std::slice::from_ref(&f), &rom, &[(0x1008, 0x100B)])[0];
+        assert_eq!(a.instructions.len(), 6);
+    }
+
+    #[test]
+    fn csv_with_a_file_offset() {
+        let p = std::env::temp_dir().join(format!("dj-csv-{}.csv", std::process::id()));
+        std::fs::write(&p, "name,region,offset,size,cpu,file\nf,RDRAM,1000,1C,80001000,10\ng,PRG,0,4,8000\n").unwrap();
+        let fs = load_csv(&p).unwrap();
+        assert_eq!((fs[1].region.as_str(), fs[1].file_offset, fs[1].cpu_addr), ("RDRAM", Some(0x10), Some(0x8000_1000)));
+        assert_eq!(fs[0].file_offset, None);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
     fn code_region_from_connector_facts() {
         // Nothing recorded: the NES default.
         assert_eq!(code_region(&[]), "PRG");
@@ -977,7 +1199,7 @@ mod tests {
     fn check_flags_finds_disagreements() {
         // C000 LDA #1; BNE +2; INC $10; RTS.
         let rom = [0xA9, 0x01, 0xD0, 0x02, 0xE6, 0x10, 0x60];
-        let f = Function { name: "f".into(), region: "PRG".into(), offset: 0, size: rom.len() as u64, cpu_addr: Some(0xC000) };
+        let f = Function { name: "f".into(), region: "PRG".into(), offset: 0, size: rom.len() as u64, cpu_addr: Some(0xC000), file_offset: None };
         let a = analyze_6502(&[f], &rom);
         // LDA and BNE ran, flagged as the decoder reads them.
         let mut flags = vec![0x01, 0x02, 0x01, 0x02, 0, 0, 0];
@@ -1004,7 +1226,7 @@ mod tests {
         // C000 LDA $10; CMP #5; BNE C00A; INC $11; RTS; C00A DEC $11; RTS
         let rom = [0xA5, 0x10, 0xC9, 0x05, 0xD0, 0x04, 0xE6, 0x11, 0x60, 0x00, 0xC6, 0x11, 0x60];
         // Note: byte 9 (0x00) is a 1-byte BRK placeholder so the target lands at C00A.
-        let f = Function { name: "f".into(), region: "PRG".into(), offset: 0, size: rom.len() as u64, cpu_addr: Some(0xC000) };
+        let f = Function { name: "f".into(), region: "PRG".into(), offset: 0, size: rom.len() as u64, cpu_addr: Some(0xC000), file_offset: None };
         let a = &analyze_6502(&[f], &rom)[0];
         let starts: Vec<u64> = a.blocks.iter().map(|b| b.offset).collect();
         assert_eq!(starts, vec![0, 6, 9, 10]);
@@ -1015,7 +1237,7 @@ mod tests {
         // C000 JSR $AC82; .word C009, C00B; C007 (two stray bytes) ; C009 INC $11; RTS; C00C DEC $11; RTS
         // Read as code, the table's $09 $C0 would be ORA #$C0 and swallow the real code's start.
         let rom = [0x20, 0x82, 0xAC, 0x09, 0xC0, 0x0C, 0xC0, 0x00, 0x00, 0xE6, 0x11, 0x60, 0xC6, 0x11, 0x60];
-        let f = Function { name: "f".into(), region: "PRG".into(), offset: 0, size: rom.len() as u64, cpu_addr: Some(0xC000) };
+        let f = Function { name: "f".into(), region: "PRG".into(), offset: 0, size: rom.len() as u64, cpu_addr: Some(0xC000), file_offset: None };
         let a = &analyze_6502_with(std::slice::from_ref(&f), &rom, &[(3, 8)])[0];
         let insns: Vec<u64> = a.instructions.iter().map(|i| i.offset).collect();
         assert_eq!(insns, vec![0, 9, 11, 12, 14]);

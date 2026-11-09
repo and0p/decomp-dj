@@ -12,7 +12,7 @@
  * machine.
  *
  * For decomp-dj it also exports the comparison-core functions (see
- * docs/connectors.md in emu_coverage): dj_sync takes over the game from the
+ * docs/connectors.md in decomp-dj): dj_sync takes over the game from the
  * baseline's RAM (tetris_load_nes_snapshot), dj_write follows writes to
  * the baseline's RAM, dj_check_parity compares the two every frame
  * (tetris_check_nes_parity) and dj_run stops playback where the decomp can't

@@ -1,7 +1,7 @@
-//! dj-gui: browse a replay collection, play replays with live video, and
+//! dj-gui: browse a project's segment tree, play segments with live video, and
 //! edit button inputs on a piano roll.
 //!
-//! Layout: menu bar on top, replay tree on the left, emulator preview in the
+//! Layout: menu bar on top, segment tree on the left, emulator preview in the
 //! middle, piano roll along the bottom, status line at the very bottom.
 
 use anyhow::{anyhow, Result};

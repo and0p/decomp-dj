@@ -2,9 +2,9 @@
 
 A coverage connector is a small patch to a libretro core that reports which ROM bytes ran.
 Without one, a core still plays segments and checks hashes, but records no coverage and
-counts no [ticks](playback.md#logic-ticks-draft). The connector in use is for Mesen (NES):
-[connectors/mesen/](../connectors/mesen/README.md). A first one for Mupen64Plus-Next (N64),
-not tried with dj yet, is in [connectors/mupen64plus/](../connectors/mupen64plus/README.md).
+counts no [ticks](playback.md#logic-ticks-draft). There are connectors for Mesen (NES),
+[connectors/mesen/](../connectors/mesen/README.md), and, in a first version, Mupen64Plus-Next
+(N64), [connectors/mupen64plus/](../connectors/mupen64plus/README.md).
 
 ## What a connector reports
 
@@ -184,5 +184,5 @@ error or a failed `dj_run` stops playback at that frame ([gui.md](gui.md#compari
 5. Pin the upstream commit and ship a `build.sh` and the patch under `connectors/<core>/`, like Mesen's.
 
 Rolling coverage up into functions and blocks also needs a decoder for the region's `cpu`.
-Only the 6502 has one so far ([coverage.md](coverage.md#limits)); for any other, the report
-counts opcode bytes and says no decoder exists yet.
+The 6502 and MIPS (`mips3`) have one so far ([coverage.md](coverage.md#symbol-maps)); for any
+other, the report counts opcode bytes and says no decoder exists yet.

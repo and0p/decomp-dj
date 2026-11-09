@@ -852,9 +852,32 @@ Deferred (2026-11-09, "address later"):
    connector on the cached interpreter (forced by the patch), an `RDRAM` region, symbol maps
    by VRAM (splat), the MIPS decoder, and the checks: hashes with and without the patch, and
    slowdown.
-4. N64 attribution to ROM: `dj_origin` from PI DMA provenance, overlays, and how symbol maps
+4. **The MIPS decoder: done 2026-11-09.** `analysis::analyze_mips_with` (`mips3`): 4-byte
+   words read from the ROM file at each function's `file` offset (new optional sixth csv
+   column, `Function::file_offset`); a block ends after the delay slot of a branch or jump;
+   branch targets start blocks; `jr $ra` and `eret` return, other `jr`s are indirect; calls
+   (`jal`, `jalr`, `bal`, linking branches) don't end blocks. Both decoders now record each
+   block's successors and the call sites on `AnalyzedFunction`, so `gaps`, `function`,
+   `frontier` and callers work for any instruction set; query output labels addresses with
+   the function's region and prints 32-bit CPU addresses in full. `scripts/func_toml_to_csv.py`
+   turns `[[func]]` TOML symbol files plus the segment layout into that csv.
+   No Mercy scratch project (main `80000450-80040380` from ROM `0x1050`, ovl_e
+   `800D9960-80144670` from `0x144BE0`; 1,136 functions from aki_n64_decomp): a 300-frame
+   boot segment covers 28,236 instructions (all but 138 of the opcode words that ran, the
+   rest outside named code), 3,144 blocks, 241 functions; a further 3,600 idle frames reach
+   44,905 / 174,639 instructions and 353 functions. `dj check-connector`: no disagreements
+   over 44,905 instructions. The idle run never reaches a match (`rng_match` doesn't run),
+   so the 80 "entered" ovl_e functions are menu overlays (ovl_a/ovl_c) at the same
+   addresses: the overlay merging deferred above. Main-segment functions run to the next
+   named symbol (237 of them named), so they take in unnamed neighbours (`audio_sfx_start`
+   is 7,080 instructions).
+   Follow-ups: dj plays at about 52 fps against the harness's 103 (likely reading 40 MB of
+   flags per frame for first hits, 32 MB of it the ROM region that has none yet: hand out
+   no ROM flags until provenance exists, or scan smarter); a segment into a real match to
+   see ovl_e attributed; the full function list from the recomp's `syms/dump.toml`.
+5. N64 attribution to ROM: `dj_origin` from PI DMA provenance, overlays, and how symbol maps
    key them.
-5. Later: other cores and their decoders (FCEUmm as a cheap side check of one decoder per
+6. Later: other cores and their decoders (FCEUmm as a cheap side check of one decoder per
    instruction set, 6502; Genesis Plus GX if its licence is acceptable, 68000 and Z80;
    bsnes-mercury, 65816 with the mode bits), traces v2,
    `dj_map_address`, WRAM rollup, the SA-1, SPC700 and RSP.

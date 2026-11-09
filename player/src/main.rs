@@ -13,7 +13,7 @@ use decomp_dj::hydrate::Hydrator;
 use decomp_dj::player::{PlayOptions, ReplayResult, Session};
 
 #[derive(Parser)]
-#[command(name = "dj", version, about = "Play libretro input-replay trees, check state hashes, and measure ROM code coverage")]
+#[command(name = "dj", version, about = "Play trees of libretro input segments, check state hashes, and measure ROM code coverage")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,

@@ -263,7 +263,7 @@ impl Annotations {
                 }
             };
             let cpu_addr = cpu_at(&funcs, e.start).or_else(|| cpu_of(&e.region, e.start));
-            added.push(Function { name, region: e.region.clone(), offset: e.start, size, cpu_addr });
+            added.push(Function { name, region: e.region.clone(), offset: e.start, size, cpu_addr, file_offset: None });
         }
         // Map functions give way to added ones (renamed ones are already in place).
         for a in &added {
@@ -309,7 +309,7 @@ mod tests {
     use super::*;
 
     fn func(name: &str, offset: u64, size: u64) -> Function {
-        Function { name: name.into(), region: "PRG".into(), offset, size, cpu_addr: Some(0x8000 + offset) }
+        Function { name: name.into(), region: "PRG".into(), offset, size, cpu_addr: Some(0x8000 + offset), file_offset: None }
     }
 
     #[test]

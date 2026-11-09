@@ -743,13 +743,17 @@ pub fn has_decoder(cpu: &str) -> bool {
     cpu == "6502"
 }
 
-/// The region coverage rolls up into: the first region from the ROM file whose instruction
-/// set has a decoder. "PRG" when the connector says nothing (no facts recorded yet).
+/// The region coverage rolls up into, the first of: a region from the ROM file whose
+/// instruction set has a decoder (NES: PRG); one from the ROM file that some CPU runs; any
+/// region a CPU runs (N64: RDRAM, since code runs from RAM there). "PRG" when the connector
+/// says nothing (no facts recorded yet).
 pub fn code_region(facts: &[RegionFacts]) -> String {
+    let runs = |f: &&RegionFacts| f.cpu.is_some();
     facts
         .iter()
         .find(|f| f.file_offset.is_some() && f.cpu.as_deref().is_some_and(has_decoder))
-        .or_else(|| facts.iter().find(|f| f.file_offset.is_some()))
+        .or_else(|| facts.iter().filter(runs).find(|f| f.file_offset.is_some()))
+        .or_else(|| facts.iter().find(runs))
         .map(|f| f.name.clone())
         .unwrap_or_else(|| "PRG".into())
 }
@@ -949,6 +953,8 @@ mod tests {
         assert_eq!(code_region(&mesen), "PRG");
         // A region from the file with no decoder yet is still where coverage lies.
         assert_eq!(code_region(&[facts("RDRAM", Some("mips"), None), facts("ROM", Some("mips"), Some(0))]), "ROM");
+        // The N64 connector: code runs from RDRAM; the ROM region has no CPU.
+        assert_eq!(code_region(&[facts("RDRAM", Some("mips3"), None), facts("ROM", None, Some(0))]), "RDRAM");
         assert!(has_decoder("6502") && !has_decoder("mips") && !has_decoder("65816"));
     }
 

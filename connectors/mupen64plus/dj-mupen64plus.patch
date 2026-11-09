@@ -1,0 +1,416 @@
+diff --git a/Makefile.common b/Makefile.common
+index 72aef3a..3936839 100644
+--- a/Makefile.common
++++ b/Makefile.common
+@@ -231,6 +231,10 @@ endif
+ endif
+ 
+ # Libretro
++# decomp-dj coverage connector (connectors/mupen64plus in decomp-dj)
++COREFLAGS += -DDECOMP_DJ
++SOURCES_C += $(LIBRETRO_DIR)/dj_connector.c
++
+ SOURCES_C += $(LIBRETRO_DIR)/libretro.c \
+ 	$(LIBRETRO_COMM_DIR)/memmap/memalign.c \
+ 	$(ROOT_DIR)/custom/mupen64plus-core/plugin/emulate_game_controller_via_libretro.c \
+diff --git a/libretro/dj_connector.c b/libretro/dj_connector.c
+new file mode 100644
+index 0000000..d861414
+--- /dev/null
++++ b/libretro/dj_connector.c
+@@ -0,0 +1,142 @@
++/* decomp-dj coverage connector for mupen64plus-libretro-nx (docs/connectors.md, API 2).
++ *
++ * Regions:
++ *   RDRAM  coverage of code as it runs from RAM, by physical address (cpu "mips3"). Its
++ *          bytes aren't handed out: the core keeps RDRAM in host-endian 32-bit words, not
++ *          the CPU's byte order.
++ *   ROM    the cartridge, in .z64 (big-endian) order from byte 0 of the file. No flags are
++ *          set yet: telling which ROM bytes ran needs the provenance of RAM code (later).
++ *
++ * Flags are set by the pure interpreter only (dj_exec, from pure_interp.c); libretro.c
++ * forces that interpreter while dj drives the core. */
++#include <stdlib.h>
++#include <string.h>
++
++#include "dj_connector.h"
++#include "mupen64plus-next_common.h"
++#include "main/main.h"
++#include "main/rom.h"
++#include "device/device.h"
++#include "device/memory/memory.h"
++#include "osal/preproc.h"
++
++#ifndef RDRAM_MAX_SIZE
++#define RDRAM_MAX_SIZE 0x800000 /* 8 MB, with the Expansion Pak */
++#endif
++
++bool dj_active = false;
++
++static uint8_t dj_rdram_flags[RDRAM_MAX_SIZE];
++static uint8_t *dj_rom_flags;
++static uint8_t *dj_rom_data;
++static size_t dj_rom_size;
++
++/* The ROM in .z64 order, from the core's ROM buffer, which is there from retro_load_game
++ * on (M64CMD_ROM_OPEN stores it in .z64 order). When emulation starts, the core byte-swaps
++ * each 32-bit word on little-endian hosts (main.c, g_RomWordsLittleEndian); read it back
++ * with S8 then. */
++static void dj_capture_rom(void)
++{
++   const uint8_t *rom = g_mem_base ? (const uint8_t *)mem_base_u32(g_mem_base, MM_CART_ROM) : NULL;
++   size_t size = g_rom_size > 0 ? (size_t)g_rom_size : 0;
++   size_t i;
++   if (dj_rom_data || !rom || size == 0)
++      return;
++   dj_rom_data = (uint8_t *)malloc(size);
++   dj_rom_flags = (uint8_t *)calloc(size, 1);
++   if (!dj_rom_data || !dj_rom_flags)
++   {
++      free(dj_rom_data);
++      free(dj_rom_flags);
++      dj_rom_data = dj_rom_flags = NULL;
++      return;
++   }
++   for (i = 0; i < size; i++)
++      dj_rom_data[i] = rom[g_RomWordsLittleEndian ? (i ^ S8) : i];
++   dj_rom_size = size;
++}
++
++void dj_exec(const uint32_t *op_address)
++{
++   const uint8_t *base = (const uint8_t *)g_dev.rdram.dram;
++   size_t off;
++   if (!base || (const uint8_t *)op_address < base)
++      return;
++   off = (size_t)((const uint8_t *)op_address - base);
++   if (off + 4 > g_dev.rdram.dram_size || off + 4 > RDRAM_MAX_SIZE)
++      return; /* not RAM: the boot code in the PIF or SP memory */
++   dj_rdram_flags[off] |= DJ_FLAG_OPCODE;
++   dj_rdram_flags[off + 1] |= DJ_FLAG_OPERAND;
++   dj_rdram_flags[off + 2] |= DJ_FLAG_OPERAND;
++   dj_rdram_flags[off + 3] |= DJ_FLAG_OPERAND;
++}
++
++static unsigned dj_api_version(void)
++{
++   dj_active = true;
++   return DJ_API_VERSION;
++}
++
++static size_t dj_region_count(void) { return 2; }
++
++static bool dj_get_region(size_t index, struct dj_region *out)
++{
++   if (!out)
++      return false;
++   if (index == 0)
++   {
++      out->name = "RDRAM";
++      out->flags = dj_rdram_flags;
++      out->size = RDRAM_MAX_SIZE;
++      out->cpu = "mips3";
++      out->data = NULL;
++      out->file_offset = -1;
++      return true;
++   }
++   if (index == 1)
++   {
++      dj_capture_rom();
++      out->name = "ROM";
++      out->flags = dj_rom_flags;
++      out->size = dj_rom_size;
++      out->cpu = NULL;
++      out->data = dj_rom_data;
++      out->file_offset = dj_rom_data ? 0 : -1;
++      return true;
++   }
++   return false;
++}
++
++static void dj_clear(void)
++{
++   memset(dj_rdram_flags, 0, sizeof(dj_rdram_flags));
++   if (dj_rom_flags)
++      memset(dj_rom_flags, 0, dj_rom_size);
++}
++
++/* The core options this connector needs, which libretro.c forces while dj drives the core.
++ * dj takes them as its own values, so the options it records are the ones that run. */
++static const char *dj_forced_options(void)
++{
++   return CORE_NAME "-cpucore=pure_interpreter\n"
++          CORE_NAME "-rdp-plugin=gliden64\n"
++          CORE_NAME "-rsp-plugin=hle\n"
++          CORE_NAME "-ThreadedRenderer=False\n";
++}
++
++/* Ticks aren't counted yet. */
++static void dj_set_tick_exec(int region, int64_t offset) { (void)region; (void)offset; }
++static uint64_t dj_get_tick_count(void) { return 0; }
++
++void *dj_get_proc_address(const char *sym)
++{
++   if (!sym) return NULL;
++   if (!strcmp(sym, "dj_api_version")) return (void *)&dj_api_version;
++   if (!strcmp(sym, "dj_region_count")) return (void *)&dj_region_count;
++   if (!strcmp(sym, "dj_get_region")) return (void *)&dj_get_region;
++   if (!strcmp(sym, "dj_clear")) return (void *)&dj_clear;
++   if (!strcmp(sym, "dj_set_tick_exec")) return (void *)&dj_set_tick_exec;
++   if (!strcmp(sym, "dj_get_tick_count")) return (void *)&dj_get_tick_count;
++   if (!strcmp(sym, "dj_forced_options")) return (void *)&dj_forced_options;
++   return NULL;
++}
+diff --git a/libretro/dj_connector.h b/libretro/dj_connector.h
+new file mode 100644
+index 0000000..c3c3921
+--- /dev/null
++++ b/libretro/dj_connector.h
+@@ -0,0 +1,37 @@
++/* decomp-dj coverage connector (docs/connectors.md in decomp-dj, API version 2). */
++#ifndef DJ_CONNECTOR_H
++#define DJ_CONNECTOR_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#define DJ_API_VERSION  2
++#define DJ_FLAG_OPCODE  0x01 /* executed as the first byte of an instruction */
++#define DJ_FLAG_OPERAND 0x02 /* executed as another byte of an instruction */
++
++struct dj_region
++{
++   const char *name;          /* "RDRAM", "ROM" */
++   uint8_t *flags;            /* one byte of DJ_FLAG_* per byte of the region */
++   size_t size;
++   const char *cpu;           /* instruction set that runs here, or NULL */
++   const uint8_t *data;       /* the region's bytes in the CPU's (big-endian) order, or NULL */
++   int64_t file_offset;       /* where offset 0 lies in the ROM file (.z64 order), or -1 */
++};
++
++/* True once dj has asked for the API version: the core is driven by decomp-dj, and
++ * libretro.c pins the options dj needs (see dj_connector.c). */
++extern bool dj_active;
++
++/* Called by the pure interpreter for every instruction it executes (delay slots
++ * included), with the host pointer it fetched the instruction word from. */
++void dj_exec(const uint32_t *op_address);
++
++void *dj_get_proc_address(const char *sym);
++
++/* Called by gen_interrupt right after a save or load job finished (and was cleared), so a
++ * save or load dj asked for returns to the frontend at the frame boundary (libretro.c). */
++void dj_state_job_done(void);
++
++#endif
+diff --git a/libretro/libretro.c b/libretro/libretro.c
+index 4a9f129..278244f 100644
+--- a/libretro/libretro.c
++++ b/libretro/libretro.c
+@@ -56,6 +56,13 @@
+ #include "device/rcp/pi/pi_controller.h"
+ #include "device/pif/pif.h"
+ #include "libretro_memory.h"
++#ifdef DECOMP_DJ
++#include "dj_connector.h"
++/* A save or load dj asked for is in progress: n64StateCallback hands control back as soon
++ * as it's done, and retro_return counts the frames that ran meanwhile (normally none). */
++static bool dj_state_job_pending = false;
++static unsigned dj_state_job_frames = 0;
++#endif
+ 
+ #include "audio_plugin.h"
+ 
+@@ -616,6 +623,15 @@ void retro_set_environment(retro_environment_t cb)
+ {
+     environ_cb = cb;
+ 
++#ifdef DECOMP_DJ
++    {
++       static struct retro_get_proc_address_interface dj_procs = {
++          (retro_get_proc_address_t)dj_get_proc_address
++       };
++       environ_cb(RETRO_ENVIRONMENT_SET_PROC_ADDRESS_CALLBACK, &dj_procs);
++    }
++#endif
++
+     static const struct retro_subsystem_memory_info memory_info_dd[] = {
+         { "srm", RETRO_MEMORY_DD },
+         {}
+@@ -1024,6 +1040,20 @@ static void update_variables(bool startup)
+        {
+           EnableThreadedRenderer = !strcmp(var.value, "True") ? 1 : 0;
+        }
++
++#ifdef DECOMP_DJ
++       /* What decomp-dj needs for state hashes that reproduce (CONNECTOR_PLAN.md, N64):
++        * GLideN64 with the HLE RSP (angrylion keeps state outside the save state), and no
++        * threaded renderer. */
++       if (dj_active)
++       {
++          if (current_rdp_type != RDP_PLUGIN_GLIDEN64 || current_rsp_type != RSP_PLUGIN_HLE || EnableThreadedRenderer)
++             log_cb(RETRO_LOG_WARN, "decomp-dj: using GLideN64, the HLE RSP and no threaded renderer\n");
++          plugin_connect_rdp_api(RDP_PLUGIN_GLIDEN64);
++          plugin_connect_rsp_api(RSP_PLUGIN_HLE);
++          EnableThreadedRenderer = 0;
++       }
++#endif
+ 	    
+        if(current_rdp_type == RDP_PLUGIN_GLIDEN64 && EnableThreadedRenderer)
+        {
+@@ -1401,6 +1431,14 @@ static void update_variables(bool startup)
+           else if (!strcmp(var.value, "dynamic_recompiler"))
+              r4300_emumode = EMUMODE_DYNAREC;
+        }
++#ifdef DECOMP_DJ
++       /* Coverage is recorded by the pure interpreter only. */
++       if (dj_active && r4300_emumode != EMUMODE_PURE_INTERPRETER)
++       {
++          log_cb(RETRO_LOG_WARN, "decomp-dj: using the pure interpreter\n");
++          r4300_emumode = EMUMODE_PURE_INTERPRETER;
++       }
++#endif
+ 
+        var.key = CORE_NAME "-aspect";
+        var.value = NULL;
+@@ -2144,6 +2182,10 @@ bool retro_serialize(void *data, size_t size)
+    retro_savestate_result = 0;
+ 
+    savestates_set_job(savestates_job_save, savestates_type_m64p, data);
++#ifdef DECOMP_DJ
++   dj_state_job_pending = dj_active;
++   dj_state_job_frames = 0;
++#endif
+ 
+    if (current_rdp_type == RDP_PLUGIN_GLIDEN64)
+    {
+@@ -2165,6 +2207,16 @@ bool retro_serialize(void *data, size_t size)
+       glsm_ctl(GLSM_CTL_STATE_UNBIND, NULL);
+    }
+ 
++#ifdef DECOMP_DJ
++   dj_state_job_pending = false;
++   if (dj_active && dj_state_job_frames > 0)
++   {
++      /* The save waited for a safe point and frames ran first: the state isn't the frame
++       * dj asked for, so report it as failed. */
++      log_cb(RETRO_LOG_WARN, "decomp-dj: the save state was taken %u frame(s) late; refusing it\n", dj_state_job_frames);
++      return false;
++   }
++#endif
+    return !!retro_savestate_result;
+ }
+ 
+@@ -2177,6 +2229,10 @@ bool retro_unserialize(const void *data, size_t size)
+    retro_savestate_result = 0;
+ 
+    savestates_set_job(savestates_job_load, savestates_type_m64p, data);
++#ifdef DECOMP_DJ
++   dj_state_job_pending = dj_active;
++   dj_state_job_frames = 0;
++#endif
+ 
+    if (current_rdp_type == RDP_PLUGIN_GLIDEN64)
+    {
+@@ -2198,6 +2254,15 @@ bool retro_unserialize(const void *data, size_t size)
+       glsm_ctl(GLSM_CTL_STATE_UNBIND, NULL);
+    }
+ 
++#ifdef DECOMP_DJ
++   dj_state_job_pending = false;
++   if (dj_active && dj_state_job_frames > 0)
++   {
++      /* Frames ran before the load: what follows isn't the frame after the saved one. */
++      log_cb(RETRO_LOG_WARN, "decomp-dj: the state was loaded %u frame(s) late\n", dj_state_job_frames);
++      return false;
++   }
++#endif
+    return true;
+ }
+ 
+@@ -2277,8 +2342,25 @@ void retro_cheat_set(unsigned index, bool enabled, const char* codeLine)
+     cheat_set_enabled(&g_cheat_ctx, name, enabled);
+ }
+ 
++#ifdef DECOMP_DJ
++/* The job runs inside gen_interrupt: a save right after the vertical interrupt that ended
++ * the frame, a load at the next interrupt. Return to the frontend now, at that frame
++ * boundary, instead of running on to the next vertical interrupt; the next retro_run
++ * resumes here and runs exactly one frame. Not from n64StateCallback: the core calls it
++ * before it clears the job (and twice for a save), so a job set meanwhile would be lost. */
++void dj_state_job_done(void)
++{
++    if (dj_state_job_pending && retro_savestate_complete)
++       co_switch(retro_thread);
++}
++#endif
++
+ void retro_return(void)
+ {
++#ifdef DECOMP_DJ
++    if (dj_state_job_pending)
++       dj_state_job_frames++;
++#endif
+     if(!(current_rdp_type == RDP_PLUGIN_GLIDEN64 && EnableThreadedRenderer))
+     {
+        co_switch(retro_thread);
+diff --git a/mupen64plus-core/src/device/r4300/interrupt.c b/mupen64plus-core/src/device/r4300/interrupt.c
+index 9c81a18..f1e477d 100644
+--- a/mupen64plus-core/src/device/r4300/interrupt.c
++++ b/mupen64plus-core/src/device/r4300/interrupt.c
+@@ -21,6 +21,9 @@
+ 
+ #define M64P_CORE_PROTOTYPES 1
+ 
++#ifdef DECOMP_DJ
++#include "../../../../libretro/dj_connector.h"
++#endif
+ #include "interrupt.h"
+ 
+ #ifdef __MINGW32__
+@@ -553,6 +556,9 @@ void gen_interrupt(struct r4300_core* r4300)
+         if (savestates_get_job() == savestates_job_load)
+         {
+             savestates_load();
++#ifdef DECOMP_DJ
++            dj_state_job_done();
++#endif
+             return;
+         }
+ 
+@@ -668,6 +674,9 @@ void gen_interrupt(struct r4300_core* r4300)
+         if (savestates_get_job() == savestates_job_save)
+         {
+             savestates_save();
++#ifdef DECOMP_DJ
++            dj_state_job_done();
++#endif
+             return;
+         }
+     }
+diff --git a/mupen64plus-core/src/device/r4300/pure_interp.c b/mupen64plus-core/src/device/r4300/pure_interp.c
+index db5a596..05db133 100644
+--- a/mupen64plus-core/src/device/r4300/pure_interp.c
++++ b/mupen64plus-core/src/device/r4300/pure_interp.c
+@@ -39,6 +39,10 @@
+ 
+ static void InterpretOpcode(struct r4300_core* r4300);
+ 
++#ifdef DECOMP_DJ
++#include "../../../../libretro/dj_connector.h"
++#endif
++
+ #define DECLARE_R4300
+ #define PCADDR r4300->interp_PC.addr
+ #define ADD_TO_PC(x) r4300->interp_PC.addr += x*4;
+@@ -167,6 +171,9 @@ void InterpretOpcode(struct r4300_core* r4300)
+ 	uint32_t* op_address = fast_mem_access(r4300, *r4300_pc(r4300));
+ 	if (op_address == NULL)
+ 		return;
++#ifdef DECOMP_DJ
++	dj_exec(op_address);
++#endif
+ 	uint32_t op = *op_address;
+ 
+ 	switch ((op >> 26) & 0x3F) {

@@ -2,15 +2,16 @@
 
 A coverage connector is a small patch to a libretro core that reports which ROM bytes ran.
 Without one, a core still plays segments and checks hashes, but records no coverage and
-counts no [ticks](playback.md#logic-ticks-draft). The only connector so far is for Mesen
-(NES): [connectors/mesen/](../connectors/mesen/README.md).
+counts no [ticks](playback.md#logic-ticks-draft). The connector in use is for Mesen (NES):
+[connectors/mesen/](../connectors/mesen/README.md). A first one for Mupen64Plus-Next (N64),
+not tried with dj yet, is in [connectors/mupen64plus/](../connectors/mupen64plus/README.md).
 
 ## What a connector reports
 
 - Executed locations as **offsets into ROM regions**, never CPU addresses, because bank switching maps different ROM bytes to the same CPU address.
 - One flag byte per byte of each region (below). Flags only ever get set, until the player clears them.
 - For each region: its name, the instruction set that runs there, its bytes, and where it lies in the ROM file. The connector is the source of these facts; projects don't configure them ([.agents/CONNECTOR_PLAN.md](../.agents/CONNECTOR_PLAN.md) has the reasoning).
-- **Region names are a contract per system**, so that two cores for one system can share a project's coverage, annotations and symbol maps. NES: `PRG` (program ROM), `RAM`, `WRAM`, `SRAM`. Coverage rolls up into the first region from the ROM file whose instruction set has a decoder (`PRG` on the NES).
+- **Region names are a contract per system**, so that two cores for one system can share a project's coverage, annotations and symbol maps. NES: `PRG` (program ROM), `RAM`, `WRAM`, `SRAM`. N64: `RDRAM` (main RAM, by physical address, where code runs) and `ROM` (the cartridge, `.z64` order). Coverage rolls up into the first region from the ROM file whose instruction set has a decoder (`PRG` on the NES), else into the first region a CPU runs (`RDRAM` on the N64).
 
 | Bits | Meaning |
 | --- | --- |
@@ -49,6 +50,16 @@ struct dj_region {
     int64_t        file_offset; // where offset 0 lies in the ROM file, or -1
 };
 ```
+
+Optional, in API 2:
+
+```c
+const char *dj_forced_options(void);  // "key=value\n" lines: core options the connector needs
+```
+
+A connector that forces core options while dj drives the core (an interpreter instead of a
+dynarec, a video plugin whose state saves) lists them here. The player takes them as its
+own values before the game loads, so the options a project records are the ones that run.
 
 `data` lets the player read the bytes the core runs, at the offsets the flags use; a core
 that keeps ROM byte-swapped in memory hands out a copy in the CPU's order. `file_offset`

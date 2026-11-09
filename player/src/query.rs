@@ -278,15 +278,16 @@ impl Project {
     pub fn uncovered_ranges(&mut self, _sort: GapSort, limit: usize, cursor: usize) -> Result<Page<UncoveredRange>> {
         let (prg, flags) = self.need_flags()?;
         let (mut exec, from_flags) = analysis::executed_bytes(&prg, &flags);
+        let region = self.report()?.detail.region.clone();
         self.mark_annotated(&mut exec)?;
         let mut rows: Vec<UncoveredRange> = analysis::uncovered_ranges(&exec)
             .into_iter()
-            .map(|(start, end)| UncoveredRange { at: format!("PRG:{start:#x}"), end: format!("PRG:{:#x}", end - 1), cpu: self.cpu_text(start), bytes: end - start })
+            .map(|(start, end)| UncoveredRange { at: format!("{region}:{start:#x}"), end: format!("{region}:{:#x}", end - 1), cpu: self.cpu_text(start), bytes: end - start })
             .collect();
         rows.sort_by(|a, b| b.bytes.cmp(&a.bytes).then(a.at.cmp(&b.at)));
         let total = rows.len();
         let how = if from_flags { "" } else { " This core sets no operand flags, so the bytes each instruction occupies come from 6502 instruction lengths." };
-        let note = format!("no symbol map: these are PRG byte ranges that no instruction that ran occupies, largest first, and they include any data annotations.toml doesn't mark.{how} For gaps by function, add a symbol map: {ADD_SYMBOLS}");
+        let note = format!("no symbol map: these are {region} byte ranges that no instruction that ran occupies, largest first, and they include any data annotations.toml doesn't mark.{how} For gaps by function, add a symbol map: {ADD_SYMBOLS}");
         Ok(Page::new(rows.into_iter().skip(cursor).take(limit).collect(), total, cursor).with_note(note))
     }
 

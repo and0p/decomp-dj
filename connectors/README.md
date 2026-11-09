@@ -31,4 +31,5 @@ uint64_t dj_get_tick_count(void);
 
 | Connector | System | Upstream | Status |
 | --- | --- | --- | --- |
-| [mesen](mesen/) | NES / Famicom | libretro/Mesen | v1 |
+| [mesen](mesen/) | NES / Famicom | libretro/Mesen | API 2 |
+| [mupen64plus](mupen64plus/) | Nintendo 64 | libretro/mupen64plus-libretro-nx | API 2, first version, not built or tried yet |

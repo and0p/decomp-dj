@@ -146,7 +146,16 @@ impl Session {
             }
         }
 
-        let boot_state = core.serialize().context("saving the power-on state")?;
+        // Power-on. A core that can't save before it has run (Mupen64Plus-Next sets up its
+        // devices on the first frame) gets that one frame here, the same every time, so
+        // frame 0 of a root segment starts after it.
+        let boot_state = match core.serialize() {
+            Ok(s) => s,
+            Err(_) => {
+                core.run_frame(false);
+                core.serialize().context("saving the power-on state")?
+            }
+        };
         let boot_sram = core.memory(crate::libretro::MEMORY_SAVE_RAM).map(|m| m.to_vec());
         let mut h = blake3::Hasher::new();
         h.update(col.config.core.build.as_bytes());

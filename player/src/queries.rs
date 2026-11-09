@@ -95,7 +95,7 @@ pub fn gaps(dir: &Path, sort: GapSort, only: GapFilter, q: &QueryArgs) -> Result
         note(&g);
         println!("  {:<24} {:>7}", "range", "bytes");
         for r in &g.items {
-            let range = format!("{}-{}", r.at, r.end.trim_start_matches("PRG:"));
+            let range = format!("{}-{}", r.at, r.end.split_once(':').map_or(r.end.as_str(), |(_, o)| o));
             println!("  {:<24} {:>7}", range, r.bytes);
         }
         more(&g);

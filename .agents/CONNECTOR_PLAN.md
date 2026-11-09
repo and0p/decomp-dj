@@ -241,6 +241,81 @@ attributing overlaid code to the right function. Until `dj_origin` or another wa
 overlays apart exists, coverage of overlaid code is approximate (merged) and should be marked
 so; the main segment is exact.
 
+**Round-trip test (2026-11-09)**
+
+Core built from commit 15bada8 with `make SYSTEM_ZLIB=1 SYSTEM_LIBPNG=1` (the bundled libpng
+and zlib misdetect macOS as classic Mac OS); on macOS the Makefile leaves the dynarec out.
+Harness: `player/examples/n64_roundtrip.rs` (blake3 of SYSTEM_RAM, 8 MB, after every frame;
+modes for power-on, save/load at K, a fresh-process load, and `exp`, which loads after J frames
+of running on and diffs RDRAM at the first difference). ROM: WWF No Mercy (USA) (Rev 1),
+sha256 `fc561fce…`. N = 600, K = 200 and 350, M = 200, J = 0, twice, 50, 100, 200.
+
+| Options | Speed | Power-on x2 | Save, run on | Load into a running core |
+| --- | --- | --- | --- | --- |
+| pure interpreter, GLideN64, HLE RSP | 107 fps | identical | one frame ahead | **identical** (all J) |
+| cached interpreter, GLideN64, HLE RSP | 110 fps | identical | one frame ahead | **identical** (all J) |
+| pure interpreter, angrylion (ParaLLEl or cxd4 RSP) | 103 fps | identical | one frame ahead | differs after J ≥ 50 to 100 |
+| cached interpreter, angrylion | 109 fps | identical | one frame ahead | same |
+
+GLideN64 ran through the player's OpenGL HW_RENDER path with
+`mupen64plus-ThreadedRenderer = False`. The state is 16,793,412 bytes in every mode.
+
+Findings:
+
+- **The player must offer `RETRO_ENVIRONMENT_GET_LOG_INTERFACE`**: this core calls its log
+  callback unchecked (`update_variables`), so without one it crashes in `retro_load_game`.
+  Added (`core_log` in libretro.rs: warnings and errors to stderr, the format unexpanded,
+  since stable Rust can't define a variadic).
+- **Every save and every load runs one extra frame.** `retro_serialize` sets a job and loops
+  on `co_switch(game_thread)` until it completes. The job runs at the end of the current
+  interrupt (`gen_interrupt` in `device/r4300/interrupt.c`), but the game thread only yields at
+  the next vertical interrupt (`new_vi` → `retro_return` in `main/main.c`), so a whole frame
+  runs first. Measured: after a save, every hash equals the uninterrupted run shifted by
+  exactly one frame. Saving has no other side effect.
+- **angrylion keeps state outside the save state.** Loaded into a core that has run on, the
+  first differences are only in what looks like the framebuffer (`0x8038F800`-`0x803FFFFF`,
+  2-byte runs, nothing in the game's segments), appearing at once or about 50 frames after
+  the load. Swapping the RSP (ParaLLEl, cxd4) changes nothing, so it's the RDP plugin
+  (texture memory or other internal state). With GLideN64 and the HLE RSP, loads reproduce.
+- An earlier "fresh-process load passes" result was taken with options that didn't reach
+  the core (a shell quoting slip), so it ran the core's defaults; it's superseded by the
+  table above.
+- The PeterLemon N64NICCC demo gave one RAM hash for all 600 frames (it most likely didn't
+  boot), so it's no use as a second ROM.
+
+So the configuration for dj is GLideN64 with the HLE RSP and the threaded renderer off, on
+either interpreter, once save and load stop running the extra frame. Not checked yet:
+whether GLideN64 copying its framebuffer into RDRAM (`mupen64plus-EnableCopyColorToRDRAM`)
+makes hashes depend on the GPU across machines; pin it off if so.
+
+**Draft: synchronous save and load (connector patch, not built)**
+
+Make `retro_serialize` and `retro_unserialize` return at the frame boundary they were called
+at, without running the next frame:
+
+1. `libretro/libretro.c`: a flag `dj_state_job_pending`, set before `savestates_set_job` in
+   `retro_serialize`/`retro_unserialize` and cleared after the loop.
+2. `n64StateCallback` (`libretro/libretro.c`), on `M64CORE_STATE_SAVECOMPLETE` or
+   `LOADCOMPLETE` with the flag set: after setting `retro_savestate_complete`, call
+   `co_switch(retro_thread)`. A save runs at the end of the `gen_interrupt` that delivered
+   the vertical interrupt, right after `new_vi` yielded, so the state is the frame boundary
+   and nothing more runs. A load is checked at the start of `gen_interrupt`, so it runs at
+   the next interrupt: the emulation runs a little past the boundary first (overwritten by
+   the load), then the state is the saved boundary again. Plugins (GLideN64, audio) see that
+   bit of extra work; the round trips above suggest GLideN64 tolerates it, but check. The
+   next `retro_run` resumes inside the callback and runs exactly one frame to `new_vi`.
+3. If the interrupt state is unsafe (`cp0.interrupt_unsafe_state`), the job waits for a
+   later interrupt and frames run first. Count frames run inside the loop and report it
+   (a log line, or a `dj_` query), so dj can refuse such a snapshot rather than mis-number.
+4. With a loaded state, the frame dj runs next is the one after the saved boundary, so
+   snapshots and seeks line up with dj's frame numbers.
+5. Pin, in the connector or the project's recorded options: `mupen64plus-rdp-plugin =
+   gliden64`, `mupen64plus-rsp-plugin = hle`, `mupen64plus-ThreadedRenderer = False`, an
+   interpreter `cpucore` (the patch can force it when dj loads the core).
+
+Test after the rebuild: the harness's "save, run on" should equal the uninterrupted run
+(no shift), and the round trips should stay identical.
+
 **MIPS decoding**
 
 - Fixed 4-byte instructions: lengths and mode are not a problem. A connector sets `0x01` on
@@ -741,7 +816,38 @@ Deferred (2026-11-09, "address later"):
      `file_offset`, which `dj init` checks is the same bytes); query output and CLI/MCP
      addresses still say `PRG:` (fine for the NES; generalise with the first non-NES
      connector).
-3. The N64: first the save-state round-trip test (serialize, unserialize, run on, compare
+3. **In progress (2026-11-09).** Round-trip test done (N64 case study: passes with
+   GLideN64 and the HLE RSP, apart from the extra frame per save or load). The connector
+   patch is written, applied to `build/mupen64plus-src`, and checked with a syntax-only
+   compile, but not built: `connectors/mupen64plus/` (patch, `build.sh`, README). It has
+   synchronous save and load (false when frames ran first), API 2 regions `RDRAM`
+   (`mips3`, flags) and `ROM` (`.z64` bytes, no flags yet), flags from the pure
+   interpreter, `dj_clear`, and GLideN64, HLE RSP, no threaded renderer and the pure
+   interpreter forced while dj drives the core. The player's `code_region` now falls back
+   to the first region a CPU runs (`RDRAM`). Next: build, re-run the round trips (no shift
+   expected), then `dj init` a scratch project and check flags in RDRAM.
+   First build: saves no longer shift the run (round trips identical, 103 fps vs 107
+   unpatched), but yielding from `n64StateCallback` lost jobs (the core calls it before
+   clearing the job, and twice for a save): a second load hung, and a load straight after
+   a save never ran. Moved the yield to `gen_interrupt`, after the job is cleared
+   (`dj_state_job_done`); the ROM region now comes from the core's ROM buffer, there from
+   load. Player: `dj init` runs one frame before probing RAM (this core sets up memory on
+   its first frame; without it only SRAM was hashed), and a core that can't save at
+   power-on gets one frame first.
+   Second build (core sha256 `7a2ccdf7eba44edaeecb99fdc85e24be80927d1f3875ebbf1c0b540c22de8815`,
+   in `build/cores/`): every round trip identical (K=350; load after 0, 50, 100, 200
+   frames and twice in a row; saves don't shift the run). Scratch project with No Mercy:
+   `dj init` reports `RDRAM` (mips3, 8 MB) and `ROM` (32 MB from byte 0, bytes match the
+   file), hash regions RAM and SRAM. A 300-frame segment recorded in 6.1 s and its ending
+   hash reproduced from an empty database. Flags: 28,374 opcode words in RDRAM, all
+   word-aligned with `0x02` on the next three bytes; 22,019 in the main segment
+   (`0x450`-`0x40380`), 6,351 in the overlay slot, 4 at the exception vector (`0x180`).
+   `dj summary` counts opcode bytes; the no-map `gaps` now labels ranges with the code
+   region (`RDRAM:`). Added `dj_forced_options` (connector, optional in API 2) and the
+   player taking those values as its own, so `[core.options]` records the pure interpreter;
+   takes effect with the next core build. Step 3 is done apart from that; next is the MIPS
+   decoder (step 4 in the original numbering), then provenance.
+   Originally: first the save-state round-trip test (serialize, unserialize, run on, compare
    hashes, since saves are deferred to a safe point). Then a mupen64plus-libretro-nx
    connector on the cached interpreter (forced by the patch), an `RDRAM` region, symbol maps
    by VRAM (splat), the MIPS decoder, and the checks: hashes with and without the patch, and

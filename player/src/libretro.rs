@@ -27,6 +27,7 @@ const ENV_SET_VARIABLES: u32 = 16;
 const ENV_GET_VARIABLE_UPDATE: u32 = 17;
 const ENV_SET_SUPPORT_NO_GAME: u32 = 18;
 const ENV_GET_SAVE_DIRECTORY: u32 = 31;
+const ENV_GET_LOG_INTERFACE: u32 = 27;
 const ENV_SET_SYSTEM_AV_INFO: u32 = 32;
 const ENV_SET_PROC_ADDRESS_CALLBACK: u32 = 33;
 const ENV_SET_CONTROLLER_INFO: u32 = 35;
@@ -256,8 +257,28 @@ fn parse_option_values(v: &str) -> (String, Vec<String>) {
     (values.first().cloned().unwrap_or_default(), values)
 }
 
+/// `retro_log_printf_t`, without the variadic part: stable Rust can't define a C variadic
+/// function, but the fixed arguments arrive the same way (registers on arm64 and x86-64), so
+/// this reads the level and the format string and ignores the rest. Warnings and errors go
+/// to stderr with the format unexpanded. Some cores call the log callback without checking
+/// it (mupen64plus-libretro-nx does in `update_variables`), so offering one also keeps them
+/// from crashing.
+unsafe extern "C" fn core_log(level: u32, fmt: *const c_char) {
+    if level >= 2 && !fmt.is_null() {
+        let text = CStr::from_ptr(fmt).to_string_lossy();
+        eprint!("core {}: {}", if level >= 3 { "error" } else { "warning" }, text);
+        if !text.ends_with('\n') {
+            eprintln!();
+        }
+    }
+}
+
 unsafe extern "C" fn env_cb<const S: usize>(cmd: u32, data: *mut c_void) -> bool {
     match cmd {
+        ENV_GET_LOG_INTERFACE => {
+            *(data as *mut unsafe extern "C" fn(u32, *const c_char)) = core_log;
+            true
+        }
         ENV_GET_CAN_DUPE => {
             *(data as *mut bool) = true;
             true
@@ -730,6 +751,24 @@ impl Core {
                 if version() != DJ_API_VERSION {
                     eprintln!("warning: this core's coverage connector speaks API version {}, but dj needs version {DJ_API_VERSION}: rebuild the core (connectors/README.md). Playing without coverage.", version());
                     return None;
+                }
+                // Optional: core options the connector needs and forces while dj drives the
+                // core (`key=value` lines). Taking them as dj's own values keeps the recorded
+                // options true to what runs.
+                if let Some(f) = get("dj_forced_options") {
+                    let forced: unsafe extern "C" fn() -> *const c_char = std::mem::transmute(f);
+                    let text = forced();
+                    if !text.is_null() {
+                        let text = CStr::from_ptr(text).to_string_lossy().into_owned();
+                        with_host(slot, |h| {
+                            for (k, v) in text.lines().filter_map(|l| l.split_once('=')) {
+                                if h.option_overrides.get(k).is_some_and(|old| old != v) {
+                                    eprintln!("note: the coverage connector needs {k} = {v}; using that instead of {}", h.option_overrides[k]);
+                                }
+                                h.option_overrides.insert(k.to_string(), v.to_string());
+                            }
+                        });
+                    }
                 }
                 Some(Connector {
                     region_count: std::mem::transmute(get("dj_region_count")?),

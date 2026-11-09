@@ -332,6 +332,9 @@ fn init(dir: &Path, name: &str, rom: &Path, core_path: &Path, core_build: Option
     let (lib_name, lib_version, effective, regions) = {
         let mut core = libretro::Core::load(core_path, &work, &overrides)?;
         core.load_game(rom)?;
+        // Some cores set up their memory on the first frame (Mupen64Plus-Next): run one so
+        // the RAM regions to hash exist when they're probed.
+        core.run_frame(false);
         let mut regions = vec![];
         for r in ["RAM", "SRAM"] {
             if core.memory(libretro::region_memory_id(r).unwrap()).is_some() {

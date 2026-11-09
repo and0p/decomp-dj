@@ -11,6 +11,17 @@ When one ships, its user-facing description moves into `docs/` and the entry her
 - The GUI is a first prototype: button inputs only (no analog, lightgun or pointer rows yet), keyboard-only recording for one controller at a time, one core at a time. Tested on Linux and macOS; Windows not tried yet.
 - `exclude` in `[cache]` is recorded but not applied to snapshots yet.
 
+## Known bugs
+
+- **The Functions tab overlaps the coverage map when the map is made taller.** Dragging the
+  map's panel (the resizable `cov_map` bottom panel in the sidebar, `gui/src/main.rs`) up
+  while the sidebar shows the Functions tab makes the sort and filter row, and whatever is
+  below it, draw on top of the map. Likely cause: `coverage_tab` (`gui/src/cov.rs`) lays out
+  the totals, notes, the selected function's details and the parity section at their full
+  height with no scroll area, and only the function list (`ScrollArea` `cov_list`) shrinks,
+  so with less room left the rows above it run past the sidebar's remaining space into the
+  map panel instead of being clipped or scrolled. Not confirmed.
+
 ## GUI
 - **A console in the app.** A panel (View > Console, or clicking the status bar's message)
   with a scrolling, filterable log of everything that's now only a passing status message

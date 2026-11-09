@@ -1,7 +1,61 @@
 # Roadmap
 
 Ideas and open questions that are not part of format version 1, and the current limits.
+What is prioritised for the first release is in [Before the first release](#before-the-first-release).
 When one ships, its user-facing description moves into `docs/` and the entry here goes.
+
+## Before the first release
+
+Priorities: **high** blocks the release, **medium** should be in it, **low** can follow it.
+
+| Priority | Item | Plan | Status |
+| --- | --- | --- | --- |
+| high | Land the N64 connector and MIPS decoder; docs agree on what's supported | [CONNECTOR_PLAN.md](CONNECTOR_PLAN.md) | done 2026-11-09 |
+| high | CI on Linux and macOS (Windows as a template), Thwaite hashes on every change | [RELEASE_PLAN.md](RELEASE_PLAN.md) | planned |
+| high | Projects record the format and tool version; older tools refuse newer projects; a core rebuild re-pins | [below](#project-and-cli), "Versioning projects" | not started |
+| high | Clean-up and licensing: scratch files, terminology in the CLI help, the Tetris data tables, connector licences | [RELEASE_PLAN.md](RELEASE_PLAN.md#licensing-of-the-connectors-to-settle) | not started |
+| high | Release workflow and install docs (`v0.1.0`) | [RELEASE_PLAN.md](RELEASE_PLAN.md) | planned |
+| medium | Decoder interface (step 1: one trait and one sweep; step 2: loadable decoders) | [DECODER_PLAN.md](DECODER_PLAN.md) | exploring |
+| medium | Root segments that start from a snapshot, finished ([below](#root-segments-from-a-snapshot)) | | partly built |
+
+### Root segments from a snapshot
+
+A root segment can start from a save state blob instead of power-on, for games whose state
+is fine to share (open source, homebrew, abandonware with permission). A project with a
+commercial game should not ship one: a state holds the game's RAM, and for some systems
+(N64 RDRAM) the game's own code.
+
+**Already built** (format version 1): the `snapshot` header field names a blob in `blobs/`
+(`<hash>.state`, `retro_serialize` output of the pinned core), root only
+([segments.md](../docs/segments.md#header-fields)); the player loads it before frame 0
+(`player.rs`) and takes `start-frame` from the segment; the GUI sets it in Properties
+("Snapshot", copied into `blobs/`); and a snapshot root acts like any stored state for a
+comparison core: `dj_sync` gets no `DJ_SYNC_BOOT` (`gui/src/main.rs`, `boot` is only set
+for a root without a snapshot), and `sync = "state"` cores load the baseline's state.
+
+**Left to do:**
+
+- **Making one from the CLI and MCP.** `dj new` has no `--snapshot FILE` (or `--sram`);
+  `dj snapshot` writes a state to a file but can't turn it into a root. Add
+  `dj new <dir> --snapshot FILE [--start-frame N]` and the same for the MCP tools.
+- **Making one from where you are, in the GUI.** "New root segment from here": take the
+  state at the playhead, store it as a blob, and create a root with that `snapshot` and
+  `start-frame`. Today it takes `dj snapshot` and Properties.
+- **A clear warning before sharing.** When a snapshot blob is added, say that it holds the
+  game's state and may not be distributable; `dj init` could also ask in config whether the
+  project may carry snapshots (`snapshots = "allowed"`), so tools warn when a blob is added
+  to a project that says no, and a project template for commercial games adds
+  `blobs/*.state` to `.gitignore`. Extend the note in
+  [segments.md](../docs/segments.md) with when sharing is fine.
+- **Checks.** A snapshot must load in the pinned core: verify it on add (load it and read
+  back the state hash, stored as `start-hash`), and say clearly which blob failed when a
+  rebuilt core can't load it (ties in with "Versioning projects"). Test on more than one
+  OS for Mesen.
+- **Tests.** A root from a snapshot plays and reproduces its hashes from an empty database;
+  a comparison core is synced at frame 0 without `DJ_SYNC_BOOT`; deleting or re-parenting
+  keeps the blob only on a root (the GUI drops it already, with a message).
+- **Docs.** gui.md and editing.md on making a snapshot root; connectors.md already says
+  `DJ_SYNC_BOOT` is only for a power-on; cli.md for the new flags.
 
 ## Known limits
 
@@ -230,6 +284,12 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   find or ask for the ROM, pick a matching core, write `config.toml`, `.gitignore`,
   a README and an empty root segment, and optionally a symbol map. `dj init` covers the
   bare minimum today; this could be an interactive mode of it or its own command.
+- **Package managers.** First releases are a folder per platform on GitHub Releases (the
+  tools, the connectors and the example, no cores; [RELEASE_PLAN.md](RELEASE_PLAN.md)). Later: a Homebrew formula or cask (a tap first,
+  then homebrew-core once it's stable), and Scoop or winget on Windows, and maybe an AUR
+  package, a Flatpak or `cargo install` for the tools alone. Open: whether patched cores
+  (GPL) are ever packaged, on their own, and where an installed copy looks
+  for its cores (next to the executable, a share directory, a user directory).
 - **Shorter segment ids.** Replace UUIDs with something short enough to quote in docs
   and commit messages, for example 8 characters of base32 (40 bits). Tools must check
   the new id against every id in the project when generating one, and try again on

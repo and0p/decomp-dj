@@ -68,7 +68,7 @@ Details, and starting your own project, are in [install.md](docs/install.md).
 and [config.md](docs/config.md). Items marked **(reserved)** may appear in files, but the
 tools don't act on them yet.
 
-Work in progress lives in [.agents/](.agents/): the [roadmap](.agents/ROADMAP.md), the
+Work in progress lives in [.agents/](.agents/): the [roadmap](.agents/ROADMAP.md) (with what comes [before the first release](.agents/ROADMAP.md#before-the-first-release)), the
 [local database design](.agents/CACHE_PLAN.md) and [results](.agents/RESULTS.md).
 
 ## Repository

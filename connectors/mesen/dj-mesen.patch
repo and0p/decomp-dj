@@ -44,10 +44,10 @@ index da527968..ef16cfa4 100644
  #endif
 diff --git a/Core/DjCoverage.cpp b/Core/DjCoverage.cpp
 new file mode 100644
-index 00000000..22a2777a
+index 00000000..a365dbf3
 --- /dev/null
 +++ b/Core/DjCoverage.cpp
-@@ -0,0 +1,187 @@
+@@ -0,0 +1,209 @@
 +#include "stdafx.h"
 +#include <cstring>
 +#include <vector>
@@ -63,6 +63,8 @@ index 00000000..22a2777a
 +
 +	BaseMapper* _mapper = nullptr;
 +	std::vector<uint8_t> _flags[RegCount];
++	const uint8_t* _data[RegCount] = {};
++	int64_t _fileOffset[RegCount] = { -1, -1, -1, -1 };
 +
 +	std::vector<dj_trace_event> _trace;
 +	size_t _traceCap = 0;
@@ -80,6 +82,16 @@ index 00000000..22a2777a
 +		_flags[RegPrg].assign(mapper->GetMemorySize(DebugMemoryType::PrgRom), 0);
 +		_flags[RegWram].assign(mapper->GetMemorySize(DebugMemoryType::WorkRam), 0);
 +		_flags[RegSram].assign(mapper->GetMemorySize(DebugMemoryType::SaveRam), 0);
++		// Internal RAM isn't handed out (the player doesn't decode it); PRG, WRAM and SRAM
++		// are the mapper's own buffers.
++		_data[RegRam] = nullptr;
++		_data[RegPrg] = mapper->GetPrgRom();
++		_data[RegWram] = _flags[RegWram].empty() ? nullptr : mapper->GetWorkRam();
++		_data[RegSram] = _flags[RegSram].empty() ? nullptr : mapper->GetSaveRam();
++		// PRG follows the 16-byte iNES header (and a 512-byte trainer, if any); other
++		// formats (UNIF, FDS) don't lay PRG out as one run of the file.
++		RomInfo info = mapper->GetRomInfo();
++		_fileOffset[RegPrg] = info.Format == RomFormat::iNes ? 16 + (info.HasTrainer ? 512 : 0) : -1;
 +	}
 +
 +	int ToRegion(AddressType type)
@@ -144,6 +156,13 @@ index 00000000..22a2777a
 +	_trace.push_back(e);
 +}
 +
++void DjCoverage::OnLoad(BaseMapper* mapper)
++{
++	if(mapper) {
++		Attach(mapper);
++	}
++}
++
 +void DjCoverage::OnExec(BaseMapper* mapper, uint16_t addr, bool opcode)
 +{
 +	if(mapper != _mapper) {
@@ -165,7 +184,7 @@ index 00000000..22a2777a
 +}
 +
 +extern "C" {
-+	static unsigned dj_api_version(void) { return 1; }
++	static unsigned dj_api_version(void) { return DJ_API_VERSION; }
 +	static size_t dj_region_count(void) { return RegCount; }
 +
 +	static bool dj_get_region(size_t index, struct dj_region* out)
@@ -176,6 +195,9 @@ index 00000000..22a2777a
 +		out->name = RegionNames[index];
 +		out->flags = _flags[index].empty() ? nullptr : _flags[index].data();
 +		out->size = _flags[index].size();
++		out->cpu = "6502";
++		out->data = _data[index];
++		out->file_offset = _fileOffset[index];
 +		return true;
 +	}
 +
@@ -237,10 +259,10 @@ index 00000000..22a2777a
 +}
 diff --git a/Core/DjCoverage.h b/Core/DjCoverage.h
 new file mode 100644
-index 00000000..cd81da3a
+index 00000000..4b2253d5
 --- /dev/null
 +++ b/Core/DjCoverage.h
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,59 @@
 +// emu_coverage connector for Mesen (libretro core).
 +// Records which bytes of each code region the CPU executed, keyed by offset
 +// into the region (PRG ROM offset, not CPU address), and counts "logic ticks"
@@ -255,12 +277,18 @@ index 00000000..cd81da3a
 +// Flag bits stored per byte.
 +#define DJ_FLAG_OPCODE  0x01  // executed as the first byte of an instruction
 +#define DJ_FLAG_OPERAND 0x02  // executed as an operand byte
++// 0x04-0x20: mode bits, defined per `cpu` (none for the 6502). 0x40-0x80: reserved.
++
++#define DJ_API_VERSION 2
 +
 +struct dj_region
 +{
-+	const char* name;     // "RAM", "PRG", "WRAM", "SRAM"
-+	uint8_t* flags;       // one byte of DJ_FLAG_* per byte of the region
++	const char* name;      // "RAM", "PRG", "WRAM", "SRAM"
++	uint8_t* flags;        // one byte of DJ_FLAG_* per byte of the region
 +	size_t size;
++	const char* cpu;       // instruction set that runs here: "6502"
++	const uint8_t* data;   // the region's bytes in the CPU's byte order, or NULL
++	int64_t file_offset;   // where offset 0 lies in the ROM file, or -1
 +};
 +
 +// Trace events (optional part of the API, dj_trace_*): one per executed instruction and
@@ -288,6 +316,9 @@ index 00000000..cd81da3a
 +	extern bool TraceOn;
 +	inline bool Tracing() { return TraceOn; }
 +	void OnExec(BaseMapper* mapper, uint16_t addr, bool opcode);
++	// Sizes the regions for a newly loaded game, so dj_get_region answers right after
++	// retro_load_game.
++	void OnLoad(BaseMapper* mapper);
 +	void OnTrace(BaseMapper* mapper, int operationType, uint16_t addr, uint8_t value, uint8_t a, uint8_t x, uint8_t y, uint8_t sp, uint8_t p, uint64_t cycle);
 +	void* GetProcAddress(const char* sym);
 +}
@@ -317,7 +348,7 @@ index a25e4467..32aac144 100644
                 $(CORE_DIR)/DefaultVideoFilter.cpp \
                 $(CORE_DIR)/RawVideoFilter.cpp \
 diff --git a/Libretro/libretro.cpp b/Libretro/libretro.cpp
-index 48fa6412..250301b0 100644
+index 48fa6412..6607c282 100644
 --- a/Libretro/libretro.cpp
 +++ b/Libretro/libretro.cpp
 @@ -5,6 +5,9 @@
@@ -346,3 +377,13 @@ index 48fa6412..250301b0 100644
  		libretro_set_core_options(env_cb, &option_categories);
  
  		static constexpr struct retro_controller_description pads1[] = {
+@@ -1135,6 +1147,9 @@ extern "C" {
+ 			//Round up to the next 1kb multiple
+ 			_saveStateSize = ((ss.str().size() * 2) + 0x400) & ~0x3FF;
+ 			retro_set_memory_maps();
++#ifdef DECOMP_DJ
++			DjCoverage::OnLoad(_console->GetMapper());
++#endif
+ 		}
+ 
+ 		return result;

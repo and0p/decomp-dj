@@ -73,6 +73,10 @@ When one ships, its user-facing description moves into `docs/` and the entry her
   Check parity were taken out of the bar; for now they're only in the Compare menu. Once
   the two-line layout exists, bring back something compact: an indicator or toggle for the
   comparison core (which one, in step or not) and for parity checking.
+- **A region dropdown for the coverage map.** Once connectors report several code regions
+  ([CONNECTOR_PLAN.md](CONNECTOR_PLAN.md)), the map and totals show them appended as one
+  block. A dropdown over the map would pick one region (or all), for systems with several
+  CPUs or RAM-resident code (SNES audio RAM, Mega Drive Z80 RAM, N64 RDRAM and RSP).
 - **Audio playback (GUI).** Play the core's audio while a segment plays, with a volume
   slider and a mute button in the playback toolbar. When more than one core is running
   (side-by-side comparison), an A|B toggle picks which core you hear.

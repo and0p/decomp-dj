@@ -13,6 +13,12 @@ use crate::cache;
 use crate::collection::Status;
 
 pub const FLAG_OPCODE: u8 = 0x01;
+/// Executed as an operand byte (docs/connectors.md). Cores that only see whole blocks may
+/// never set it; the player then works operand bytes out from instruction lengths.
+pub const FLAG_OPERAND: u8 = 0x02;
+/// The mode bits a connector may set on opcode bytes; what they mean depends on the CPU
+/// (for the 65816: 8-bit A, 16-bit A, 8-bit X, 16-bit X, docs/connectors.md).
+pub const FLAG_MODES: u8 = 0x3C;
 
 // ---- report -------------------------------------------------------------------
 
@@ -105,6 +111,9 @@ pub struct Report {
     /// Code that ran inside a `[[data]]` or `[[unreachable]]` range: the annotation is wrong,
     /// or the segment does something the game can't.
     pub annotation_warnings: Vec<AnnotationWarning>,
+    /// Notes on how the report was built, such as a region with no decoder.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
     /// What the report was worked out from, for views that need more than the rows (the GUI).
     #[serde(skip)]
     pub detail: Detail,
@@ -134,6 +143,8 @@ pub struct Detail {
     pub data: Vec<(u64, u64)>,
     /// annotations.toml as read for this report.
     pub annotations: Annotations,
+    /// The region the report rolls up (`analysis::code_region`): "PRG" on the NES.
+    pub region: String,
     /// Functions left out because annotations.toml leaves nothing of them to count.
     pub annotated_functions: Vec<analysis::Function>,
 }
@@ -164,7 +175,7 @@ impl Detail {
 
     /// The `[[data]]` or `[[unreachable]]` entry that covers PRG offset `off`.
     pub fn annotation_at(&self, off: u64) -> Option<&crate::annotations::Entry> {
-        self.annotations.excluded_at("PRG", off)
+        self.annotations.excluded_at(&self.region, off)
     }
 }
 
@@ -199,6 +210,11 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
             .context("nothing has been played into the local database yet; run `dj clean` first")?,
     };
     let keys = cache::current_keys(conn, col, &setup)?;
+    // What the connector said about its regions when this setup was played.
+    let facts = cache::setup_regions(conn, &setup);
+    let code = analysis::code_region(&facts);
+    let code = code.as_str();
+    let mut notes = vec![];
     let mut cov: BTreeMap<String, BTreeMap<String, Vec<u8>>> = BTreeMap::new();
     let mut ticks: HashMap<String, Option<i64>> = HashMap::new();
     let (mut dirty_segments, mut unplayed_segments) = (0, 0);
@@ -230,7 +246,7 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
                     regions = cache::coverage_of(conn, &k)?;
                 }
             }
-            if let Some(p) = regions.get("PRG") {
+            if let Some(p) = regions.get(code) {
                 union(if is_unsaved { &mut unsaved_prg } else { &mut dirty_prg }, p);
                 if is_unsaved {
                     unsaved_per_segment.insert(id.clone(), p.clone());
@@ -255,8 +271,8 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
         bail!("no segment has coverage recorded for its current content (was the core built with a coverage connector?); run `dj clean`");
     }
     let ann = Annotations::load(&col.root)?;
-    let unreachable = ann.ranges(Kind::Unreachable, "PRG");
-    let data = ann.ranges(Kind::Data, "PRG");
+    let unreachable = ann.ranges(Kind::Unreachable, code);
+    let data = ann.ranges(Kind::Data, code);
     let in_ranges = |r: &[(u64, u64)], off: u64| r.iter().any(|(a, b)| off >= *a && off <= *b);
     let is_unreachable = |off: u64| in_ranges(&unreachable, off);
     let is_data = |off: u64| in_ranges(&data, off);
@@ -264,8 +280,15 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
     // Symbols -> analyzed functions (PRG only for now, 6502), with annotations.toml's
     // functions merged in and its data skipped.
     let mut analyzed: Vec<AnalyzedFunction> = vec![];
-    let funcs: Vec<_> = analysis::project_functions(col, rom, &ann)?.into_iter().filter(|(f, _)| f.region == "PRG").collect();
-    if !funcs.is_empty() {
+    let funcs: Vec<_> = analysis::project_functions_with(col, rom, &ann, &facts)?.into_iter().filter(|(f, _)| f.region == code).collect();
+    // The decoder comes from the region's instruction set; with nothing recorded, an NES
+    // project is 6502 as before.
+    let cpu = facts.iter().find(|f| f.name == code).and_then(|f| f.cpu.clone()).unwrap_or_else(|| "6502".into());
+    let decodable = analysis::has_decoder(&cpu);
+    if !funcs.is_empty() && !decodable {
+        notes.push(format!("no decoder for the {cpu} instruction set yet: {code} is counted in opcode bytes, without functions or blocks"));
+    }
+    if !funcs.is_empty() && decodable {
         let Some(rom) = rom else { bail!("symbols need the ROM to disassemble") };
         let mut headers: Vec<u64> = funcs.iter().map(|(_, h)| *h).collect();
         headers.sort();
@@ -297,7 +320,7 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
 
     // Units of coverage: instruction offsets in PRG when we have symbols, else every PRG
     // byte that isn't annotated as data or unreachable.
-    let prg_size = cov.values().filter_map(|m| m.get("PRG")).map(|f| f.len()).chain([unsaved_prg.len(), dirty_prg.len()]).max().unwrap_or(0) as u64;
+    let prg_size = cov.values().filter_map(|m| m.get(code)).map(|f| f.len()).chain([unsaved_prg.len(), dirty_prg.len()]).max().unwrap_or(0) as u64;
     let units: Vec<u64> = if symbols {
         analyzed.iter().flat_map(|f| f.instructions.iter().map(|i| i.offset)).collect()
     } else {
@@ -317,7 +340,7 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
         for (name, flags) in regions {
             union(by_region.entry(name.clone()).or_default(), flags);
         }
-        if let Some(p) = regions.get("PRG") {
+        if let Some(p) = regions.get(code) {
             union(&mut all_prg, p);
             if !col.replays.get(id).map(|r| r.is_poked()).unwrap_or(false) {
                 union(&mut played_prg, p);
@@ -334,7 +357,7 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
 
     // Per-replay rows.
     let unit_hits = |flags: Option<&Vec<u8>>| -> Vec<bool> { units.iter().map(|u| hit(flags, *u)).collect() };
-    let per_replay: HashMap<&str, Vec<bool>> = cov.iter().map(|(id, m)| (id.as_str(), unit_hits(m.get("PRG")))).collect();
+    let per_replay: HashMap<&str, Vec<bool>> = cov.iter().map(|(id, m)| (id.as_str(), unit_hits(m.get(code)))).collect();
     let mut replays = vec![];
     let empty = vec![false; units.len()];
     // How many segments run each unit: a unit is unique to a segment when only it runs it.
@@ -454,12 +477,12 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
     // Code that ran where annotations.toml says none can: the first offset per entry, and
     // every segment that counts that ran any of it.
     let mut annotation_warnings = vec![];
-    for e in ann.entries.iter().filter(|e| e.region == "PRG" && e.kind != Kind::Function) {
+    for e in ann.entries.iter().filter(|e| e.region == code && e.kind != Kind::Function) {
         let ran_in = |flags: &[u8]| (e.start..=e.end).find(|o| flags.get(*o as usize).is_some_and(|b| b & FLAG_OPCODE != 0));
         let mut first: Option<u64> = None;
         let mut segments = vec![];
         for (id, regions) in &cov {
-            if let Some(o) = regions.get("PRG").and_then(|p| ran_in(p)) {
+            if let Some(o) = regions.get(code).and_then(|p| ran_in(p)) {
                 first = Some(first.map_or(o, |f| f.min(o)));
                 segments.push(id.clone());
             }
@@ -495,10 +518,11 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
         smallest_set,
         functions,
         annotation_warnings,
+        notes,
         detail: Detail {
             analyzed,
             unreachable_per_function,
-            per_segment_prg: cov.iter().filter_map(|(id, m)| m.get("PRG").map(|p| (id.clone(), p.clone()))).collect(),
+            per_segment_prg: cov.iter().filter_map(|(id, m)| m.get(code).map(|p| (id.clone(), p.clone()))).collect(),
             prg: all_prg,
             unsaved_prg,
             dirty_prg,
@@ -507,6 +531,7 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
             data,
             annotations: ann,
             annotated_functions,
+            region: code.to_string(),
         },
     })
 }

@@ -299,10 +299,19 @@ pub fn load_symbols(root: &Path, cfg: &crate::collection::SymbolsConfig, rom: Op
 /// entries applied, each with the ROM header its map says to skip. Where two maps describe
 /// the same bytes of a region, the first one listed wins.
 pub fn project_functions(col: &crate::collection::Collection, rom: Option<&[u8]>, ann: &crate::annotations::Annotations) -> Result<Vec<(Function, u64)>> {
+    project_functions_with(col, rom, ann, &[])
+}
+
+/// `project_functions`, placing each map by where the connector says its region lies in the
+/// ROM file (`facts`); `rom_header` in the map's entry overrides that.
+pub fn project_functions_with(col: &crate::collection::Collection, rom: Option<&[u8]>, ann: &crate::annotations::Annotations, facts: &[RegionFacts]) -> Result<Vec<(Function, u64)>> {
     let mut funcs: Vec<(Function, u64)> = vec![];
     for s in &col.config.symbols {
-        let header = s.rom_header.unwrap_or_else(|| default_rom_header(&s.format, rom));
-        for f in load_symbols(&col.root, s, rom)? {
+        let region = s.region.as_deref().unwrap_or("PRG");
+        let placed = facts.iter().find(|f| f.name == region).and_then(|f| f.file_offset);
+        let header = s.rom_header.or(placed).unwrap_or_else(|| default_rom_header(&s.format, rom));
+        let placed_cfg = crate::collection::SymbolsConfig { rom_header: Some(header), ..s.clone() };
+        for f in load_symbols(&col.root, &placed_cfg, rom)? {
             if !funcs.iter().any(|(g, _)| g.region == f.region && f.offset < g.offset + g.size && g.offset < f.offset + f.size) {
                 funcs.push((f, header));
             }
@@ -715,7 +724,121 @@ fn ran(flags: &[u8], off: u64) -> bool {
     flags.get(off as usize).is_some_and(|b| b & crate::coverage::FLAG_OPCODE != 0)
 }
 
-/// The bytes of every instruction that ran, operands included.
+/// What a connector reports about one of its regions (docs/connectors.md, `dj_region`),
+/// recorded per setup in the local database so queries without a core know it too.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RegionFacts {
+    pub name: String,
+    pub size: usize,
+    /// The instruction set that runs there ("6502"), if any.
+    pub cpu: Option<String>,
+    /// Whether the connector hands out the region's bytes.
+    pub has_data: bool,
+    /// Where offset 0 lies in the ROM file, for regions that come from it.
+    pub file_offset: Option<u64>,
+}
+
+/// Instruction sets the player can decode (split into instructions and blocks).
+pub fn has_decoder(cpu: &str) -> bool {
+    cpu == "6502"
+}
+
+/// The region coverage rolls up into: the first region from the ROM file whose instruction
+/// set has a decoder. "PRG" when the connector says nothing (no facts recorded yet).
+pub fn code_region(facts: &[RegionFacts]) -> String {
+    facts
+        .iter()
+        .find(|f| f.file_offset.is_some() && f.cpu.as_deref().is_some_and(has_decoder))
+        .or_else(|| facts.iter().find(|f| f.file_offset.is_some()))
+        .map(|f| f.name.clone())
+        .unwrap_or_else(|| "PRG".into())
+}
+
+/// The bytes of every instruction that ran, operands included, and whether they came from
+/// the connector's operand flags (true) or, for a core that sets none, from 6502 lengths.
+pub fn executed_bytes(prg: &[u8], flags: &[u8]) -> (Vec<bool>, bool) {
+    if has_operand_flags(flags) {
+        (flags.iter().map(|f| f & (crate::coverage::FLAG_OPCODE | crate::coverage::FLAG_OPERAND) != 0).collect(), true)
+    } else {
+        (executed_bytes_6502(prg, flags), false)
+    }
+}
+
+/// Whether the connector set the operand flag anywhere in these flags. A region with code
+/// that ran but none set comes from a core that only marks opcodes (or block starts).
+pub fn has_operand_flags(flags: &[u8]) -> bool {
+    flags.iter().any(|f| f & crate::coverage::FLAG_OPERAND != 0)
+}
+
+/// What `dj check-connector` finds: the connector's flags against the decoder, inside the
+/// functions of the symbol maps (docs/cli.md).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct ConformanceReport {
+    /// Whether the region has any operand flags (else only opcodes are checked).
+    pub operand_flags: bool,
+    /// Instructions the decoder found that ran.
+    pub instructions_checked: usize,
+    /// An opcode flag on a byte the decoder doesn't start an instruction at.
+    pub opcode_not_at_start: Vec<u64>,
+    /// An operand flag on a byte that isn't an operand of an instruction that ran.
+    pub operand_unexpected: Vec<u64>,
+    /// An operand byte of an instruction that ran, without the operand flag.
+    pub operand_missing: Vec<u64>,
+    /// Opcode bytes that ran in both widths of a mode pair (bits 0x04 and 0x08, or 0x10 and
+    /// 0x20): ambiguous lengths. Always 0 on CPUs without mode bits.
+    pub both_widths: usize,
+}
+
+/// Checks `flags` against the instructions of `funcs`, skipping bytes in `skip` (annotated
+/// data and unreachable ranges, inclusive), which the decoder was told not to read.
+pub fn check_flags(funcs: &[AnalyzedFunction], flags: &[u8], skip: &[(u64, u64)]) -> ConformanceReport {
+    use crate::coverage::{FLAG_OPCODE, FLAG_OPERAND};
+    let mut r = ConformanceReport { operand_flags: has_operand_flags(flags), ..Default::default() };
+    let at = |o: u64| flags.get(o as usize).copied().unwrap_or(0);
+    let skipped = |o: u64| skip.iter().any(|(a, b)| o >= *a && o <= *b);
+    for f in funcs {
+        let (start, end) = (f.func.offset, f.func.offset + f.func.size);
+        // What each byte of the function should carry, from the decoder.
+        let mut want = vec![0u8; (end - start) as usize];
+        for ins in &f.instructions {
+            if at(ins.offset) & FLAG_OPCODE == 0 {
+                continue;
+            }
+            r.instructions_checked += 1;
+            for k in 1..ins.len as u64 {
+                if let Some(w) = want.get_mut((ins.offset + k - start) as usize) {
+                    *w |= FLAG_OPERAND;
+                }
+            }
+        }
+        let starts: std::collections::HashSet<u64> = f.instructions.iter().map(|i| i.offset).collect();
+        for o in start..end {
+            if skipped(o) {
+                continue;
+            }
+            let (have, w) = (at(o), want[(o - start) as usize]);
+            if have & FLAG_OPCODE != 0 {
+                if !starts.contains(&o) {
+                    r.opcode_not_at_start.push(o);
+                }
+                if (have & 0x0C == 0x0C) || (have & 0x30 == 0x30) {
+                    r.both_widths += 1;
+                }
+            }
+            if r.operand_flags {
+                if have & FLAG_OPERAND != 0 && w & FLAG_OPERAND == 0 {
+                    r.operand_unexpected.push(o);
+                }
+                if w & FLAG_OPERAND != 0 && have & FLAG_OPERAND == 0 {
+                    r.operand_missing.push(o);
+                }
+            }
+        }
+    }
+    r
+}
+
+/// The bytes of every instruction that ran, operands included, from 6502 lengths.
 pub fn executed_bytes_6502(prg: &[u8], flags: &[u8]) -> Vec<bool> {
     let n = flags.len().min(prg.len());
     let mut out = vec![false; n];
@@ -811,6 +934,63 @@ mod tests {
         assert_eq!(&e[..5], &[true, true, true, true, false]);
         assert_eq!(uncovered_ranges(&e), vec![(4, 6), (7, 16)]);
         assert_eq!(uncovered_ranges(&[true, true]), vec![]);
+    }
+
+    fn facts(name: &str, cpu: Option<&str>, file_offset: Option<u64>) -> RegionFacts {
+        RegionFacts { name: name.into(), size: 0x8000, cpu: cpu.map(String::from), has_data: file_offset.is_some(), file_offset }
+    }
+
+    #[test]
+    fn code_region_from_connector_facts() {
+        // Nothing recorded: the NES default.
+        assert_eq!(code_region(&[]), "PRG");
+        // Mesen: RAM first, PRG is the region from the file with a decoder.
+        let mesen = [facts("RAM", Some("6502"), None), facts("PRG", Some("6502"), Some(16)), facts("WRAM", Some("6502"), None)];
+        assert_eq!(code_region(&mesen), "PRG");
+        // A region from the file with no decoder yet is still where coverage lies.
+        assert_eq!(code_region(&[facts("RDRAM", Some("mips"), None), facts("ROM", Some("mips"), Some(0))]), "ROM");
+        assert!(has_decoder("6502") && !has_decoder("mips") && !has_decoder("65816"));
+    }
+
+    #[test]
+    fn executed_bytes_prefer_operand_flags() {
+        // LDA #1 (2 bytes) ran. Without operand flags the length comes from the opcode;
+        // with them, the flags say it.
+        let mut f = vec![0u8; SWEEP.len()];
+        f[0] = 0x01;
+        let (e, from_flags) = executed_bytes(&SWEEP, &f);
+        assert!(!from_flags);
+        assert_eq!(&e[..3], &[true, true, false]);
+        f[1] = 0x02;
+        let (e, from_flags) = executed_bytes(&SWEEP, &f);
+        assert!(from_flags);
+        assert_eq!(&e[..3], &[true, true, false]);
+    }
+
+    #[test]
+    fn check_flags_finds_disagreements() {
+        // C000 LDA #1; BNE +2; INC $10; RTS.
+        let rom = [0xA9, 0x01, 0xD0, 0x02, 0xE6, 0x10, 0x60];
+        let f = Function { name: "f".into(), region: "PRG".into(), offset: 0, size: rom.len() as u64, cpu_addr: Some(0xC000) };
+        let a = analyze_6502(&[f], &rom);
+        // LDA and BNE ran, flagged as the decoder reads them.
+        let mut flags = vec![0x01, 0x02, 0x01, 0x02, 0, 0, 0];
+        let r = check_flags(&a, &flags, &[]);
+        assert_eq!((r.operand_flags, r.instructions_checked), (true, 2));
+        assert!(r.opcode_not_at_start.is_empty() && r.operand_unexpected.is_empty() && r.operand_missing.is_empty());
+        // An opcode inside the BNE's operand, a missing operand flag, a stray one.
+        flags[3] = 0x01;
+        flags[5] = 0x02;
+        let r = check_flags(&a, &flags, &[]);
+        assert_eq!((r.opcode_not_at_start.clone(), r.operand_missing.clone(), r.operand_unexpected.clone()), (vec![3], vec![3], vec![5]));
+        // Skipped bytes aren't checked; both widths of a mode pair are counted.
+        let r = check_flags(&a, &flags, &[(3, 5)]);
+        assert!(r.opcode_not_at_start.is_empty() && r.operand_missing.is_empty() && r.operand_unexpected.is_empty());
+        flags[0] |= 0x04 | 0x08;
+        assert_eq!(check_flags(&a, &flags, &[(3, 5)]).both_widths, 1);
+        // A core with no operand flags: only opcodes are checked.
+        let r = check_flags(&a, &[0x01, 0, 0x01, 0, 0, 0, 0], &[]);
+        assert!(!r.operand_flags && r.operand_missing.is_empty());
     }
 
     #[test]

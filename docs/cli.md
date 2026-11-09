@@ -19,6 +19,7 @@ hashes, fills the local database and reports coverage. Building it is in
 | `dj gaps <dir> [--sort size\|nearness] [--only all\|never\|partial]` | Functions with uncovered code, largest or nearest first | [coverage.md](coverage.md#from-the-command-line) |
 | `dj function <dir> ADDR` | One function's blocks (covered or not, first run, where they go), callers and the segments that enter it | [coverage.md](coverage.md#from-the-command-line) |
 | `dj frontier <dir> [ADDR]` | Covered branches and calls that lead into uncovered code, with the segments that reach them | [coverage.md](coverage.md#from-the-command-line) |
+| `dj check-connector <dir> [--json]` | Developer tool: checks the coverage connector's flags in the local database against the decoder, inside the symbol maps' functions. Lists opcode flags where the decoder starts no instruction, operand flags that don't belong to an instruction that ran, operand bytes missing their flag, and opcodes run in both widths of a mode pair; fails when any disagree. For writing or updating a connector, not for normal use | [connectors.md](connectors.md#writing-one-for-another-core) |
 | `dj mcp <dir> [--allow query\|draft\|save]` | Serves the project to an AI agent over MCP (stdio) | [mcp.md](mcp.md) |
 | `dj snapshot <dir> SEGMENT FRAME --out FILE` | Writes the core state at that frame, to start a trace from | [coverage.md](coverage.md#from-the-command-line) |
 | `dj sql <dir> "SELECT ..."` | Queries the local database | [database.md](database.md) |

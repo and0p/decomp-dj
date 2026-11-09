@@ -118,3 +118,83 @@ why = "$A4B6 ending_typeBConcertPatchToPpuForHeight: jump table, 7 entries"
 [[data]]
 range = "PRG:0x2540-0x254B"
 why = "$A540 ending_typeBConcert: jump table, 6 entries"
+
+# Inline pointers. `jsr bulkCopyToPpu` ($AA98) calls copyAddrAtReturnAddressToTmp_incrReturnAddrBy2,
+# which reads the 16-bit address after the JSR and returns past it, so the two bytes after
+# each call are data. Found by `dj check-connector` (Mesen's flags show the real path).
+
+[[data]]
+range = "PRG:0x021A-0x021B"
+why = "$8217 gameMode_legalScreen: jsr bulkCopyToPpu, inline pointer to $AD17"
+
+[[data]]
+range = "PRG:0x021F-0x0220"
+why = "$821C gameMode_legalScreen: jsr bulkCopyToPpu, inline pointer to $ADB8"
+
+[[data]]
+range = "PRG:0x026D-0x026E"
+why = "$826A gameMode_titleScreen: jsr bulkCopyToPpu, inline pointer to $AD2B"
+
+[[data]]
+range = "PRG:0x0272-0x0273"
+why = "$826F gameMode_titleScreen: jsr bulkCopyToPpu, inline pointer to $B219"
+
+[[data]]
+range = "PRG:0x02E6-0x02E7"
+why = "$82E3 gameMode_gameTypeMenu: jsr bulkCopyToPpu, inline pointer to $AD2B"
+
+[[data]]
+range = "PRG:0x02EB-0x02EC"
+why = "$82E8 gameMode_gameTypeMenu: jsr bulkCopyToPpu, inline pointer to $B67A"
+
+[[data]]
+range = "PRG:0x03F9-0x03FA"
+why = "$83F6 gameMode_levelMenu: jsr bulkCopyToPpu, inline pointer to $AD2B"
+
+[[data]]
+range = "PRG:0x03FE-0x03FF"
+why = "$83FB gameMode_levelMenu: jsr bulkCopyToPpu, inline pointer to $BADB"
+
+[[data]]
+range = "PRG:0x0407-0x0408"
+why = "$8404 gameMode_levelMenu: jsr bulkCopyToPpu, inline pointer to $C95D"
+
+[[data]]
+range = "PRG:0x0603-0x0604"
+why = "$8600 gameModeState_initGameBackground: jsr bulkCopyToPpu, inline pointer to $ACF3"
+
+[[data]]
+range = "PRG:0x0608-0x0609"
+why = "$8605 gameModeState_initGameBackground: jsr bulkCopyToPpu, inline pointer to $BF3C"
+
+[[data]]
+range = "PRG:0x1E83-0x1E84"
+why = "$9E80 endingAnimationB: jsr bulkCopyToPpu, inline pointer to $C9A6"
+
+[[data]]
+range = "PRG:0x1EA2-0x1EA3"
+why = "$9E9F endingAnimationB: jsr bulkCopyToPpu, inline pointer to $CE07"
+
+[[data]]
+range = "PRG:0x1EA7-0x1EA8"
+why = "$9EA4 endingAnimationB: jsr bulkCopyToPpu, inline pointer to $AD43"
+
+[[data]]
+range = "PRG:0x1FFE-0x1FFF"
+why = "$9FFB showHighScores_real: jsr bulkCopyToPpu, inline pointer to $C7FE"
+
+[[data]]
+range = "PRG:0x2225-0x2226"
+why = "$A222 highScoreEntryScreen: jsr bulkCopyToPpu, inline pointer to $AD2B"
+
+[[data]]
+range = "PRG:0x222A-0x222B"
+why = "$A227 highScoreEntryScreen: jsr bulkCopyToPpu, inline pointer to $C39D"
+
+[[data]]
+range = "PRG:0x2939-0x293A"
+why = "$A936 endingAnimationA: jsr bulkCopyToPpu, inline pointer to $D268"
+
+[[data]]
+range = "PRG:0x293E-0x293F"
+why = "$A93B endingAnimationA: jsr bulkCopyToPpu, inline pointer to $AD43"

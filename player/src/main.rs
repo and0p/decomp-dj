@@ -189,6 +189,13 @@ enum Cmd {
         #[command(flatten)]
         query: QueryArgs,
     },
+    /// Developer tool: check the connector's coverage flags against the decoder, inside the
+    /// symbol maps' functions (docs/cli.md)
+    CheckConnector {
+        dir: PathBuf,
+        #[command(flatten)]
+        query: QueryArgs,
+    },
     /// Serve the project to an agent over MCP (stdio); see docs/mcp.md
     Mcp {
         dir: PathBuf,
@@ -276,6 +283,7 @@ fn real_main() -> Result<()> {
         Cmd::Gaps { dir, sort, only, query } => queries::gaps(&dir, sort, only, &query),
         Cmd::Function { dir, what, query } => queries::function(&dir, &what, &query),
         Cmd::Frontier { dir, what, query } => queries::frontier(&dir, what.as_deref(), &query),
+        Cmd::CheckConnector { dir, query } => queries::check_connector(&dir, &query),
         Cmd::Snapshot { dir, segment, frame, out, local } => snapshot_cmd(&dir, &segment, frame, &out, &local),
         Cmd::Sql { dir, query } => sql(&dir, &query),
         Cmd::Worker { dir } => mcp::worker::run(dir),
@@ -332,6 +340,8 @@ fn init(dir: &Path, name: &str, rom: &Path, core_path: &Path, core_build: Option
         }
         if !core.has_connector() {
             eprintln!("note: this core has no coverage connector; replays will play but record no coverage");
+        } else {
+            print_connector_regions(&mut core, rom)?;
         }
         (core.library_name.clone(), core.library_version.clone(), core.effective_options(), regions)
     };
@@ -842,3 +852,29 @@ fn cache_gc(dir: &Path, local: &Local, force: bool) -> Result<()> {
     Ok(())
 }
 
+
+/// Prints what the connector reports about its regions (docs/connectors.md), and checks
+/// that the bytes it hands out match the ROM file where it says they lie.
+fn print_connector_regions(core: &mut libretro::Core, rom: &Path) -> Result<()> {
+    let file = std::fs::read(rom).with_context(|| format!("reading {}", rom.display()))?;
+    let facts = core.region_facts();
+    let code = decomp_dj::analysis::code_region(&facts);
+    println!("connector regions:");
+    for (i, f) in facts.iter().enumerate() {
+        let place = f.file_offset.map(|o| format!("ROM file from byte {o}")).unwrap_or_else(|| "not from the ROM file".into());
+        let decoder = match f.cpu.as_deref() {
+            Some(c) if decomp_dj::analysis::has_decoder(c) => format!("{c}"),
+            Some(c) => format!("{c} (no decoder yet)"),
+            None => "no instruction set".into(),
+        };
+        let mark = if f.name == code { "  <- coverage rolls up here" } else { "" };
+        println!("  {:<6} {:>8} bytes  {decoder}, {place}{mark}", f.name, f.size);
+        if let (Some(off), Some(data)) = (f.file_offset, core.region_data(i)) {
+            let off = off as usize;
+            if file.get(off..off + data.len()) != Some(data) {
+                eprintln!("warning: the connector's {} bytes don't match {} from byte {off}", f.name, rom.display());
+            }
+        }
+    }
+    Ok(())
+}

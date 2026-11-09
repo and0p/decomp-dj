@@ -52,12 +52,18 @@ impl Project {
             },
         };
         let ann = crate::annotations::Annotations::load(&col.root)?;
-        let mut funcs: Vec<Function> = analysis::project_functions(&col, rom.as_deref(), &ann)?.into_iter().map(|(f, _)| f).collect();
+        let facts = cache::setup_regions(&conn, &setup);
+        let mut funcs: Vec<Function> = analysis::project_functions_with(&col, rom.as_deref(), &ann, &facts)?.into_iter().map(|(f, _)| f).collect();
         funcs.sort_by_key(|f| (f.region.clone(), f.offset));
+        // The code region's bytes: where the connector says it lies in the ROM file, else
+        // the first symbol map's header, else the format's default.
+        let placed = facts.iter().find(|f| f.name == analysis::code_region(&facts)).and_then(|f| f.file_offset);
         let prg = rom.as_ref().map(|rom| {
-            let header = match col.config.symbols.first() {
-                Some(s) => s.rom_header.unwrap_or_else(|| analysis::default_rom_header(&s.format, Some(rom))),
-                None => analysis::default_rom_header("", Some(rom)),
+            let header = match (placed, col.config.symbols.first()) {
+                (_, Some(s)) if s.rom_header.is_some() => s.rom_header.unwrap(),
+                (Some(p), _) => p,
+                (None, Some(s)) => analysis::default_rom_header(&s.format, Some(rom)),
+                (None, None) => analysis::default_rom_header("", Some(rom)),
             } as usize;
             rom[header.min(rom.len())..].to_vec()
         });
@@ -95,14 +101,15 @@ impl Project {
     }
 
     /// The PRG bytes and the flags of what ran, for listing uncovered bytes without a symbol
-    /// map. Telling which bytes an instruction that ran occupies means knowing 6502
-    /// instruction lengths, so only NES ROMs can do without symbols.
+    /// map. The connector's operand flags say which bytes an instruction that ran occupies;
+    /// a core that sets none leaves it to 6502 instruction lengths, so then only NES ROMs
+    /// can do without symbols.
     fn need_flags(&mut self) -> Result<(Vec<u8>, Vec<u8>)> {
         let prg = self.need_prg()?;
-        if !self.rom.as_deref().is_some_and(|r| r.starts_with(b"NES\x1a")) {
+        let flags = self.report()?.detail.prg.clone();
+        if !analysis::has_operand_flags(&flags) && !self.rom.as_deref().is_some_and(|r| r.starts_with(b"NES\x1a")) {
             bail!("this needs a symbol map. {ADD_SYMBOLS}");
         }
-        let flags = self.report()?.detail.prg.clone();
         Ok((prg, flags))
     }
 
@@ -256,12 +263,21 @@ impl Project {
         Ok(())
     }
 
+    /// `dj check-connector`: the connector's flags in the database against the decoder,
+    /// inside the symbol maps' functions (skipping annotated data and unreachable code).
+    pub fn check_connector(&mut self) -> Result<analysis::ConformanceReport> {
+        self.analyzed()?;
+        let d = &self.report.as_ref().unwrap().detail;
+        let skip: Vec<(u64, u64)> = d.data.iter().chain(&d.unreachable).copied().collect();
+        Ok(analysis::check_flags(&d.analyzed, &d.prg, &skip))
+    }
+
     /// Uncovered PRG with no symbol map to divide it up: the runs of bytes no instruction that
     /// ran occupies, largest first (`sort` doesn't apply: nearness needs functions). Data
     /// shows up here too.
     pub fn uncovered_ranges(&mut self, _sort: GapSort, limit: usize, cursor: usize) -> Result<Page<UncoveredRange>> {
         let (prg, flags) = self.need_flags()?;
-        let mut exec = analysis::executed_bytes_6502(&prg, &flags);
+        let (mut exec, from_flags) = analysis::executed_bytes(&prg, &flags);
         self.mark_annotated(&mut exec)?;
         let mut rows: Vec<UncoveredRange> = analysis::uncovered_ranges(&exec)
             .into_iter()
@@ -269,7 +285,8 @@ impl Project {
             .collect();
         rows.sort_by(|a, b| b.bytes.cmp(&a.bytes).then(a.at.cmp(&b.at)));
         let total = rows.len();
-        let note = format!("no symbol map: these are PRG byte ranges that no instruction that ran occupies, largest first, and they include any data annotations.toml doesn't mark. For gaps by function, add a symbol map: {ADD_SYMBOLS}");
+        let how = if from_flags { "" } else { " This core sets no operand flags, so the bytes each instruction occupies come from 6502 instruction lengths." };
+        let note = format!("no symbol map: these are PRG byte ranges that no instruction that ran occupies, largest first, and they include any data annotations.toml doesn't mark.{how} For gaps by function, add a symbol map: {ADD_SYMBOLS}");
         Ok(Page::new(rows.into_iter().skip(cursor).take(limit).collect(), total, cursor).with_note(note))
     }
 
@@ -850,6 +867,8 @@ mod tests {
         assert!(v["items"][0].get("ways_in").is_none());
         let note = g.note.unwrap();
         assert!(note.contains("no symbol map") && note.contains("[[symbols]]"), "{note}");
+        // The fixture's core set no operand flags: lengths came from the 6502 table.
+        assert!(note.contains("no operand flags"), "{note}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -915,6 +934,47 @@ mod tests {
         assert_eq!((r.totals.instructions, r.totals.data_bytes), (4, 3));
         assert_eq!(r.totals.annotated_functions, 0);
         assert_eq!(p.resolve("tail").unwrap().offset, 7);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Records connector facts for the fixture's setup, as a session would.
+    fn record_regions(dir: &std::path::Path, regions: &str) {
+        let conn = rusqlite::Connection::open(dir.join(".local").join("cache.db")).unwrap();
+        let info = serde_json::json!({ "regions": regions }).to_string();
+        conn.execute("UPDATE setups SET info = ?1 WHERE id = 'setup'", [info]).unwrap();
+    }
+
+    #[test]
+    fn the_connector_places_symbols_and_picks_the_decoder() {
+        let csv = "name,region,offset,size,cpu\nf,PRG,0,4,8000\n";
+        // PRG from byte 16 as Mesen reports it: the same as the iNES default.
+        let (dir, _) = project_full("facts", true, 2, None, Some(csv));
+        record_regions(&dir, r#"[{"name":"RAM","size":2048,"cpu":"6502","has_data":false,"file_offset":null},{"name":"PRG","size":32768,"cpu":"6502","has_data":true,"file_offset":16}]"#);
+        let mut p = Project::open(&dir, None).unwrap();
+        let r = p.report().unwrap();
+        assert!(r.symbols && r.notes.is_empty());
+        assert_eq!((r.detail.region.as_str(), r.totals.instructions), ("PRG", 2));
+        // An instruction set with no decoder: no functions, and a note saying why.
+        record_regions(&dir, r#"[{"name":"PRG","size":32768,"cpu":"z80","has_data":true,"file_offset":16}]"#);
+        let mut p = Project::open(&dir, None).unwrap();
+        let r = p.report().unwrap();
+        assert!(!r.symbols);
+        assert!(r.notes.iter().any(|n| n.contains("no decoder for the z80")), "{:?}", r.notes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn check_connector_without_operand_flags() {
+        // f is LDA #1; BNE: both ran, flagged as opcodes only.
+        let (dir, mut p) = project_full("check", true, 2, None, Some("name,region,offset,size,cpu\nf,PRG,0,4,8000\n"));
+        let r = p.check_connector().unwrap();
+        assert!(!r.operand_flags);
+        assert_eq!(r.instructions_checked, 2);
+        assert!(r.opcode_not_at_start.is_empty() && r.operand_unexpected.is_empty() && r.operand_missing.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+        // Without symbols there are no functions to check against.
+        let (dir, mut p) = project("check2", true);
+        assert!(p.check_connector().err().unwrap().to_string().contains("needs a symbol map"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

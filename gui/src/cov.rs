@@ -174,9 +174,9 @@ fn counted_color(c: &Cell) -> Color32 {
 }
 
 /// The annotations.toml entries over a cell, with why each is there.
-fn annotation_notes(ui: &mut egui::Ui, ann: &decomp_dj::annotations::Annotations, c: &Cell) {
+fn annotation_notes(ui: &mut egui::Ui, ann: &decomp_dj::annotations::Annotations, region: &str, c: &Cell) {
     use decomp_dj::annotations::Kind;
-    for e in ann.entries.iter().filter(|e| e.region == "PRG" && e.start < c.offset + c.size.max(1) && e.end >= c.offset) {
+    for e in ann.entries.iter().filter(|e| e.region == region && e.start < c.offset + c.size.max(1) && e.end >= c.offset) {
         let (color, what) = match e.kind {
             Kind::Unreachable => (UNREACHABLE, "unreachable".to_string()),
             Kind::Data => (UNREACHABLE, "data".to_string()),
@@ -514,10 +514,10 @@ impl CovState {
     }
 }
 
-/// The connector's PRG flags since they were last cleared, clearing them (None: the core
-/// has no PRG coverage, or nothing ran).
+/// The connector's flags for the code region (PRG on the NES) since they were last cleared,
+/// clearing them (None: the core has no such coverage, or nothing ran).
 pub(crate) fn take_prg_flags(core: &mut decomp_dj::libretro::Core) -> Option<Vec<u8>> {
-    let i = core.coverage_region_index("PRG")?;
+    let i = core.code_region_index()?;
     let flags = core.coverage_slice(i)?;
     if !flags.iter().any(|b| *b != 0) {
         return None;
@@ -599,7 +599,8 @@ impl App {
         let Some(c) = &s.cache else { return };
         let Some(cl) = self.cov.cells.get(cell) else { return };
         let end = cl.offset + cl.size.max(1) - 1;
-        let res = decomp_dj::coverage::first_hits_in(col, c.conn(), &c.setup, "PRG", cl.offset, end).map_err(|e| format!("{e:#}"));
+        let region = self.cov.report.as_ref().map_or("PRG".to_string(), |r| r.detail.region.clone());
+        let res = decomp_dj::coverage::first_hits_in(col, c.conn(), &c.setup, &region, cl.offset, end).map_err(|e| format!("{e:#}"));
         self.cov.hits = Some((cell, res));
     }
 
@@ -745,7 +746,7 @@ impl App {
                         if c.data > 0 {
                             ui.label(RichText::new(format!("{} bytes of data", c.data)).color(UNREACHABLE));
                         }
-                        annotation_notes(ui, &r.detail.annotations, c);
+                        annotation_notes(ui, &r.detail.annotations, &r.detail.region, c);
                     });
                 }
                 if resp.clicked() {

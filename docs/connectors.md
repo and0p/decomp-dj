@@ -8,17 +8,32 @@ counts no [ticks](playback.md#logic-ticks-draft). The only connector so far is f
 ## What a connector reports
 
 - Executed locations as **offsets into ROM regions**, never CPU addresses, because bank switching maps different ROM bytes to the same CPU address.
-- One flag byte per byte of each region: `0x01` executed as an opcode, `0x02` executed as an operand. Flags only ever get set, until the player clears them.
-- Region names the player knows: `PRG` for program ROM is the one coverage rolls up. Mesen also reports `RAM`, `WRAM` and `SRAM`.
+- One flag byte per byte of each region (below). Flags only ever get set, until the player clears them.
+- For each region: its name, the instruction set that runs there, its bytes, and where it lies in the ROM file. The connector is the source of these facts; projects don't configure them ([.agents/CONNECTOR_PLAN.md](../.agents/CONNECTOR_PLAN.md) has the reasoning).
+- **Region names are a contract per system**, so that two cores for one system can share a project's coverage, annotations and symbol maps. NES: `PRG` (program ROM), `RAM`, `WRAM`, `SRAM`. Coverage rolls up into the first region from the ROM file whose instruction set has a decoder (`PRG` on the NES).
+
+| Bits | Meaning |
+| --- | --- |
+| `0x01` | ran as the first byte of an instruction |
+| `0x02` | ran as an operand byte. A core that only sees whole blocks may set `0x01` on each block's first byte and nothing else; the player then works operand bytes out from instruction lengths |
+| `0x04`-`0x20` | mode bits, on opcode bytes, defined per instruction set (none for the 6502) |
+| `0x40`, `0x80` | reserved |
+
+Mode bits are generic: what each means comes from the region's `cpu`. For the 65816, for
+example, they would record the register widths an opcode ran with, so an opcode run in both
+keeps both: `0x04` 8-bit accumulator, `0x08` 16-bit accumulator, `0x10` 8-bit index
+registers, `0x20` 16-bit index registers.
 
 ## The API
 
 The core registers `RETRO_ENVIRONMENT_SET_PROC_ADDRESS_CALLBACK` and returns these
 functions by name. The player looks them up after `retro_init`, and treats a core without
-them as having no connector.
+them as having no connector. It reads the regions after `retro_load_game` (a core for
+several systems reports different ones per game). A connector of another API version is
+ignored with a warning: rebuild it.
 
 ```c
-uint32_t dj_api_version(void);                       // 1
+uint32_t dj_api_version(void);                       // 2
 size_t   dj_region_count(void);
 bool     dj_get_region(size_t index, struct dj_region *out);
 void     dj_clear(void);                             // zero every flag and the tick count
@@ -26,11 +41,21 @@ void     dj_set_tick_exec(int region, int64_t offset); // count executions here;
 uint64_t dj_get_tick_count(void);
 
 struct dj_region {
-    const char *name;   // "PRG", "RAM", ...
-    uint8_t    *flags;  // one flag byte per region byte, owned by the core
-    size_t      size;
+    const char    *name;        // "PRG", "RAM", ...
+    uint8_t       *flags;       // one flag byte per region byte, owned by the core
+    size_t         size;
+    const char    *cpu;         // instruction set that runs here ("6502"), or NULL
+    const uint8_t *data;        // the region's bytes in the CPU's byte order, or NULL
+    int64_t        file_offset; // where offset 0 lies in the ROM file, or -1
 };
 ```
+
+`data` lets the player read the bytes the core runs, at the offsets the flags use; a core
+that keeps ROM byte-swapped in memory hands out a copy in the CPU's order. `file_offset`
+places symbol maps whose offsets count from the start of the ROM file (ca65 `.dbg`, splat,
+ld maps): Mesen reports 16 for `PRG`, after the iNES header (528 with a trainer), and -1 for
+the RAM regions. `dj init` prints what the connector reports and checks `data` against the
+ROM file. The player records these facts per setup in the local database.
 
 The player calls `dj_clear` when a segment starts and reads the flags as it plays, so
 each segment records only its own frames. The GUI also reads and clears them on every
@@ -144,8 +169,9 @@ error or a failed `dj_run` stops playback at that frame ([gui.md](gui.md#compari
 1. Find where the core fetches an instruction byte, and where it can turn a CPU address into a ROM offset (Mesen's mappers already do: `BaseMapper::GetAbsoluteAddressAndType`).
 2. Set the opcode flag on the first byte of each instruction and the operand flag on the rest. Count a tick when the opcode fetch matches the tick location.
 3. Expose the functions above through the proc address callback.
-4. Check that state hashes are identical with and without the patch, on every segment of a project, and measure the slowdown (about 5% for Mesen).
+4. Check that state hashes are identical with and without the patch, on every segment of a project, and measure the slowdown (about 5% for Mesen). With a symbol map, `dj check-connector` compares the flags with the decoder ([cli.md](cli.md)). A disagreement can also mean data inside a function that annotations.toml doesn't mark yet, such as inline arguments after a `JSR`.
 5. Pin the upstream commit and ship a `build.sh` and the patch under `connectors/<core>/`, like Mesen's.
 
-Rolling coverage up into functions and blocks also needs a sweep for the core's CPU. Only
-the 6502 has one so far ([coverage.md](coverage.md#limits)).
+Rolling coverage up into functions and blocks also needs a decoder for the region's `cpu`.
+Only the 6502 has one so far ([coverage.md](coverage.md#limits)); for any other, the report
+counts opcode bytes and says no decoder exists yet.

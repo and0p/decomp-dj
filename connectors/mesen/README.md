@@ -26,8 +26,16 @@ debugger, so the patch adds a small hook instead of reusing it.
 - `retro_set_environment` registers `RETRO_ENVIRONMENT_SET_PROC_ADDRESS_CALLBACK`,
   which exposes the functions below.
 
-Regions, in index order: `RAM` (2 KB internal), `PRG` (PRG ROM), `WRAM`, `SRAM`.
-Each byte holds flags: `0x01` executed as an opcode, `0x02` executed as an operand.
+- `retro_load_game` sizes the regions for the loaded game (`DjCoverage::OnLoad`), so
+  they can be read right after loading.
+
+Regions, in index order: `RAM` (2 KB internal), `PRG` (PRG ROM), `WRAM`, `SRAM`, all
+with `cpu` `"6502"` (connector API version 2). `PRG` hands out the mapper's PRG ROM as
+`data` and lies in the ROM file from byte 16 (after the iNES header; 528 with a trainer;
+-1 for UNIF and FDS images). `WRAM` and `SRAM` hand out their buffers when the board has
+them; `RAM` hands out none. Each byte holds flags: `0x01` executed as an opcode, `0x02`
+executed as an operand. Built with this patch, the project's `[core] build` is
+`mesen@0102910c+dj2`.
 
 The patch adds one call to every instruction-fetch cycle. On the Thwaite
 example it costs about 5% (482 vs 506 frames per second on one x86_64 core,

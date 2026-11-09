@@ -1,6 +1,7 @@
 # Plan: connectors and decoding beyond the NES
 
-Status: planning notes and hypotheses, not shipped behaviour. [connectors.md](../docs/connectors.md)
+Status: planning notes and hypotheses, not shipped behaviour; the plan was approved to go
+ahead on 2026-11-09 (see "Suggested order"). [connectors.md](../docs/connectors.md)
 is the source of truth for the current API. Written 2026-11-09 from a look at how more
 cores would fit next to Mesen (NES): bsnes-mercury (SNES), mupen64plus-libretro-nx (N64) and
 Genesis Plus GX (Sega).
@@ -216,6 +217,29 @@ core is mupen64plus-core plus RSP and RDP plugins, built into one libretro core.
   Overlays share VRAM, so a VRAM address alone doesn't say which overlay ran. Rolling up by
   VRAM needs "which segment occupied this RDRAM at the time": the connector's provenance
   (for DMA'd code) or a match of the RDRAM bytes against the decomp's built segments.
+
+**The virtual-address problem, plainly**
+
+N64 code lives in the ROM but runs from RDRAM, copied there by the game. There are three
+addresses for the same instruction: its ROM offset, its RDRAM (physical) address, and its
+virtual address (VRAM, what symbol maps use; usually `0x80000000` plus the physical address,
+or TLB-mapped).
+
+- **The main segment** is copied once at boot to a fixed place and stays there. Its VRAM is
+  a stable name for its code, so coverage by VRAM and a VRAM symbol map work as they do for
+  ROM offsets on the NES.
+- **Overlays** are loaded on demand into VRAM ranges they share with other overlays. The same
+  RDRAM address holds different code at different times, so flags keyed by RDRAM offset alone
+  merge them: coverage of one overlay gets credited to whichever overlay the symbol map lists
+  at that address.
+- **Relocated overlays** (common in games with many small loadable modules, such as actor
+  overlays) are linked at one VRAM and loaded at another, chosen at run time. Their code
+  doesn't even sit at its symbol map's address.
+
+So coverage tracking itself still works (the flags record what ran); what breaks is
+attributing overlaid code to the right function. Until `dj_origin` or another way to tell
+overlays apart exists, coverage of overlaid code is approximate (merged) and should be marked
+so; the main segment is exact.
 
 **MIPS decoding**
 
@@ -438,7 +462,9 @@ from outside anyway (`op_table` holds handlers, not lengths; its disassembler is
 Mesen may be the exception: its debugger disassembles with lengths and is used by its own
 UI, so a decode call could wrap it. Not checked, and it would still only help one core.
 
-**Conformance check.** Instead of trusting this, check each new connector: after
+**Conformance check.** It would be needed with per-core decoders too: it validates the
+offsets and flags a connector reports, not only the decoding, so moving decoders into
+connectors wouldn't remove it. Instead of trusting this, check each new connector: after
 hydrating a project, every byte the core flagged `0x01` must be an instruction start the
 decoder agrees with, and the `0x02` bytes after it must match the decoded length (no `0x02`
 on a byte the decoder calls an opcode, and the reverse). Run within symbol-map functions
@@ -508,7 +534,7 @@ what a connector can't know. No per-system "profiles" for connecting or decoding
   so it shows in diffs and another machine can't silently differ. Hand edits are overrides.
 - Conventions are per system, not per connector: a second core for the same system must
   report the same region names and layout, or stored coverage, annotations and symbol maps
-  stop matching. That's a contract in connectors.md, enforced by the conformance check.
+  stop matching. That's a contract in connectors.md (the conformance check can help verify it).
 - Third-party comparison cores (a decomp built as a core) must follow the same documented
   convention for the regions they report.
 - Cores without a connector (plain libretro cores, coverage off) get their defaults from
@@ -523,8 +549,7 @@ what a connector can't know. No per-system "profiles" for connecting or decoding
 1. **Mesen gets rebuilt for API 2**, no compatibility layer for API 1: dj is pre-alpha with
    no outside contracts. Projects re-clean; segment files keep their RAM hashes.
 2. **Region names are fixed for a project's lifetime** (pinned ROM, system and core build).
-   The NES keeps `PRG`. Names are a per-system contract in connectors.md, enforced by the
-   conformance check.
+   The NES keeps `PRG`. Names are a per-system contract in connectors.md.
 3. **A symbol map's region is inferred** where possible (from the format, and addresses
    through the connector's mapping), and specified only as an override. The NES doesn't need
    it.
@@ -537,6 +562,29 @@ what a connector can't know. No per-system "profiles" for connecting or decoding
 7. **The N64 (mupen64plus-libretro-nx) is the next connector**, after the Mesen refactor.
 8. **Save-state round-trip determinism is the first N64 experiment**, since its saves are
    deferred to a safe point.
+9. **Several regions in the GUI:** shown appended as one large block (map and totals). A
+   dropdown to pick a region is in the roadmap (GUI section).
+10. **RAM-resident code (WRAM and the like):** inferred when it can be inferred with
+    certainty; otherwise the symbol map names the region.
+11. **A region run by two instruction sets:** handled when the Mega Drive is added.
+12. **Licences (Genesis Plus GX):** handled when those systems are added: use another core,
+    or leave users to build their own connector.
+13. **N64 provenance: on the back burner.** Start with coverage by VRAM in an `RDRAM`
+    region, which works for code that isn't overlaid (the main segment, say); `dj_origin`
+    only once overlays need telling apart. This is about the baseline core's coverage, not
+    parity: comparison cores sync through `dj_sync` or save states and need no mapping. The
+    option of the player matching RDRAM bytes against the decomp's built segments is
+    dropped for now.
+14. **An opcode run in both widths:** split the block there and count it once, marked
+    ambiguous; all mode bits stored.
+15. **Mode bits:** generic bits `0x04`-`0x20` defined per instruction set, with per-CPU
+    named aliases in the header and a table in connectors.md.
+16. **Conformance is a contract, not a required step.** Connectors shipped with dj are
+    assumed compatible with the decoders shipped with them. The contract in connectors.md
+    is what third-party connector authors must follow. The conformance check becomes an
+    optional developer and debugging tool (`dj check-connector` or similar), for writing a
+    new connector, after bumping a connector's upstream, or for third parties verifying
+    theirs. Users don't run it.
 
 ### Draft API changes (not in connectors.md)
 
@@ -615,37 +663,89 @@ per-system contract), the instruction set per region (from the connector, inferr
 NES), ROM layout (from the connector, `data` and `file_offset`), regions read after
 `retro_load_game`, and the dynarec (forced off by the patch, not warned about).
 
+Decided after weighing these (decisions 14 and 15):
+
+**An opcode that runs in both widths.** On the 65816, `LDA #imm` is 2 bytes with an 8-bit
+accumulator and 3 with a 16-bit one. A routine called both ways sets both width bits on
+the opcode, and the byte after the operand gets `0x01` in one run and `0x02` in the other.
+
+| Option | For | Against |
+| --- | --- | --- |
+| (1) Count each (offset, mode) as its own instruction, decoding both streams | exact; shows both paths | counts and blocks no longer add up per byte; more decoder and UI work |
+| (2) Split the block there and count the instruction once, marked ambiguous | simple; totals stay per byte; the mark says why | under-counts one of the paths |
+| (3) Pick one mode silently (first or last seen) | simplest | hides real behaviour; wrong blocks after it |
+
+Decided: (2), with all four bits stored so (1) stays possible later, and the conformance
+check reporting how often it happens.
+
+**Mode bits: generic or named per CPU.**
+
+| Option | For | Against |
+| --- | --- | --- |
+| Generic: bits `0x04`-`0x20` mean whatever the region's `cpu` defines | one flag layout; no API change per new CPU; the decoder already knows the `cpu` | the same bit means different things per CPU; tools must read them with the `cpu` at hand |
+| Named per CPU, each in its own bits | self-describing | six free bits run out fast (the 65816 needs four, ARM/Thumb two more) |
+
+Decided: generic bits in the API and the database, with per-CPU named aliases in the header
+(`#define DJ_FLAG_65816_A8 DJ_FLAG_MODE0`) and a table in connectors.md. Which CPUs need
+them: the 65816 (M and X) and ARM (ARM/Thumb). None for the 6502, 68000, Z80 or MIPS.
+
 Still open:
 
-- An opcode run in both widths has both bits set: the decoder then has two lengths for it.
-  Probably split the block there and count the instruction once, marked ambiguous.
-- Whether the mode bits should be generic ("CPU-specific bits 0x04-0x20") or named per CPU.
-- How the GUI and reports mark approximate counts for never-entered functions.
-- How the GUI shows several regions (one map per region, a selector) beyond the default of
-  "regions with a symbol map".
-- Whether WRAM-resident code should roll up anywhere (a symbol map region for WRAM, say).
-- A region run by two instruction sets can't be described by one `cpu` field (rare: the
-  Mega Drive's Z80 reaching the 68000 bus).
-- Licences: Genesis Plus GX's non-commercial licence would cover its connector patch.
-- N64: whether provenance lives in the connector (`dj_origin`, flags on ROM) or the player
-  matches RDRAM bytes against the decomp's built segments; and how symbol maps say which
-  overlay a VRAM address belongs to (splat's segment list, per-overlay maps).
-- Whether the conformance check is a command of its own or runs automatically after a first
-  hydrate with a new core build.
+Deferred (2026-11-09, "address later"):
+
+- How the GUI and reports mark approximate counts (never-entered functions, overlaid N64
+  code).
+- N64 overlays: telling them apart (`dj_origin` or otherwise).
 
 ## Suggested order
 
-1. Player: use the operand flag for executed bytes (works with Mesen today), and add the
-   conformance check; run it on Mesen to establish the baseline.
-2. API 2 with Mesen rebuilt: `cpu`, `data` and `file_offset` per region; the decoder picked
-   from `cpu`; regions other than `PRG`; symbol maps placed by `file_offset` (`rom_header` an
-   override); `dj init` recording what the connector reports; cache settings measured.
-   Migrate and re-clean the example projects.
+1. **Done 2026-11-09.** The player uses the operand flag for executed bytes
+   (`analysis::executed_bytes`: `flags & 0x03` when the region has any `0x02`, else 6502
+   lengths, and the no-map `gaps` note says which), so no-map `gaps` also works on non-NES
+   ROMs when the core sets operand flags. `dj check-connector` (docs/cli.md) is the optional
+   developer check. Results with Mesen:
+   - Thwaite: 3733 instructions checked, operand flags present, no disagreements.
+   - Tetris: 3610 checked, operand flags present, 37 disagreeing bytes (15 opcode flags where
+     the decoder starts no instruction, 22 unexpected operand flags, none missing). All are
+     in functions calling `bulkCopyToPpu` ($AA98), which takes a 2-byte inline pointer after
+     the `JSR`: the decoder reads the pointer as instructions, while Mesen's flags show the
+     real path. So it's unannotated data, not a connector fault; `[[data]]` entries for those
+     19 call sites would fix the decoder's counts there.
+   - Tetris totals unchanged (3610 / 4679 instructions, 792 / 1011 blocks, 207 / 241
+     functions); no-map `gaps` unchanged (108 ranges, largest 13,069 bytes).
+   Covered-instruction counts with a symbol map already came from opcode flags on decoded
+   instructions, so they didn't change; the operand flag only matters for executed bytes.
+2. **Done 2026-11-09, except measured cache settings.** Connector API 2
+   (docs/connectors.md): `dj_region` gains `cpu`, `data` and `file_offset`; mode bits
+   `0x04`-`0x20` generic per `cpu`; regions read after `retro_load_game`; no API 1 support.
+   - Mesen patch: all regions `cpu` "6502"; `PRG` hands out PRG ROM with `file_offset` 16
+     (528 with a trainer, -1 for UNIF/FDS); `WRAM`/`SRAM` buffers when present, `RAM` none;
+     regions sized at load (`DjCoverage::OnLoad`). Core rebuilt with `build.sh`: sha256
+     `3e9a32e4916cf47a25e103dfc2ad109cbcc137c8ca2c8e9ddaa7ff8763772ae0` (was `283a709a…`);
+     examples pinned to `mesen@0102910c+dj2`.
+   - Player: reads the v2 struct; records the connector's region facts per setup in the
+     local database (`setups.info` "regions"; read by `cache::setup_regions`); the report
+     rolls up `analysis::code_region` (first region from the ROM file with a decoder, `PRG`
+     when nothing is recorded) and picks the decoder from its `cpu` (an unknown one gives
+     opcode-byte counts and a report note); symbol maps are placed by the region's
+     `file_offset` (`rom_header` overrides); the GUI's live coverage, first hits and
+     annotation notes use the report's region. `dj init` prints the regions and checks each
+     region's `data` against the ROM file at `file_offset`. No new config keys: build,
+     options, hash regions and ports were already recorded.
+   - Migration: both examples re-cleaned with the new core; every ending hash reproduced
+     (Tetris 29 segments, Thwaite 12, none changed). `dj check-connector`: no disagreements
+     on either (Tetris 3625 instructions checked after its 19 `bulkCopyToPpu` inline
+     pointers were annotated; Thwaite 3733).
+   - Not done: measuring cache settings (presets stay); decoding from the connector's `data`
+     during a session (queries run without a core, so they slice the ROM file at
+     `file_offset`, which `dj init` checks is the same bytes); query output and CLI/MCP
+     addresses still say `PRG:` (fine for the NES; generalise with the first non-NES
+     connector).
 3. The N64: first the save-state round-trip test (serialize, unserialize, run on, compare
    hashes, since saves are deferred to a safe point). Then a mupen64plus-libretro-nx
    connector on the cached interpreter (forced by the patch), an `RDRAM` region, symbol maps
-   by VRAM (splat), the MIPS decoder, and the checks: hashes with and without the patch,
-   slowdown, the conformance check.
+   by VRAM (splat), the MIPS decoder, and the checks: hashes with and without the patch, and
+   slowdown.
 4. N64 attribution to ROM: `dj_origin` from PI DMA provenance, overlays, and how symbol maps
    key them.
 5. Later: other cores and their decoders (FCEUmm as a cheap side check of one decoder per

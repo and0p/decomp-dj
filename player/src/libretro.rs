@@ -128,12 +128,26 @@ struct MemoryMap {
     num_descriptors: u32,
 }
 
+/// `struct dj_region`, API 2 (docs/connectors.md).
 #[repr(C)]
 struct DjRegionC {
     name: *const c_char,
     flags: *mut u8,
     size: usize,
+    cpu: *const c_char,
+    data: *const u8,
+    file_offset: i64,
 }
+
+impl DjRegionC {
+    fn empty() -> Self {
+        DjRegionC { name: std::ptr::null(), flags: std::ptr::null_mut(), size: 0, cpu: std::ptr::null(), data: std::ptr::null(), file_offset: -1 }
+    }
+}
+
+/// The connector API version the player speaks. No compatibility with older connectors:
+/// rebuild them (connectors/README.md).
+pub const DJ_API_VERSION: u32 = 2;
 
 type HwResetFn = unsafe extern "C" fn();
 
@@ -713,8 +727,8 @@ impl Core {
                     gpa(c.as_ptr())
                 };
                 let version: unsafe extern "C" fn() -> u32 = std::mem::transmute(get("dj_api_version")?);
-                if version() != 1 {
-                    eprintln!("warning: coverage connector API version {} is not supported", version());
+                if version() != DJ_API_VERSION {
+                    eprintln!("warning: this core's coverage connector speaks API version {}, but dj needs version {DJ_API_VERSION}: rebuild the core (connectors/README.md). Playing without coverage.", version());
                     return None;
                 }
                 Some(Connector {
@@ -972,7 +986,7 @@ impl Core {
         let mut out = vec![];
         unsafe {
             for i in 0..(c.region_count)() {
-                let mut r = DjRegionC { name: std::ptr::null(), flags: std::ptr::null_mut(), size: 0 };
+                let mut r = DjRegionC::empty();
                 if !(c.get_region)(i, &mut r) {
                     continue;
                 }
@@ -984,11 +998,54 @@ impl Core {
         out
     }
 
+    /// What the connector reports about each region (docs/connectors.md), without the flags.
+    pub fn region_facts(&mut self) -> Vec<crate::analysis::RegionFacts> {
+        let Some(c) = &self.connector else { return vec![] };
+        let mut out = vec![];
+        unsafe {
+            for i in 0..(c.region_count)() {
+                let mut r = DjRegionC::empty();
+                if !(c.get_region)(i, &mut r) {
+                    continue;
+                }
+                let s = |p: *const c_char| (!p.is_null()).then(|| CStr::from_ptr(p).to_string_lossy().into_owned());
+                out.push(crate::analysis::RegionFacts {
+                    name: s(r.name).unwrap_or_else(|| format!("R{i}")),
+                    size: r.size,
+                    cpu: s(r.cpu),
+                    has_data: !r.data.is_null(),
+                    file_offset: u64::try_from(r.file_offset).ok(),
+                });
+            }
+        }
+        out
+    }
+
+    /// The bytes of region `i` as the connector hands them out (the CPU's byte order).
+    pub fn region_data(&mut self, i: usize) -> Option<&[u8]> {
+        let c = self.connector.as_ref()?;
+        unsafe {
+            let mut r = DjRegionC::empty();
+            if !(c.get_region)(i as _, &mut r) || r.data.is_null() {
+                return None;
+            }
+            Some(std::slice::from_raw_parts(r.data, r.size))
+        }
+    }
+
+    /// The index of the region coverage rolls up into: the first one from the ROM file
+    /// whose instruction set has a decoder (`analysis::code_region`).
+    pub fn code_region_index(&mut self) -> Option<usize> {
+        let facts = self.region_facts();
+        let name = crate::analysis::code_region(&facts);
+        facts.iter().position(|f| f.name == name)
+    }
+
     /// The connector's live flags for region `i`, without copying (for per-frame scans).
     pub fn coverage_slice(&mut self, i: usize) -> Option<&[u8]> {
         let c = self.connector.as_ref()?;
         unsafe {
-            let mut r = DjRegionC { name: std::ptr::null(), flags: std::ptr::null_mut(), size: 0 };
+            let mut r = DjRegionC::empty();
             if !(c.get_region)(i as _, &mut r) || r.flags.is_null() {
                 return None;
             }
@@ -1000,7 +1057,7 @@ impl Core {
         let Some(c) = &self.connector else { return None };
         unsafe {
             for i in 0..(c.region_count)() {
-                let mut r = DjRegionC { name: std::ptr::null(), flags: std::ptr::null_mut(), size: 0 };
+                let mut r = DjRegionC::empty();
                 if (c.get_region)(i, &mut r) && !r.name.is_null() && CStr::from_ptr(r.name).to_string_lossy() == name {
                     return Some(i);
                 }
@@ -1051,7 +1108,7 @@ impl Core {
     pub fn coverage_slice_mut(&mut self, i: usize) -> Option<&mut [u8]> {
         let c = self.connector.as_ref()?;
         unsafe {
-            let mut r = DjRegionC { name: std::ptr::null(), flags: std::ptr::null_mut(), size: 0 };
+            let mut r = DjRegionC::empty();
             if !(c.get_region)(i as _, &mut r) || r.flags.is_null() {
                 return None;
             }

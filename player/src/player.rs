@@ -167,6 +167,7 @@ impl Session {
                 ("core_version", core_version.clone()),
                 ("core_build", col.config.core.build.clone()),
                 ("core_sha256", core_sha.clone()),
+                ("regions", serde_json::to_string(&core.region_facts())?),
             ];
             let mut c = Cache::open(col, &setup_id, &info, settings)?;
             c.refresh_now(col)?;

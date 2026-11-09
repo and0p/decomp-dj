@@ -90,9 +90,11 @@ there is more.
 dj expects the project to bring its symbols ([coverage.md](coverage.md#symbol-maps)).
 Without a `[[symbols]]` entry, `where_runs`, `coverage_summary` and the play tools work as
 usual, `function` and `frontier` return an error that says how to add a map, and `gaps`
-lists, on NES ROMs, the runs of PRG bytes that no instruction that ran occupies, largest
-first (`sort` and `only` don't apply), with a `note` saying so. These include data, such as
-tables and padding. On other ROMs `gaps` returns the same error as `function`.
+lists the runs of PRG bytes that no instruction that ran occupies, largest first (`sort` and
+`only` don't apply), with a `note` saying so. These include data, such as tables and
+padding. Which bytes an instruction occupies comes from the connector's operand flags; for a
+core that sets none, it comes from 6502 instruction lengths (the `note` says so), and then
+only NES ROMs work: on others `gaps` returns the same error as `function`.
 
 Agents can also read the project directly: segment files, `config.toml`, symbol maps and
 `report/` are plain text, and `dj sql` or `sqlite3` read `.local/cache.db` (query its

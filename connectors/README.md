@@ -16,9 +16,12 @@ void     dj_set_tick_exec(int region, int64_t offset); /* -1 disables */
 uint64_t dj_get_tick_count(void);
 ```
 
+- API version 2: each region also reports its instruction set (`cpu`), its bytes
+  (`data`) and where it lies in the ROM file (`file_offset`). See
+  [docs/connectors.md](../docs/connectors.md#the-api).
 - `flags` has one byte per byte of the region: `0x01` executed as an opcode
-  (first byte of an instruction), `0x02` executed as an operand. Higher bits
-  are reserved.
+  (first byte of an instruction), `0x02` executed as an operand, `0x04`-`0x20`
+  mode bits defined per instruction set. `0x40` and `0x80` are reserved.
 - Offsets are positions **in the region** (for example PRG ROM), never CPU
   addresses, so bank-switched code is counted correctly.
 - A core whose recompiler only sees whole blocks may set `0x01` on each block's

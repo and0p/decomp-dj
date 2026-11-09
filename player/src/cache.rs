@@ -756,3 +756,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// What the connector reported about its regions for `setup`, as recorded when a session
+/// opened (`Session::open_with`). Empty when nothing was recorded.
+pub fn setup_regions(conn: &Connection, setup: &str) -> Vec<crate::analysis::RegionFacts> {
+    let info: Option<String> = conn.query_row("SELECT info FROM setups WHERE id = ?1", [setup], |r| r.get(0)).ok();
+    info.and_then(|i| serde_json::from_str::<BTreeMap<String, String>>(&i).ok())
+        .and_then(|m| m.get("regions").and_then(|r| serde_json::from_str(r).ok()))
+        .unwrap_or_default()
+}

@@ -183,6 +183,23 @@ and links to the first failing frame that ran it.
 | Compare | Comparison core, Run, Sync now, Check parity, Re-run old failures or Stop re-running ([above](#comparison-cores)) |
 | MCP | Enable MCP (off by default), Show agent drafts, follow an agent session, Stop following, Share my view with agents ([mcp.md](mcp.md#the-gui)) |
 
+## If dj-gui crashes or hangs
+
+The baseline core runs in dj-gui's own process (comparison cores don't: [comparison
+cores](#comparison-cores)), so a core that crashes takes the window with it, and one that
+hangs freezes it. What dj-gui does so that costs nothing you can't get back:
+
+- **Unsaved edits are kept as you make them**, in `.local/recovery/` (checked once a second).
+  The next time the project opens after dj-gui didn't close normally (a crash, a hang you
+  quit by force, a power cut), a window offers them back: **Restore** brings them back as
+  unsaved edits (Undo takes them back), **Discard** drops them.
+- **It says what happened.** A crash writes `.local/crash-gui-<pid>.txt`: the signal, the
+  core, the segment and frame playing, and the libretro call it was in (`retro_run`,
+  `retro_serialize`, ...). If the window stops updating for 10 s, the same note is written
+  as "stopped responding" (and removed if it recovers). The next launch shows the note in
+  the same window.
+- A normal close (with edits saved or discarded) removes both.
+
 ## Limits
 
 - Only button inputs get piano roll rows (no analog, lightgun or pointer rows yet).

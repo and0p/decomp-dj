@@ -1,4 +1,5 @@
 format = 1
+dj = "0.1.0"
 name = "GBA test ROM"
 
 [rom]
@@ -7,7 +8,7 @@ file = "gba-test.gba"
 
 [core]
 name = "mgba"
-build = "mgba@7a12d6d4+dj1"
+build = "mgba@7a12d6d4+dj.fbca915f"
 sha256 = ""
 
 [core.options]

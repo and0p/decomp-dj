@@ -15,7 +15,7 @@ fn build(out: &Path, name: &str, defs: &[&str]) -> Option<PathBuf> {
     ok.then_some(lib)
 }
 
-const SEGMENT: &str = "dj-replay 1\nid: seg\nparent: none\nframes: 20\n---\n2 P1 JOYPAD B 1\n6 P1 JOYPAD B 0\n8 P1 JOYPAD Y 1\n12 [WRITE] RAM 0x20 ab cd\n";
+const SEGMENT: &str = "dj-segment 1\nid: seg\nparent: none\nframes: 20\n---\n2 P1 JOYPAD B 1\n6 P1 JOYPAD B 0\n8 P1 JOYPAD Y 1\n12 [WRITE] RAM 0x20 ab cd\n";
 
 fn project(dir: &Path, core: &Path, nodj: &Path) -> Collection {
     std::fs::create_dir_all(dir.join("segments")).unwrap();

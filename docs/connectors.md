@@ -61,7 +61,16 @@ Optional, in API 2:
 
 ```c
 const char *dj_forced_options(void);  // "key=value\n" lines: core options the connector needs
+const char *dj_build_id(void);        // which build this is, for [core] build
 ```
+
+`dj_build_id` names the build exactly and the same way on every platform: the upstream
+commit and the connector patch, as `<core>@<commit, 8 hex digits>+dj.<the patch's sha256
+with \r removed, 8 hex digits>` (`mesen@0102910c+dj.34266c1a`). Each connector's
+`build.sh` writes it into a header the connector includes. dj records it in a project's
+`[core] build` and warns when a core reports another ([config.md](config.md#core)); a core
+without it is named by its `library_name` and `library_version`, which often don't change
+when it's rebuilt or patched.
 
 A connector that forces core options while dj drives the core (an interpreter instead of a
 dynarec, a video plugin whose state saves) lists them here. The player takes them as its

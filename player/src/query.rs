@@ -823,7 +823,7 @@ mod tests {
             std::fs::write(dir.join("annotations.toml"), a).unwrap();
         }
         let id = "11111111-1111-1111-1111-111111111111";
-        std::fs::write(dir.join("segments").join(format!("{id}.segment")), format!("dj-replay 1\nid: {id}\nparent: none\ntitle: s\nframes: 1\nstart-hash: a\nend-hash: b\n---\n")).unwrap();
+        std::fs::write(dir.join("segments").join(format!("{id}.segment")), format!("dj-segment 1\nid: {id}\nparent: none\ntitle: s\nframes: 1\nstart-hash: a\nend-hash: b\n---\n")).unwrap();
         let rom_path = dir.join("t.nes");
         if write_rom {
             let mut rom = b"NES\x1a".to_vec();

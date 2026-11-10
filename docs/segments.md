@@ -42,7 +42,7 @@ comments everywhere. Blank lines are ignored. Tools that rewrite a file keep
 every comment, but may move comments in the body to the top of the body.
 
 ```
-dj-replay 1
+dj-segment 1
 id: 3b8f0f2c-1d44-4c1e-9e55-0d7a3c1b2e90
 parent: none
 title: Boot to title screen
@@ -62,7 +62,7 @@ end-hash: 71ee…
 
 | Field | Required | Meaning |
 | --- | --- | --- |
-| `dj-replay 1` | yes | First line. Magic and format version. |
+| `dj-segment 1` | yes | First line: the segment format and its version. A dj refuses a newer segment format, naming it; files that start with `dj-replay 1` (the earlier name) are read as format 1 and get the new first line when saved, or all at once with `dj upgrade`. |
 | `id` | yes | Lowercase UUID. Never changes once published. The file name is `<id>.segment`. |
 | `parent` | yes | Id of the segment that must play immediately before this one, or `none` for a root segment. |
 | `title` | no | One line for humans and agents. |
@@ -209,7 +209,10 @@ output for `snapshot`, and the `RETRO_MEMORY_SAVE_RAM` contents for `sram`.
 
 ## Older projects
 
-The tools upgrade older projects in place the first time they open them:
+A dj reads every older project format and writes files in its own as it saves them;
+`dj upgrade <dir>` rewrites every segment file at once (one commit, nothing about what
+they play changing). Layouts from before format 1 are upgraded in place the first time a
+tool opens them:
 
 - The local folder used to be called `.emucov/`. It moves to `.local/`, and `.emucov/` becomes `.local/` in the project's `.gitignore`. Its old `coverage.sqlite` and `states/` are no longer used and can be deleted.
 - `collection.toml` becomes `config.toml`, `replays/<id>.replay` becomes `segments/<id>.segment`, hashes lose their `blake3-` prefix and keep their first 32 hex digits, and blobs are renamed to `<hash>.srm` or `<hash>.state`.

@@ -37,6 +37,7 @@ A complete example, from `examples/thwaite/` (core options shortened):
 
 ```toml
 format = 1
+dj = "0.1.0"
 name = "Thwaite"
 
 [rom]
@@ -45,7 +46,7 @@ file = "thwaite.nes"
 
 [core]
 name = "mesen"
-build = "mesen@0102910c+dj2"
+build = "mesen@0102910c+dj.34266c1a"
 sha256 = ""
 
 [core.options]
@@ -73,7 +74,8 @@ format = "ca65-dbg"
 
 | Key | Required | Meaning |
 | --- | --- | --- |
-| `format` | yes | Project format version. Always `1` for now. |
+| `format` | yes | Project format version: `1`. A dj refuses a project in a format newer than it reads, saying which; it reads every older one. A change that would make an older dj play a project differently raises it; settings it could safely ignore don't. |
+| `dj` | no | The newest dj that has written the project (`0.1.0`): written when a dj saves something and is newer than what's there, for bug reports. An older dj opening it warns that settings or features the newer one added may be ignored. So do settings it doesn't know at all (a typo, or a newer dj's). |
 | `name` | yes | The game or project name, shown in the GUI title and reports. |
 
 ### `[rom]`
@@ -89,8 +91,8 @@ format = "ca65-dbg"
 | Key | Required | Meaning |
 | --- | --- | --- |
 | `name` | yes | The libretro core's name, for example `mesen`. |
-| `build` | yes | A free-form id of the exact build, such as `mesen@<commit>+dj1`. State hashes are only meaningful for one build, so a different build is a different setup. |
-| `sha256` | no | Hash of the core library. Usually empty, because it differs per OS. |
+| `build` | yes | Which build of the core the segments' hashes were recorded with. A core with a connector reports it (`dj_build_id`): the upstream commit and the connector patch, such as `mesen@0102910c+dj.34266c1a`, the same on every platform; other cores, their name and version (`Mesen 0.9.9`). `dj init` writes it. A core reporting another build plays, with a warning: hashes may not match. After rebuilding or updating the core, `dj repin` plays every segment from power-on with it and, if all still match, records the new build. |
+| `sha256` | no | Pins one exact library file: a different file doesn't load. A build for another OS is another file, so this suits a project used on one machine; `build` is the portable pin. `dj repin` updates it when it's set. |
 | `path` | no | Where the core library is, usually set in `.local/local.toml` ([layering](#layering)). It may leave out the suffix ([core paths](#core-paths)). |
 
 #### Core paths

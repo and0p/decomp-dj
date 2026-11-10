@@ -44,10 +44,10 @@ index da527968..ef16cfa4 100644
  #endif
 diff --git a/Core/DjCoverage.cpp b/Core/DjCoverage.cpp
 new file mode 100644
-index 00000000..a365dbf3
+index 00000000..c56b164f
 --- /dev/null
 +++ b/Core/DjCoverage.cpp
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,222 @@
 +#include "stdafx.h"
 +#include <cstring>
 +#include <vector>
@@ -55,6 +55,17 @@ index 00000000..a365dbf3
 +#include "BaseMapper.h"
 +#include "DebuggerTypes.h"
 +#include "Types.h"
++
++// The build id (connector API 2, optional): the upstream commit and this patch, written into
++// DjBuildId.h by build.sh, so the same source gives the same id on every platform.
++#if defined(__has_include)
++#if __has_include("DjBuildId.h")
++#include "DjBuildId.h"
++#endif
++#endif
++#ifndef DJ_BUILD_ID
++#define DJ_BUILD_ID "mesen@unknown"
++#endif
 +
 +namespace
 +{
@@ -185,6 +196,7 @@ index 00000000..a365dbf3
 +
 +extern "C" {
 +	static unsigned dj_api_version(void) { return DJ_API_VERSION; }
++	static const char* dj_build_id(void) { return DJ_BUILD_ID; }
 +	static size_t dj_region_count(void) { return RegCount; }
 +
 +	static bool dj_get_region(size_t index, struct dj_region* out)
@@ -247,6 +259,7 @@ index 00000000..a365dbf3
 +{
 +	if(!sym) return nullptr;
 +	if(!strcmp(sym, "dj_api_version")) return (void*)&dj_api_version;
++	if(!strcmp(sym, "dj_build_id")) return (void*)&dj_build_id;
 +	if(!strcmp(sym, "dj_region_count")) return (void*)&dj_region_count;
 +	if(!strcmp(sym, "dj_get_region")) return (void*)&dj_get_region;
 +	if(!strcmp(sym, "dj_clear")) return (void*)&dj_clear;

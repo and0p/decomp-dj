@@ -44,10 +44,10 @@ index 0b92d7f55..212cd535c 100644
  	instruction(cpu, opcode);
 diff --git a/src/platform/libretro/dj_connector.c b/src/platform/libretro/dj_connector.c
 new file mode 100644
-index 000000000..58d4d94e1
+index 000000000..98632a300
 --- /dev/null
 +++ b/src/platform/libretro/dj_connector.c
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,186 @@
 +/* decomp-dj coverage connector for mGBA's libretro core (docs/connectors.md in decomp-dj,
 + * API version 2). MIT-licensed new file; see connectors/mgba/README.md.
 + *
@@ -72,6 +72,17 @@ index 000000000..58d4d94e1
 +#include <mgba/internal/gba/memory.h>
 +
 +#include "dj_connector.h"
++
++// The build id (connector API 2, optional): the upstream commit and this patch, written into
++// dj_build_id.h by build.sh, so the same source gives the same id on every platform.
++#if defined(__has_include)
++#if __has_include("dj_build_id.h")
++#include "dj_build_id.h"
++#endif
++#endif
++#ifndef DJ_BUILD_ID
++#define DJ_BUILD_ID "mgba@unknown"
++#endif
 +
 +enum { DJ_ROM, DJ_IWRAM, DJ_EWRAM, DJ_BIOS, DJ_REGIONS };
 +
@@ -161,6 +172,10 @@ index 000000000..58d4d94e1
 +	return DJ_API_VERSION;
 +}
 +
++static const char* djBuildId(void) {
++	return DJ_BUILD_ID;
++}
++
 +static size_t djRegionCount(void) {
 +	return djGBA ? DJ_REGIONS : 0;
 +}
@@ -211,6 +226,7 @@ index 000000000..58d4d94e1
 +void* dj_get_proc_address(const char* sym) {
 +	if (!sym) return NULL;
 +	if (!strcmp(sym, "dj_api_version")) return (void*) &djApiVersion;
++	if (!strcmp(sym, "dj_build_id")) return (void*) &djBuildId;
 +	if (!strcmp(sym, "dj_region_count")) return (void*) &djRegionCount;
 +	if (!strcmp(sym, "dj_get_region")) return (void*) &djGetRegion;
 +	if (!strcmp(sym, "dj_clear")) return (void*) &djClear;

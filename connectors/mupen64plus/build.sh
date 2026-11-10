@@ -21,6 +21,11 @@ git checkout -q --force "$COMMIT"
 git clean -qfd libretro mupen64plus-core
 git apply "$here/dj-mupen64plus.patch"
 
+# The build id the connector reports (dj_build_id): the upstream commit and this patch, line
+# endings aside, so the same source gives the same id on every platform.
+patch_id="$(tr -d '\r' < "$here/dj-mupen64plus.patch" | { shasum -a 256 2>/dev/null || sha256sum; } | cut -c1-8)"
+printf '#define DJ_BUILD_ID "mupen64plus@%s+dj.%s"\n' "${COMMIT:0:8}" "$patch_id" > libretro/dj_build_id.h
+
 # The bundled zlib and libpng take macOS for classic Mac OS (fp.h, fdopen), so build
 # against the system's copies.
 jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"

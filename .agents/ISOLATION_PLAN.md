@@ -1,7 +1,8 @@
 # Plan: keeping cores and plugins from crashing or hanging dj
 
 Status: agreed 2026-11-10; steps 1 (decoder plugins), 2 (comparison cores) and 3 (batch
-commands) done 2026-11-10; step 4 (the GUI's own core) not started. Linked from [ROADMAP.md](ROADMAP.md#before-the-first-release).
+commands) done 2026-11-10; step 4's in-process protection done 2026-11-10, the GUI's core in
+a worker designed below, not built. Linked from [ROADMAP.md](ROADMAP.md#before-the-first-release).
 
 ## The problem
 
@@ -124,6 +125,56 @@ two hooks:
   check the rest, and exit 1, in under 10 s.
 - **Not covered:** the GUI's Clean all and Hydrate all run the `Hydrator` in the GUI's
   process: that's step 4.
+
+## Step 4 details: the GUI's own core
+
+### Done: protection in process (2026-11-10)
+
+- **Unsaved edits on disk** (`recovery.rs`): the GUI writes `.local/recovery/gui-<pid>.json`
+  (each edited segment's text, null for a deleted one) when its unsaved edits change, checked
+  once a second; removes it when nothing is unsaved, when another project opens and when the
+  app closes (`impl Drop for App`). On opening a project, `left_behind` finds files of
+  dj-gui processes that aren't running (Unix: `kill(pid, 0)`; elsewhere: the `gui-<pid>.open`
+  mark gone stale) and the GUI offers them: Restore applies them as one undoable step (the
+  same `restore(UndoStep)` undo uses, new and deleted segments included), Discard drops them.
+- **The crash note** (`crash.rs`): `.local/crash-gui-<pid>.txt` with the signal, the core
+  (set when a session opens), the segment and frame (set by `Session::step` and `advance`),
+  and the libretro call in progress (`retro_run`, `retro_serialize`, `retro_unserialize`,
+  `retro_load_game`, `retro_reset`, from a guard in `libretro.rs`). Unix: a handler for
+  SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT with `SA_RESETHAND`, writing only from buffers
+  filled beforehand with `open`/`write`/`close`, then returning so the signal ends the process
+  as it would have. Windows: no handler yet (an unhandled-exception filter would do the same).
+- **The watchdog:** a thread that writes the note as "stopped responding" when the GUI's
+  heartbeat (each frame) is 10 s late, and removes it when frames come back. A hung core
+  can't be stopped in process; the person quits, and the next launch explains and restores.
+- **Checked:** `recovery::tests` (files left by a gone process found, ours never offered);
+  `tests/crash_note.rs`: a child test process that crashes with the note set up (the note
+  names the signal, core, segment, frame 4321 and `retro_run`, and `left_behind` finds it),
+  and the watchdog writing and removing its note. Not tried by hand in the GUI (crashing it
+  with unsaved edits and reopening).
+
+### Not built: the GUI's core in a worker
+
+The GUI touches its `Session` in about a hundred places (playback, seeking and the snapshot
+cache, recording, live coverage, Clean all and Hydrate all, the comparison core's baseline).
+The design, for when it's worth the work:
+
+- **The worker holds the session and a mirror of the collection.** The GUI sends a
+  segment's text whenever an edit changes it (as the recovery snapshot already gathers), so
+  the worker plays segments itself instead of being sent each frame's lines; seeking and the
+  snapshot cache live in the worker (N64 states are 16 MB: they shouldn't cross).
+- **What crosses per frame:** a play or step request; back, the picture only when one is
+  shown (at most the display rate: an N64 frame is ~0.9 MB, 55 MB/s at 60 Hz through a pipe,
+  or shared memory), hashes and checkpoint results, and live coverage as first hits rather
+  than flag arrays (the N64's are 40 MB).
+- **Recording:** the GUI sends held buttons per frame; the worker applies and records them.
+- **Clean all / Hydrate all** run the `Hydrator` in the worker (or as a batch child, step 3).
+- **Comparison cores** then need the baseline's state from the baseline worker rather than
+  from the GUI's process (the `RemoteComparison` calls already take it as bytes).
+- **On a crash:** the picture shows what happened, edits are untouched (they're in the GUI),
+  and Restart core starts a worker at the frame shown.
+- **Cost:** several days and a large diff to `gui/src/main.rs`; the protection above covers the
+  damage (lost edits, no explanation) in the meantime.
 
 ## Shared pieces
 

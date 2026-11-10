@@ -9,6 +9,8 @@ hashes, fills the local database and reports coverage. Building it is in
 | `dj init <dir> --name NAME --rom ROM --core CORE [--option KEY=VALUE]... [--symbols FILE]` | Creates a project and pins the setup in `config.toml` | [install.md](install.md#a-first-project), [config.md](config.md) |
 | `dj new <dir> [--parent ID] [--title TEXT] [--frames N]` | Adds a segment and prints its path | [editing.md](editing.md) |
 | `dj status <dir>` | The tree with clean and dirty marks | [playback.md](playback.md#clean-and-dirty) |
+| `dj repin <dir>` | After rebuilding or updating the core: plays every segment from power-on and, if all still match, records the core's build in `[core] build` | [config.md](config.md#core) |
+| `dj upgrade <dir>` | Rewrites every segment file in this dj's format, and records this dj in config.toml | [segments.md](segments.md#older-projects) |
 | `dj play <dir> <id> [--screenshots DIR] [--shot 60,120] [--no-cache] [--accept]` | Plays one segment and its chain | [playback.md](playback.md#checking-hashes) |
 | `dj run <dir> [--from-scratch] [--accept] [--screenshots]` | Plays everything, checks hashes, records coverage | [playback.md](playback.md#checking-hashes) |
 | `dj hydrate <dir> [SEGMENT [--children]] [--force]` | Fills in what the local database is missing, without writing files | [database.md](database.md#from-the-command-line) |

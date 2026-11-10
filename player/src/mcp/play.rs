@@ -419,7 +419,7 @@ impl Server {
             "draft_from_text" => {
                 let text = a.str("text")?;
                 let shot = a.bool_or("screenshot", false)?;
-                let mut r = if text.trim_start().starts_with("dj-replay") {
+                let mut r = if ["dj-segment", "dj-replay", "emucov-replay"].iter().any(|m| text.trim_start().starts_with(m)) {
                     let mut r = Replay::parse(&text)?;
                     if self.project()?.col.replays.contains_key(r.id()?) {
                         r.set("id", &uuid::Uuid::new_v4().to_string());

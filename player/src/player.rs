@@ -101,6 +101,10 @@ pub struct Session {
     /// save file would otherwise start with the last one loaded.
     boot_sram: Option<Vec<u8>>,
     pub setup_id: String,
+    /// The build the core reports (`Core::build_id`).
+    pub build: String,
+    /// Set when that isn't the project's `[core] build`: what to tell the person.
+    pub build_note: Option<String>,
     pub rom_path: PathBuf,
     /// The local database, unless the session runs without one.
     pub cache: Option<Cache>,
@@ -116,6 +120,7 @@ impl Session {
     }
 
     pub fn open_with(col: &Collection, rom: &Path, core_path: &Path, use_db: bool) -> Result<Session> {
+        crate::crash::set_core(&crate::libretro::library_path(core_path).display().to_string());
         let rom_sha = sha256_file(rom)?;
         if !col.config.rom.sha256.is_empty() && rom_sha != col.config.rom.sha256 {
             bail!(
@@ -135,6 +140,12 @@ impl Session {
         let work = col.local_dir();
         let mut core = Core::load(core_path, &work, &col.config.core.options)?;
         core.load_game(rom)?;
+        // The segments' hashes were recorded with `[core] build`: a core that reports another
+        // build may play differently (docs/config.md#core).
+        let reported = core.build_id();
+        let build_note = (!col.config.core.build.is_empty() && reported != col.config.core.build).then(|| {
+            format!("this core reports build \"{reported}\", but the project's hashes were recorded with \"{}\": they may not match. `dj repin` plays every segment with this build and, if they all still match, records it", col.config.core.build)
+        });
 
         if let Some(t) = &col.config.tick {
             if let Some(exec) = &t.exec {
@@ -184,7 +195,7 @@ impl Session {
         } else {
             None
         };
-        Ok(Session { core, boot_state, boot_sram, setup_id, rom_path: rom.to_path_buf(), cache, core_version })
+        Ok(Session { core, boot_state, boot_sram, setup_id, rom_path: rom.to_path_buf(), cache, core_version, build: reported, build_note })
     }
 
     pub fn devices_at_start(&self, col: &Collection, id: &str) -> Result<BTreeMap<u32, u32>> {
@@ -345,6 +356,7 @@ impl Session {
     /// Returns true when the segment has no frames left.
     pub fn advance(&mut self, col: &Collection, rec: &mut Recorder, show: bool) -> Result<bool> {
         crate::isolate::batch_progress(&rec.id, rec.f);
+        crate::crash::set_place(&rec.id, rec.f);
         if rec.f >= rec.frames {
             return Ok(true);
         }
@@ -565,6 +577,7 @@ impl Session {
 
     /// Applies frame `frame`'s lines of `id` and runs that frame.
     pub fn step(&mut self, col: &Collection, id: &str, frame: u64, capture: bool) -> Result<Option<Frame>> {
+        crate::crash::set_place(id, frame);
         let r = &col.replays[id];
         let mut impulses = vec![];
         let first = r.lines.partition_point(|l| l.frame < frame);

@@ -206,6 +206,16 @@ enum Cmd {
     /// Internal: one core driven by `dj mcp` over a pipe
     #[command(hide = true)]
     Worker { dir: PathBuf },
+    /// After rebuilding or updating the core: play every segment from power-on with it and,
+    /// if every hash still matches, record its build in config.toml ([core] build)
+    Repin {
+        dir: PathBuf,
+        #[command(flatten)]
+        local: Local,
+    },
+    /// Rewrite every segment file in this dj's format (the first line, older field names) and
+    /// record this dj in config.toml. What the segments play doesn't change
+    Upgrade { dir: PathBuf },
     /// Write the core state at a frame of a segment, to start a trace from
     Snapshot {
         dir: PathBuf,
@@ -277,6 +287,15 @@ fn real_main() -> Result<()> {
             std::process::exit(code);
         }
     }
+    // A project a newer dj wrote, or settings this dj doesn't know: said once, here (in the
+    // batch child when supervised, so not twice).
+    if let Some(dir) = cmd_dir(&cli.cmd) {
+        if let Ok(t) = decomp_dj::collection::layered_table(dir) {
+            for w in decomp_dj::collection::check_versions(&t).unwrap_or_default() {
+                eprintln!("warning: {w}");
+            }
+        }
+    }
     match cli.cmd {
         Cmd::Init { dir, name, rom, core, core_build, options, symbols } => init(&dir, &name, &rom, &core, core_build, &options, symbols.as_deref()),
         Cmd::New { dir, parent, title, frames } => new_replay(&dir, parent, &title, frames),
@@ -296,10 +315,25 @@ fn real_main() -> Result<()> {
         Cmd::Snapshot { dir, segment, frame, out, local } => snapshot_cmd(&dir, &segment, frame, &out, &local),
         Cmd::Sql { dir, query } => sql(&dir, &query),
         Cmd::Worker { dir } => mcp::worker::run(dir),
+        Cmd::Repin { dir, local } => repin(&dir, &local),
+        Cmd::Upgrade { dir } => upgrade(&dir),
         Cmd::Mcp { dir, allow } => mcp::serve(dir, mcp::tools::Options { allow }),
         Cmd::Cache { cmd: CacheCmd::Stats { dir } } => cache_stats(&dir),
         Cmd::Cache { cmd: CacheCmd::Gc { dir, local, force } } => cache_gc(&dir, &local, force),
     }
+}
+
+/// The project a command works on, if any.
+fn cmd_dir(cmd: &Cmd) -> Option<&Path> {
+    Some(match cmd {
+        Cmd::Init { .. } => return None,
+        Cmd::New { dir, .. } | Cmd::Status { dir } | Cmd::Play { dir, .. } | Cmd::Run { dir, .. } | Cmd::Report { dir, .. } | Cmd::Annotations { dir, .. } | Cmd::Hydrate { dir, .. } | Cmd::Clean { dir, .. } => dir,
+        Cmd::Xref { dir, .. } | Cmd::Summary { dir, .. } | Cmd::Gaps { dir, .. } | Cmd::Function { dir, .. } | Cmd::Frontier { dir, .. } | Cmd::CheckConnector { dir, .. } => dir,
+        Cmd::Snapshot { dir, .. } | Cmd::Sql { dir, .. } | Cmd::Worker { dir } | Cmd::Mcp { dir, .. } | Cmd::Repin { dir, .. } | Cmd::Upgrade { dir } => dir,
+        Cmd::Cache { cmd: CacheCmd::Stats { dir } } | Cmd::Cache { cmd: CacheCmd::Gc { dir, .. } } => dir,
+        #[allow(unreachable_patterns)]
+        _ => return None,
+    })
 }
 
 fn resolve_local(col: &Collection, local: &Local) -> Result<(PathBuf, PathBuf)> {
@@ -319,7 +353,11 @@ fn resolve_local(col: &Collection, local: &Local) -> Result<(PathBuf, PathBuf)> 
 fn open_session(col: &Collection, local: &Local) -> Result<Session> {
     let (rom, core) = resolve_local(col, local)?;
     let use_db = !local.no_db && col.settings()?.database.unwrap_or(true);
-    Session::open_with(col, &rom, &core, use_db)
+    let s = Session::open_with(col, &rom, &core, use_db)?;
+    if let Some(note) = &s.build_note {
+        eprintln!("warning: {note}");
+    }
+    Ok(s)
 }
 
 fn init(dir: &Path, name: &str, rom: &Path, core_path: &Path, core_build: Option<String>, options: &[String], symbols: Option<&Path>) -> Result<()> {
@@ -338,7 +376,7 @@ fn init(dir: &Path, name: &str, rom: &Path, core_path: &Path, core_build: Option
     std::fs::create_dir_all(dir.join("segments"))?;
     std::fs::create_dir_all(dir.join("blobs"))?;
     let work = dir.join(".local");
-    let (lib_name, lib_version, effective, regions) = {
+    let (lib_name, build_id, effective, regions) = {
         let mut core = libretro::Core::load(core_path, &work, &overrides)?;
         core.load_game(rom)?;
         // Some cores set up their memory on the first frame (Mupen64Plus-Next): run one so
@@ -355,7 +393,7 @@ fn init(dir: &Path, name: &str, rom: &Path, core_path: &Path, core_build: Option
         } else {
             print_connector_regions(&mut core, rom)?;
         }
-        (core.library_name.clone(), core.library_version.clone(), core.effective_options(), regions)
+        (core.library_name.clone(), core.build_id(), core.effective_options(), regions)
     };
     let mut syms = vec![];
     if let Some(s) = symbols {
@@ -367,10 +405,11 @@ fn init(dir: &Path, name: &str, rom: &Path, core_path: &Path, core_build: Option
     }
     let config = Config {
         decoders: vec![],
-        format: 1,
+        dj: Some(decomp_dj::collection::DJ_VERSION.to_string()),
+        format: decomp_dj::collection::PROJECT_FORMAT,
         name: name.to_string(),
         rom: RomConfig { sha256: sha256_file(rom)?, file: rom.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default() },
-        core: CoreConfig { name: lib_name.to_lowercase(), build: core_build.unwrap_or_else(|| format!("{lib_name} {lib_version}")), sha256: String::new(), options: effective },
+        core: CoreConfig { name: lib_name.to_lowercase(), build: core_build.unwrap_or(build_id), sha256: String::new(), options: effective },
         ports: vec![PortConfig { port: 1, device: "JOYPAD".into() }],
         hash: HashConfig { algorithm: "blake3".into(), regions },
         tick: None,
@@ -650,6 +689,47 @@ fn annotations(dir: &Path, local: &Local) -> Result<()> {
     if problems > 0 {
         bail!("{problems} annotated range(s) ran as code");
     }
+    Ok(())
+}
+
+/// `dj repin`: checks the whole tree with the core as it is now, then records its build.
+fn repin(dir: &Path, local: &Local) -> Result<()> {
+    run(dir, local, true, false, false).context("not repinned: some segments don't reproduce their hashes with this core")?;
+    let mut col = Collection::open(dir)?;
+    let (_, core) = resolve_local(&col, local)?;
+    let build = open_session(&col, local)?.build.clone();
+    let sha = sha256_file(&libretro::library_path(&core))?;
+    if build == col.config.core.build {
+        println!("every segment matches; [core] build is already \"{build}\"");
+        return Ok(());
+    }
+    let was = col.config.core.build.clone();
+    col.set_core_build(&build, Some(&sha))?;
+    println!("every segment matches: [core] build \"{was}\" -> \"{build}\" in config.toml{}", if col.config.core.sha256.is_empty() { "" } else { " (and its sha256)" });
+    Ok(())
+}
+
+/// `dj upgrade`: every segment file and config.toml in this dj's format.
+fn upgrade(dir: &Path) -> Result<()> {
+    let mut col = Collection::open(dir)?;
+    let ids: Vec<String> = col.tree_order().into_iter().map(|(id, _)| id.to_string()).filter(|id| !col.is_draft(id)).collect();
+    let mut rewritten = 0;
+    for id in &ids {
+        let Some(path) = col.paths.get(id) else { continue };
+        let disk = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        if col.replays[id].to_text() != disk {
+            col.save_replay(id)?;
+            rewritten += 1;
+        }
+    }
+    col.note_writer()?;
+    println!(
+        "{rewritten} of {} segment files rewritten (segment format {}); config.toml: format {}, dj {}",
+        ids.len(),
+        decomp_dj::format::SEGMENT_FORMAT,
+        decomp_dj::collection::PROJECT_FORMAT,
+        col.config.dj.as_deref().unwrap_or("?")
+    );
     Ok(())
 }
 

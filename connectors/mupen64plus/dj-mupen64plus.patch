@@ -15,10 +15,10 @@ index 72aef3a..3936839 100644
  	$(ROOT_DIR)/custom/mupen64plus-core/plugin/emulate_game_controller_via_libretro.c \
 diff --git a/libretro/dj_connector.c b/libretro/dj_connector.c
 new file mode 100644
-index 0000000..d861414
+index 0000000..a176900
 --- /dev/null
 +++ b/libretro/dj_connector.c
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,156 @@
 +/* decomp-dj coverage connector for mupen64plus-libretro-nx (docs/connectors.md, API 2).
 + *
 + * Regions:
@@ -34,6 +34,17 @@ index 0000000..d861414
 +#include <string.h>
 +
 +#include "dj_connector.h"
++
++// The build id (connector API 2, optional): the upstream commit and this patch, written into
++// dj_build_id.h by build.sh, so the same source gives the same id on every platform.
++#if defined(__has_include)
++#if __has_include("dj_build_id.h")
++#include "dj_build_id.h"
++#endif
++#endif
++#ifndef DJ_BUILD_ID
++#define DJ_BUILD_ID "mupen64plus@unknown"
++#endif
 +#include "mupen64plus-next_common.h"
 +#include "main/main.h"
 +#include "main/rom.h"
@@ -98,6 +109,8 @@ index 0000000..d861414
 +   return DJ_API_VERSION;
 +}
 +
++static const char *dj_build_id(void) { return DJ_BUILD_ID; }
++
 +static size_t dj_region_count(void) { return 2; }
 +
 +static bool dj_get_region(size_t index, struct dj_region *out)
@@ -159,6 +172,7 @@ index 0000000..d861414
 +   if (!strcmp(sym, "dj_set_tick_exec")) return (void *)&dj_set_tick_exec;
 +   if (!strcmp(sym, "dj_get_tick_count")) return (void *)&dj_get_tick_count;
 +   if (!strcmp(sym, "dj_forced_options")) return (void *)&dj_forced_options;
++   if (!strcmp(sym, "dj_build_id")) return (void *)&dj_build_id;
 +   return NULL;
 +}
 diff --git a/libretro/dj_connector.h b/libretro/dj_connector.h

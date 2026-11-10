@@ -12,11 +12,11 @@ Priorities: **high** blocks the release, **medium** should be in it, **low** can
 | --- | --- | --- | --- |
 | high | Land the N64 connector and MIPS decoder; docs agree on what's supported | [CONNECTOR_PLAN.md](CONNECTOR_PLAN.md) | done 2026-11-09 |
 | high | CI on Linux and macOS (Windows as a template), Thwaite hashes on every change | [RELEASE_PLAN.md](RELEASE_PLAN.md) | planned |
-| high | Projects record the format and tool version; older tools refuse newer projects; a core rebuild re-pins | [below](#project-and-cli), "Versioning projects" | not started |
+| high | Projects record the format and tool version; older tools refuse newer projects; a core rebuild re-pins | [below](#project-and-cli), "Versioning projects" | done 2026-11-10 |
 | high | Clean-up and licensing: scratch files, terminology in the CLI help, the Tetris data tables, connector licences | [RELEASE_PLAN.md](RELEASE_PLAN.md#licensing-of-the-connectors-to-settle) | not started |
 | high | Release workflow and install docs (`v0.1.0`) | [RELEASE_PLAN.md](RELEASE_PLAN.md) | planned |
 | medium | Decoder interface (step 1: one trait and one sweep; step 2: loadable decoders) | [DECODER_PLAN.md](DECODER_PLAN.md) | done (plugins 2026-11-10) |
-| high | Cores and plugins can't crash or hang dj: workers for decoder plugins, comparison cores, batch commands, then the GUI's core | [ISOLATION_PLAN.md](ISOLATION_PLAN.md) | decoder plugins, comparison cores and batch commands done; the GUI's core next |
+| high | Cores and plugins can't crash or hang dj: workers for decoder plugins, comparison cores, batch commands, then the GUI's core | [ISOLATION_PLAN.md](ISOLATION_PLAN.md) | done for plugins, comparison cores and batch commands; the GUI's core protected in process (edits kept, crash note); moving it to a worker designed, not built (decided 2026-11-10: not now, maybe before the release) |
 | medium | Root segments that start from a snapshot, finished ([below](#root-segments-from-a-snapshot)) | | partly built |
 
 ### Root segments from a snapshot
@@ -256,23 +256,15 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   chosen core for each, with the reasons.
   Planning notes for a second core (bsnes-mercury) and where decoding should live:
   [CONNECTOR_PLAN.md](CONNECTOR_PLAN.md).
-- **Versioning projects.** A project should say which version of the format and the
-  tools it needs, and the tools should handle the difference both ways. Today
-  `config.toml` has `format = 1` and `dj-replay 1` heads each segment, and older
-  layouts are upgraded silently on open ([older projects](../docs/segments.md#older-projects)).
-  To decide:
-  - A newer tool opening an older project: upgrade in place, as now, or ask first and
-    show what changes (a diff or a backup), since the upgrade lands in the author's git
-    history. A `dj upgrade <dir>` command could do it explicitly.
-  - An older tool opening a newer project: refuse with a clear message naming the
-    version needed, rather than misreading it. Which changes need a version bump and
-    which can be new optional header keys that older tools ignore.
-  - The core and setup: rebuilding a connector core changes the setup id, so every
-    segment's hashes and the database stop matching (this happened with the trace hook).
-    Options: a project records the connector version it was made with, a rebuild that
-    keeps emulation identical keeps the setup id, or `dj` re-pins and re-verifies the
-    tree after a core change and reports which segments still match.
-  - Recording which `dj` version last wrote a project, for bug reports.
+- **Shipped 2026-11-10: versioning projects** ([config.md](../docs/config.md#top-level),
+  [segments.md](../docs/segments.md#older-projects)). `format` gates (a newer one is refused,
+  naming what to do), `dj` records the newest dj that wrote the project (an older dj warns, as
+  for settings it doesn't know), segment files start with `dj-segment 1` (`dj-replay 1` still
+  read), `dj upgrade` rewrites them all at once, connectors report a build id
+  (`dj_build_id`: upstream commit + patch hash, the same on every platform) that dj checks
+  against `[core] build`, and `dj repin` re-verifies the tree after a core change and records
+  the new build. Hashes never depended on the core binary, only the local database did. Still
+  open: per-platform `sha256` pins for `[[compare]]` (see "Portable `[[compare]]` entries").
 - **Backups without version control.** `dj backup <dir>` (and File > Back up… in
   the GUI) writes the project's shared files to a ZIP: `config.toml`, `segments/`,
   `blobs/`, `symbols/` and `annotations.toml`, never `.local/` (the database can be
@@ -512,8 +504,7 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   It also pairs naturally with the terminology rename below.
 - **Terminology in the code.** The docs and the GUI use the
   [terms in concepts.md](../docs/concepts.md#terms). The code and the CLI's help still say "replay", "collection"
-  and "trunk" in places, and segment files start with `dj-replay 1` (`dj-segment 1`
-  would match the `.segment` extension; the tools would read both).
+  and "trunk" in places. (Segment files start with `dj-segment 1` since 2026-11-10.)
 
 ## Set aside
 

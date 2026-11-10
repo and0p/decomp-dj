@@ -821,6 +821,7 @@ impl Core {
     }
 
     pub fn load_game(&mut self, rom: &Path) -> Result<()> {
+        let _call = CallGuard::enter(4);
         let data = std::fs::read(rom).with_context(|| format!("reading {}", rom.display()))?;
         let path = CString::new(rom.to_string_lossy().as_bytes())?;
         let info = GameInfo { path: path.as_ptr(), data: data.as_ptr() as *const c_void, size: data.len(), meta: std::ptr::null() };
@@ -915,6 +916,24 @@ impl Core {
         self.connector.is_some()
     }
 
+    /// Which build of the core this is, for `[core] build`: the connector's `dj_build_id`
+    /// (the upstream commit and the connector patch, the same on every platform), else the
+    /// core's own name and version.
+    pub fn build_id(&self) -> String {
+        let f = self.proc("dj_build_id");
+        if !f.is_null() {
+            let f: unsafe extern "C" fn() -> *const c_char = unsafe { std::mem::transmute(f) };
+            let p = unsafe { f() };
+            if !p.is_null() {
+                let id = unsafe { CStr::from_ptr(p) }.to_string_lossy().trim().to_string();
+                if !id.is_empty() {
+                    return id;
+                }
+            }
+        }
+        format!("{} {}", self.library_name, self.library_version)
+    }
+
     pub fn run_frame(&mut self, capture: bool) -> Option<Frame> {
         let run = self.api.run;
         self.run_frame_with(capture, || unsafe { run() }).0
@@ -923,6 +942,7 @@ impl Core {
     /// Runs one frame through `tick` instead of `retro_run` (a connector's `dj_run`, which
     /// calls it itself), capturing the picture as `run_frame` does.
     pub fn run_frame_with<T>(&mut self, capture: bool, tick: impl FnOnce() -> T) -> (Option<Frame>, T) {
+        let _call = CallGuard::enter(1);
         with_host(self.slot, |h| {
             h.capture_next_frame = capture;
             if capture {
@@ -945,6 +965,7 @@ impl Core {
     }
 
     pub fn reset(&mut self) {
+        let _call = CallGuard::enter(5);
         self.gl_enter();
         unsafe { (self.api.reset)() }
         self.gl_leave();
@@ -969,6 +990,7 @@ impl Core {
     }
 
     pub fn serialize(&mut self) -> Result<Vec<u8>> {
+        let _call = CallGuard::enter(2);
         self.gl_enter();
         let r = self.serialize_inner();
         self.gl_leave();
@@ -990,6 +1012,7 @@ impl Core {
     }
 
     pub fn unserialize(&mut self, state: &[u8]) -> Result<()> {
+        let _call = CallGuard::enter(3);
         self.gl_enter();
         let ok = unsafe { (self.api.unserialize)(state.as_ptr() as *const c_void, state.len()) };
         self.gl_leave();
@@ -1200,6 +1223,22 @@ impl Drop for Core {
         HOST.with(|h| h.borrow_mut()[self.slot] = None);
         CORE_LOADED[self.slot].store(false, Ordering::SeqCst);
         CORE_RUN[self.slot].store(0, Ordering::SeqCst);
+    }
+}
+
+/// Names the libretro call in progress for a crash note (`crash::enter`), until dropped.
+struct CallGuard;
+
+impl CallGuard {
+    fn enter(call: usize) -> CallGuard {
+        crate::crash::enter(call);
+        CallGuard
+    }
+}
+
+impl Drop for CallGuard {
+    fn drop(&mut self) {
+        crate::crash::enter(0);
     }
 }
 

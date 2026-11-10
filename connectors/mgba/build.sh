@@ -22,6 +22,11 @@ git checkout -q --force "$MGBA_COMMIT"
 git clean -qfd src include
 git apply "$here/dj-mgba.patch"
 
+# The build id the connector reports (dj_build_id): the upstream commit and this patch, line
+# endings aside, so the same source gives the same id on every platform.
+patch_id="$(tr -d '\r' < "$here/dj-mgba.patch" | { shasum -a 256 2>/dev/null || sha256sum; } | cut -c1-8)"
+printf '#define DJ_BUILD_ID "mgba@%s+dj.%s"\n' "${MGBA_COMMIT:0:8}" "$patch_id" > src/platform/libretro/dj_build_id.h
+
 jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 cmake -S . -B build-dj -DCMAKE_BUILD_TYPE=Release \
   -DBUILD_LIBRETRO=ON -DSKIP_LIBRARY=ON -DBUILD_QT=OFF -DBUILD_SDL=OFF -DBUILD_GL=OFF \

@@ -19,7 +19,7 @@ const FINE: &str = "30000000-0000-0000-0000-000000000000";
 const HANG: &str = "40000000-0000-0000-0000-000000000000";
 
 fn segment(dir: &Path, id: &str, parent: &str, title: &str, frames: u64, lines: &str) {
-    std::fs::write(dir.join(format!("segments/{id}.segment")), format!("dj-replay 1\nid: {id}\nparent: {parent}\ntitle: {title}\nframes: {frames}\n---\n{lines}")).unwrap();
+    std::fs::write(dir.join(format!("segments/{id}.segment")), format!("dj-segment 1\nid: {id}\nparent: {parent}\ntitle: {title}\nframes: {frames}\n---\n{lines}")).unwrap();
 }
 
 fn dj(dir: &Path, args: &[&str]) -> (i32, String, String) {
@@ -76,5 +76,50 @@ fn a_segment_that_crashes_or_hangs_the_core_is_left_out() {
     assert!(out.contains("ok") && out.contains("30000000 fine"), "{out}");
     assert!(err.contains("crashed  20000000") && err.contains("crashed  40000000"), "{err}");
 
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// `dj upgrade` rewrites older segment files; `dj repin` records the core's build once every
+/// segment still matches, and refuses while one doesn't.
+#[test]
+fn upgrade_and_repin() {
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("repin-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(tmp.join("project/segments")).unwrap();
+    let Some(core) = build_core(&tmp) else {
+        eprintln!("skipped: no C compiler");
+        return;
+    };
+    let dir = tmp.join("project");
+    std::fs::write(dir.join("rom.bin"), b"rom").unwrap();
+    let config = |build: &str| format!("format = 1\nname = \"t\"\n[rom]\nsha256 = \"\"\npath = \"rom.bin\"\n[core]\nname = \"testcore\"\nbuild = \"{build}\"\npath = \"{}\"\n[hash]\nalgorithm = \"blake3\"\nregions = [\"RAM\"]\n", core.display());
+    std::fs::write(dir.join("config.toml"), config("testcore 1")).unwrap();
+    std::fs::write(dir.join(format!("segments/{ROOT}.segment")), format!("dj-replay 1\nid: {ROOT}\nparent: none\ntitle: boot\nframes: 10\n---\n2 P1 JOYPAD B 1\n")).unwrap();
+    let (code, out, err) = dj(&dir, &["clean"]);
+    assert_eq!(code, 0, "{out}{err}");
+
+    let (code, out, _) = dj(&dir, &["upgrade"]);
+    assert!(code == 0 && out.contains("0 of 1") || out.contains("1 of 1"), "{out}");
+    let seg = std::fs::read_to_string(dir.join(format!("segments/{ROOT}.segment"))).unwrap();
+    assert!(seg.starts_with("dj-segment 1\n"), "{seg}");
+    assert!(std::fs::read_to_string(dir.join("config.toml")).unwrap().contains("dj = \""));
+
+    // Another build recorded: warned about, then repinned to what the core reports.
+    let cfg = std::fs::read_to_string(dir.join("config.toml")).unwrap().replace("build = \"testcore 1\"", "build = \"testcore 0\"");
+    std::fs::write(dir.join("config.toml"), &cfg).unwrap();
+    let (code, out, err) = dj(&dir, &["repin"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(err.contains("reports build \"testcore 1\"") && out.contains("\"testcore 0\" -> \"testcore 1\""), "{out}{err}");
+    assert!(std::fs::read_to_string(dir.join("config.toml")).unwrap().contains("build = \"testcore 1\""));
+
+    // A segment that no longer reproduces: nothing is recorded.
+    let seg = std::fs::read_to_string(dir.join(format!("segments/{ROOT}.segment"))).unwrap();
+    let broken = seg.lines().map(|l| if l.starts_with("end-hash:") { "end-hash: 00000000000000000000000000000000".to_string() } else { l.to_string() }).collect::<Vec<_>>().join("\n") + "\n";
+    std::fs::write(dir.join(format!("segments/{ROOT}.segment")), broken).unwrap();
+    std::fs::write(dir.join("config.toml"), cfg).unwrap();
+    let (code, out, err) = dj(&dir, &["repin"]);
+    assert_ne!(code, 0, "{out}{err}");
+    assert!(err.contains("not repinned"), "{err}");
+    assert!(std::fs::read_to_string(dir.join("config.toml")).unwrap().contains("build = \"testcore 0\""));
     let _ = std::fs::remove_dir_all(&tmp);
 }

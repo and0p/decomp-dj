@@ -34,8 +34,9 @@ with `cpu` `"6502"` (connector API version 2). `PRG` hands out the mapper's PRG 
 `data` and lies in the ROM file from byte 16 (after the iNES header; 528 with a trainer;
 -1 for UNIF and FDS images). `WRAM` and `SRAM` hand out their buffers when the board has
 them; `RAM` hands out none. Each byte holds flags: `0x01` executed as an opcode, `0x02`
-executed as an operand. Built with this patch, the project's `[core] build` is
-`mesen@0102910c+dj2`.
+executed as an operand. A core built with this patch reports its build id
+(`dj_build_id`) as `mesen@0102910c+dj.<first 8 hex digits of the patch's sha256>`, which
+`build.sh` writes into `Core/DjBuildId.h`; a project's `[core] build` holds it.
 
 The patch adds one call to every instruction-fetch cycle. On the Thwaite
 example it costs about 5% (482 vs 506 frames per second on one x86_64 core,

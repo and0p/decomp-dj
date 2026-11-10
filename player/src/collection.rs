@@ -10,6 +10,9 @@ use crate::format::Replay;
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Config {
     pub format: u32,
+    /// The newest dj that has written the project (docs/config.md#top-level).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dj: Option<String>,
     pub name: String,
     pub rom: RomConfig,
     pub core: CoreConfig,
@@ -200,6 +203,45 @@ pub fn merge_toml(base: &mut toml::Table, top: toml::Table) {
     }
 }
 
+/// The project format this dj reads and writes (config.toml's `format`).
+pub const PROJECT_FORMAT: u32 = 1;
+/// This dj's version.
+pub const DJ_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// A version as numbers, for comparing ("0.10.2" > "0.9.9"); anything after the numbers
+/// (a `-dev` suffix) is ignored.
+pub fn version_tuple(v: &str) -> Vec<u64> {
+    v.trim().split(['-', '+']).next().unwrap_or("").split('.').map(|p| p.parse().unwrap_or(0)).collect()
+}
+
+/// Settings dj knows at the top level of config.toml and .local/local.toml.
+const KNOWN_KEYS: [&str; 17] = ["format", "dj", "name", "rom", "core", "ports", "hash", "tick", "symbols", "cache", "compare", "decoders", "database", "max_memory_mb", "mcp", "keyboard", "record"];
+
+/// Checks the project's settings before they're read: Err for a format this dj can't read
+/// (a newer one, naming what to do); warnings for a project a newer dj wrote, and for
+/// settings this dj doesn't know (a newer dj's, or a typo), which it ignores.
+pub fn check_versions(t: &toml::Table) -> Result<Vec<String>> {
+    let writer = t.get("dj").and_then(|v| v.as_str());
+    match t.get("format").and_then(|v| v.as_integer()) {
+        None => bail!("config.toml has no `format` (it should start with `format = {PROJECT_FORMAT}`)"),
+        Some(f) if f > PROJECT_FORMAT as i64 => {
+            let by = writer.map(|w| format!("dj {w}")).unwrap_or_else(|| "a newer dj".into());
+            bail!("this project is in format {f}, written by {by}; this dj ({DJ_VERSION}) reads format {PROJECT_FORMAT} and older: update dj")
+        }
+        Some(f) if f < 1 => bail!("config.toml has format {f}, which no dj has written"),
+        _ => {}
+    }
+    let mut warnings = vec![];
+    if let Some(w) = writer.filter(|w| version_tuple(w) > version_tuple(DJ_VERSION)) {
+        warnings.push(format!("this project was last written by dj {w}, newer than this dj ({DJ_VERSION}): settings or features it added may be ignored"));
+    }
+    let unknown: Vec<&str> = t.keys().map(String::as_str).filter(|k| !KNOWN_KEYS.contains(k)).collect();
+    if !unknown.is_empty() {
+        warnings.push(format!("config.toml or .local/local.toml has settings this dj doesn't know, which it ignores: {} (from a newer dj, or a typo?)", unknown.join(", ")));
+    }
+    Ok(warnings)
+}
+
 /// config.toml with .local/local.toml laid over it (docs/config.md#layering).
 pub fn layered_table(root: &Path) -> Result<toml::Table> {
     let mut t = read_table(&root.join("config.toml"))?;
@@ -244,6 +286,9 @@ pub struct RecordLocal {
 pub struct Collection {
     pub root: PathBuf,
     pub config: Config,
+    /// What opening the project found to warn about: written by a newer dj, settings this
+    /// dj doesn't know (`check_versions`).
+    pub warnings: Vec<String>,
     /// The decoders this project uses: its `[[decoders]]` plugins, the built-in ones, and any
     /// its core exports (docs/decoders.md).
     pub decoders: crate::decode::Decoders,
@@ -309,11 +354,11 @@ impl Collection {
         if !cfg_path.is_file() {
             bail!("reading {}: no such file", cfg_path.display());
         }
-        // Every setting may be in either file; local.toml's win.
-        let config: Config = toml::Value::Table(layered_table(root)?).try_into().with_context(|| format!("reading the settings in {} and .local/local.toml", cfg_path.display()))?;
-        if config.format != 1 {
-            bail!("collection format {} is not supported", config.format);
-        }
+        // Every setting may be in either file; local.toml's win. The format is checked
+        // first: a project from a newer dj would only fail to read as settings.
+        let table = layered_table(root)?;
+        let warnings = check_versions(&table)?;
+        let config: Config = toml::Value::Table(table).try_into().with_context(|| format!("reading the settings in {} and .local/local.toml", cfg_path.display()))?;
         let mut replays = BTreeMap::new();
         let mut paths = HashMap::new();
         if dir.is_dir() {
@@ -331,7 +376,7 @@ impl Collection {
                 replays.insert(id, r);
             }
         }
-        let mut c = Collection { root: root.to_path_buf(), config, replays, paths, drafts: Default::default(), decoders: crate::decode::Decoders::built_in() };
+        let mut c = Collection { root: root.to_path_buf(), config, warnings, replays, paths, drafts: Default::default(), decoders: crate::decode::Decoders::built_in() };
         c.decoders = crate::decode::Decoders::load(&c)?;
         c.check_tree()?;
         c.upgrade_blob_names()?;
@@ -619,8 +664,86 @@ impl Collection {
         let path = self.paths.get(id).cloned().unwrap_or_else(|| self.root.join("segments").join(format!("{id}.{SEGMENT_EXT}")));
         std::fs::create_dir_all(path.parent().unwrap())?;
         write_atomic(&path, &self.replays[id].to_text())?;
+        self.note_writer()?;
         self.paths.insert(id.to_string(), path);
         Ok(())
+    }
+
+    /// Records this dj in config.toml's `dj` (the newest dj that wrote the project) when it's
+    /// newer than what's there: only that line changes, the rest stays as written.
+    pub fn note_writer(&mut self) -> Result<()> {
+        if self.config.dj.as_deref().is_some_and(|v| version_tuple(v) >= version_tuple(DJ_VERSION)) {
+            return Ok(());
+        }
+        let path = self.root.join("config.toml");
+        let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        let line = format!("dj = \"{DJ_VERSION}\"");
+        let mut out: Vec<String> = vec![];
+        let mut done = false;
+        let mut in_tables = false;
+        for l in text.lines() {
+            if l.trim_start().starts_with('[') {
+                in_tables = true;
+            }
+            if !in_tables && !done && l.trim_start().starts_with("dj ") && l.contains('=') {
+                out.push(line.clone());
+                done = true;
+                continue;
+            }
+            out.push(l.to_string());
+            if !in_tables && !done && l.trim_start().starts_with("format") && l.contains('=') {
+                out.push(line.clone());
+                done = true;
+            }
+        }
+        if !done {
+            out.insert(0, line);
+        }
+        write_atomic(&path, &(out.join("\n") + "\n"))?;
+        self.config.dj = Some(DJ_VERSION.to_string());
+        Ok(())
+    }
+
+    /// Sets `[core] build` in config.toml (and `sha256`, when the project pins one): only those
+    /// lines change, the rest stays as written.
+    pub fn set_core_build(&mut self, build: &str, sha256: Option<&str>) -> Result<()> {
+        let path = self.root.join("config.toml");
+        let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        let mut out: Vec<String> = vec![];
+        let mut in_core = false;
+        let mut wrote_build = false;
+        for l in text.lines() {
+            let t = l.trim_start();
+            if t.starts_with('[') {
+                if in_core && !wrote_build {
+                    out.push(format!("build = \"{build}\""));
+                    wrote_build = true;
+                }
+                in_core = t.starts_with("[core]");
+            }
+            let key = t.split('=').next().unwrap_or("").trim();
+            if in_core && key == "build" {
+                out.push(format!("build = \"{build}\""));
+                wrote_build = true;
+                continue;
+            }
+            if in_core && key == "sha256" {
+                if let Some(sha) = sha256.filter(|_| !self.config.core.sha256.is_empty()) {
+                    out.push(format!("sha256 = \"{sha}\""));
+                    continue;
+                }
+            }
+            out.push(l.to_string());
+        }
+        if in_core && !wrote_build {
+            out.push(format!("build = \"{build}\""));
+        }
+        write_atomic(&path, &(out.join("\n") + "\n"))?;
+        self.config.core.build = build.to_string();
+        if let Some(sha) = sha256.filter(|_| !self.config.core.sha256.is_empty()) {
+            self.config.core.sha256 = sha.to_string();
+        }
+        self.note_writer()
     }
 
     /// Deletes the file of a replay that is no longer in the collection (after an undo of
@@ -803,5 +926,47 @@ mod layering_tests {
         assert_eq!(s.core, Some(PathBuf::from("/other.so")));
         assert_eq!(s.database, Some(true));
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    fn table(s: &str) -> toml::Table {
+        toml::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn newer_formats_are_refused_and_newer_writers_noted() {
+        let e = format!("{:#}", check_versions(&table("format = 2\ndj = \"0.4.0\"\nname = \"g\"\n")).unwrap_err());
+        assert!(e.contains("format 2") && e.contains("dj 0.4.0") && e.contains("update dj"), "{e}");
+        assert!(check_versions(&table("name = \"g\"\n")).is_err());
+        assert!(check_versions(&table("format = 1\nname = \"g\"\n")).unwrap().is_empty());
+        let w = check_versions(&table("format = 1\ndj = \"999.0.0\"\nname = \"g\"\nfrobnicate = 1\n")).unwrap();
+        assert!(w[0].contains("dj 999.0.0") && w[1].contains("frobnicate"), "{w:?}");
+        assert!(version_tuple("0.10.2") > version_tuple("0.9.9") && version_tuple("1.0.0-dev") == version_tuple("1.0.0"));
+    }
+
+    #[test]
+    fn saving_records_the_writer_and_keeps_the_rest() {
+        let dir = std::env::temp_dir().join(format!("dj-version-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("segments")).unwrap();
+        let config = "format = 1\nname = \"g\"   # a comment kept as written\n\n[rom]\nsha256 = \"\"\nfile = \"g.nes\"\n[core]\nname = \"mesen\"\nbuild = \"1\"\n[hash]\nalgorithm = \"blake3\"\nregions = [\"RAM\"]\n";
+        std::fs::write(dir.join("config.toml"), config).unwrap();
+        std::fs::write(dir.join("segments/a.segment"), "dj-replay 1\nid: a\nparent: none\nframes: 1\n---\n").unwrap();
+        let mut col = Collection::open(&dir).unwrap();
+        col.save_replay("a").unwrap();
+        let text = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+        assert_eq!(text, config.replacen("format = 1\n", &format!("format = 1\ndj = \"{DJ_VERSION}\"\n"), 1));
+        assert!(std::fs::read_to_string(dir.join("segments/a.segment")).unwrap().starts_with("dj-segment 1\n"));
+        // A newer dj's version isn't written over.
+        std::fs::write(dir.join("config.toml"), config.replacen("format = 1\n", "format = 1\ndj = \"999.0.0\"\n", 1)).unwrap();
+        let mut col = Collection::open(&dir).unwrap();
+        assert!(col.warnings.iter().any(|w| w.contains("999.0.0")));
+        col.save_replay("a").unwrap();
+        assert!(std::fs::read_to_string(dir.join("config.toml")).unwrap().contains("dj = \"999.0.0\""));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

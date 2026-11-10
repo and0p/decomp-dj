@@ -5,9 +5,13 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-pub const MAGIC: &str = "dj-replay 1";
-/// The first line before the rename to decomp-dj. Still read; files are written with MAGIC.
-const OLD_MAGIC: &str = "emucov-replay 1";
+/// The first line of a segment file: the format and its version. Files are written with it;
+/// the older first lines below are still read.
+pub const MAGIC: &str = "dj-segment 1";
+/// The segment format version this dj reads and writes.
+pub const SEGMENT_FORMAT: u32 = 1;
+/// The first lines before `dj-segment 1` (decomp-dj's first name, then `dj-replay`). Still read.
+const OLD_MAGICS: [&str; 2] = ["dj-replay 1", "emucov-replay 1"];
 
 /// Hashes are the first 32 hex digits of a BLAKE3 digest (docs/playback.md, "State hashes").
 pub const HASH_HEX: usize = 32;
@@ -65,7 +69,7 @@ pub fn upgrade_text(text: &str) -> String {
             Some(b) => (b, "\r"),
             None => (body, ""),
         };
-        let new = if i == 0 && body.trim() == OLD_MAGIC {
+        let new = if i == 0 && OLD_MAGICS.contains(&body.trim()) {
             MAGIC.to_string()
         } else if in_header && body.trim() == "---" {
             in_header = false;
@@ -164,8 +168,13 @@ impl Replay {
     pub fn parse(text: &str) -> Result<Replay> {
         let mut it = text.lines().enumerate();
         let first = it.next().map(|(_, l)| l.trim()).unwrap_or("");
-        if first != MAGIC && first != OLD_MAGIC {
-            bail!("first line must be `{MAGIC}`");
+        if first != MAGIC && !OLD_MAGICS.contains(&first) {
+            // A newer segment format names its version: say which dj it needs.
+            let newer = ["dj-segment ", "dj-replay "].iter().find_map(|m| first.strip_prefix(m)).and_then(|v| v.trim().parse::<u32>().ok()).filter(|v| *v > SEGMENT_FORMAT);
+            match newer {
+                Some(v) => bail!("this segment is in segment format {v}, written by a newer dj; this dj ({}) reads segment format {SEGMENT_FORMAT}: update dj", env!("CARGO_PKG_VERSION")),
+                None => bail!("first line must be `{MAGIC}`"),
+            }
         }
         let mut header = vec![];
         let mut in_body = false;
@@ -947,6 +956,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn first_lines_old_and_newer() {
+        // Older first lines are read, and written back as dj-segment 1.
+        for old in ["dj-replay 1", "emucov-replay 1"] {
+            let r = Replay::parse(&format!("{old}\nid: a\nparent: none\nframes: 1\n---\n")).unwrap();
+            assert!(r.to_text().starts_with("dj-segment 1\n"));
+        }
+        // A newer format says so, naming the version.
+        let e = format!("{:#}", Replay::parse("dj-segment 2\nid: a\nparent: none\nframes: 1\n---\n").unwrap_err());
+        assert!(e.contains("segment format 2") && e.contains("update dj"), "{e}");
+        assert!(format!("{:#}", Replay::parse("hello\n").unwrap_err()).contains("dj-segment 1"));
+    }
+
+    #[test]
     fn chunks_append_and_truncate() {
         let mut r = Replay::new("d", Some("p"), "t", 0);
         r.append_chunk("0 P1 JOYPAD A 1\n# comment\n10 P1 JOYPAD A 0", 20).unwrap();
@@ -964,7 +986,7 @@ mod tests {
         assert_eq!(r.frames().unwrap(), 12);
     }
 
-    const SAMPLE: &str = "dj-replay 1
+    const SAMPLE: &str = "dj-segment 1
 id: 3b8f0f2c-1d44-4c1e-9e55-0d7a3c1b2e90
 parent: none
 title: Boot
@@ -1004,7 +1026,7 @@ frames: 100
 
     #[test]
     fn line_text_survives_header_edits() {
-        let text = "dj-replay 1\nid: a\nparent: none\nframes: 100\nend-hash: x\n---\n0 P1 JOYPAD DOWN 1\n40 [WRITE] RAM 0x73 00 00 03\n50 P1 JOYPAD DOWN 0\n";
+        let text = "dj-segment 1\nid: a\nparent: none\nframes: 100\nend-hash: x\n---\n0 P1 JOYPAD DOWN 1\n40 [WRITE] RAM 0x73 00 00 03\n50 P1 JOYPAD DOWN 0\n";
         let mut r = Replay::parse(text).unwrap();
         let write = r.lines[1].line_no;
         // Fewer header lines (an edit drops the end hash), then more (a title, a checkpoint).
@@ -1022,7 +1044,7 @@ frames: 100
 
     #[test]
     fn splits_and_edits_lines() {
-        let text = "dj-replay 1\nid: a\nparent: none\nframes: 100\nend-hash: x\ncheckpoint: 20 c20\ncheckpoint: 80 c80\n---\n# note\n0 P1 JOYPAD A 1\n10 P1 JOYPAD RIGHT 1\n30 [EVENT] middle\n60 P1 JOYPAD RIGHT 0\n70 [WRITE] RAM 0x10 01 02\n";
+        let text = "dj-segment 1\nid: a\nparent: none\nframes: 100\nend-hash: x\ncheckpoint: 20 c20\ncheckpoint: 80 c80\n---\n# note\n0 P1 JOYPAD A 1\n10 P1 JOYPAD RIGHT 1\n30 [EVENT] middle\n60 P1 JOYPAD RIGHT 0\n70 [WRITE] RAM 0x10 01 02\n";
         let r = Replay::parse(text).unwrap();
         let (up, down) = r.split_at(50, "b").unwrap();
         assert_eq!(up.id().unwrap(), "b");
@@ -1086,7 +1108,7 @@ frames: 100
         let old = format!("emucov-replay 1\r\nid: a\nparent: none\nframes: 10\nend-hash: blake3-{h64}\ncheckpoint: 5 blake3-{h64}\n# end-hash: blake3-keep\n---\n# blake3-{h64}\n");
         let new = upgrade_text(&old);
         let h32 = &h64[..32];
-        assert_eq!(new, format!("dj-replay 1\r\nid: a\nparent: none\nframes: 10\nend-hash: {h32}\ncheckpoint: 5 {h32}\n# end-hash: blake3-keep\n---\n# blake3-{h64}\n"));
+        assert_eq!(new, format!("dj-segment 1\r\nid: a\nparent: none\nframes: 10\nend-hash: {h32}\ncheckpoint: 5 {h32}\n# end-hash: blake3-keep\n---\n# blake3-{h64}\n"));
         // The parser reads the old form the same way.
         let r = Replay::parse(&old).unwrap();
         assert_eq!(r.get("end-hash"), Some(h32));
@@ -1096,8 +1118,8 @@ frames: 100
     #[test]
     fn renames_save_to_snapshot() {
         let h = "ab".repeat(16);
-        let old = format!("dj-replay 1\nid: a\nparent: none\nframes: 10\nsave: blake3-{h}{h}\n---\n");
-        assert_eq!(upgrade_text(&old), format!("dj-replay 1\nid: a\nparent: none\nframes: 10\nsnapshot: {h}\n---\n"));
+        let old = format!("dj-segment 1\nid: a\nparent: none\nframes: 10\nsave: blake3-{h}{h}\n---\n");
+        assert_eq!(upgrade_text(&old), format!("dj-segment 1\nid: a\nparent: none\nframes: 10\nsnapshot: {h}\n---\n"));
         let r = Replay::parse(&old).unwrap();
         assert_eq!(r.get("snapshot"), Some(h.as_str()));
         assert!(r.to_text().contains(&format!("snapshot: {h}\n")));

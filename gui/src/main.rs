@@ -214,6 +214,12 @@ struct App {
     save_dialog: Option<SaveAsk>,
     /// Open, Reload or Quit asked for with unsaved edits: waiting on "discard them?".
     discard_dialog: Option<Discard>,
+    /// What a dj-gui that crashed, hung or was force-quit left (unsaved edits, a crash
+    /// note): offered back when the project opens (.agents/ISOLATION_PLAN.md, step 4).
+    recovery_offer: Vec<decomp_dj::recovery::Left>,
+    /// The unsaved edits last written to `.local/recovery/` (as JSON), and when that was checked.
+    recovery_written: String,
+    recovery_checked: f64,
     /// Quit was confirmed (or nothing was unsaved): let the window close.
     quit_ok: bool,
     /// Save once the cleaning started from the save dialog finishes.
@@ -480,6 +486,9 @@ impl Default for App {
             hoist: None,
             indent_all: false,
             edited: BTreeSet::new(),
+            recovery_offer: vec![],
+            recovery_written: String::new(),
+            recovery_checked: 0.0,
             dirty_from: HashMap::new(),
             segments_fp: 0,
             saved_end: HashMap::new(),
@@ -907,10 +916,24 @@ impl App {
                 self.hydrating = None;
                 self.saved_end = col.replays.iter().map(|(id, r)| (id.clone(), ending_sig(r))).collect();
                 self.gui_mark = Some(decomp_dj::cache::GuiMark::new(&col.root));
+                // The project being left closes normally: nothing to recover from it.
+                if let Some(old) = &self.col {
+                    decomp_dj::recovery::clear(&old.root);
+                }
+                self.recovery_written.clear();
+                // A crash or hang in a core leaves a note, and unsaved edits are kept as they're
+                // made; what a dj-gui that's gone left is offered back.
+                decomp_dj::crash::set_note_path(&col.root);
+                decomp_dj::crash::start_watchdog(std::time::Duration::from_secs(10));
+                self.recovery_offer = decomp_dj::recovery::left_behind(&col.root);
                 self.col = Some(col);
                 self.open_session();
                 self.refresh_stored();
                 self.info(format!("Opened {} ({n} segments)", dir.display()));
+                let warnings = self.col.as_ref().map(|c| c.warnings.clone()).unwrap_or_default();
+                for w in warnings {
+                    self.error(format!("Note: {w}"));
+                }
                 if let Some(id) = first {
                     self.select(&id);
                 }
@@ -989,6 +1012,72 @@ impl App {
     /// edited here, which stay in `.local/drafts/` and come back on the next open.
     fn unsaved_edits(&self) -> usize {
         self.edited.iter().filter(|id| !self.agent_owned(id)).count()
+    }
+
+    /// Keeps the unsaved edits in `.local/recovery/` (when they've changed), so a crash or a
+    /// hang in a core doesn't lose them.
+    fn write_recovery(&mut self) {
+        let Some(col) = &self.col else { return };
+        let segments: BTreeMap<String, Option<String>> = self.edited.iter().filter(|id| !self.agent_owned(id)).map(|id| (id.clone(), col.replays.get(id).map(|r| r.to_text()))).collect();
+        let sig = serde_json::to_string(&segments).unwrap_or_default();
+        if sig == self.recovery_written {
+            return;
+        }
+        match decomp_dj::recovery::write(&col.root, segments) {
+            Ok(()) => self.recovery_written = sig,
+            Err(e) => self.error(format!("Couldn't keep a copy of the unsaved edits: {e:#}")),
+        }
+    }
+
+    /// Offers back what a dj-gui that's gone left: its unsaved edits, as an unsaved change
+    /// (Undo takes it back), and its crash note.
+    fn recovery_window(&mut self, ctx: &egui::Context) {
+        let Some(left) = self.recovery_offer.first().cloned() else { return };
+        let n = left.snapshot.as_ref().map_or(0, |s| s.segments.len());
+        let (mut restore, mut discard) = (false, false);
+        egui::Window::new("dj-gui didn't close normally").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).show(ctx, |ui| {
+            if let Some(note) = &left.note {
+                ui.label(RichText::new(note.lines().next().unwrap_or("")).strong());
+                for l in note.lines().skip(1) {
+                    ui.label(RichText::new(l).monospace().small());
+                }
+                ui.add_space(6.0);
+            } else {
+                ui.label(RichText::new("The last dj-gui to open this project ended without closing it (it crashed, or was quit by force).").strong());
+            }
+            if n > 0 {
+                ui.label(format!("It had unsaved edits in {n} segment{}. Restore them? They come back as unsaved edits (Undo takes them back); Discard drops them for good.", if n == 1 { "" } else { "s" }));
+                ui.horizontal(|ui| {
+                    restore = ui.button("Restore").clicked();
+                    discard = ui.button("Discard").clicked();
+                });
+            } else {
+                discard = ui.button("OK").clicked();
+            }
+        });
+        if !(restore || discard) {
+            return;
+        }
+        self.recovery_offer.remove(0);
+        let Some(root) = self.col.as_ref().map(|c| c.root.clone()) else { return };
+        if restore {
+            let mut segments = vec![];
+            for (id, text) in left.snapshot.map(|s| s.segments).unwrap_or_default() {
+                match text.map(|t| decomp_dj::format::Replay::parse(&t)).transpose() {
+                    Ok(r) => segments.push((id, r)),
+                    Err(e) => {
+                        self.error(format!("Couldn't restore segment {id}: {e:#}"));
+                        return;
+                    }
+                }
+            }
+            let step = UndoStep { label: "Restore unsaved edits".to_string(), segments, selected: self.selected.clone(), frame: self.playhead() };
+            let back = self.restore(step);
+            self.undo.push(back);
+            self.redo.clear();
+            self.info(format!("Restored the unsaved edits of {n} segment{}. Undo takes them back.", if n == 1 { "" } else { "s" }));
+        }
+        decomp_dj::recovery::forget(&root, left.pid);
     }
 
     /// Runs `what` now when nothing would be lost; otherwise asks first.
@@ -3493,6 +3582,9 @@ impl App {
                 self.compare_dialog = None;
             }
         }
+        if !self.recovery_offer.is_empty() {
+            self.recovery_window(ctx);
+        }
         if let Some(what) = self.discard_dialog.take() {
             let n = self.unsaved_edits();
             let mut open = true;
@@ -5859,6 +5951,15 @@ fn egui_ctx() -> egui::Context {
     CTX.with(|c| c.borrow().clone().expect("egui context"))
 }
 
+/// A normal close: nothing for the next launch to recover.
+impl Drop for App {
+    fn drop(&mut self) {
+        if let Some(col) = &self.col {
+            decomp_dj::recovery::clear(&col.root);
+        }
+    }
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -5877,6 +5978,11 @@ impl eframe::App for App {
         }
         let dt = ctx.input(|i| i.unstable_dt).min(0.1) as f64;
         let now = ctx.input(|i| i.time);
+        decomp_dj::crash::heartbeat();
+        if now - self.recovery_checked > 1.0 {
+            self.recovery_checked = now;
+            self.write_recovery();
+        }
         if now - self.agent_polled > 0.5 {
             self.agent_polled = now;
             if let Some(m) = &mut self.gui_mark {

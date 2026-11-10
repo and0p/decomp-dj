@@ -18,4 +18,6 @@ pub mod parity;
 pub mod player;
 pub mod query;
 pub mod condition;
+pub mod crash;
+pub mod recovery;
 pub mod trace;

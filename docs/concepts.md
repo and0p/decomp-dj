@@ -9,7 +9,7 @@ previews) is derived locally by playing it.
 
 These are the working terms. The docs and the GUI use them. The code and the CLI's help
 still use older words in places ("replay" for segment, "collection" for project, "trunk"
-for root segment), and segment files still start with `dj-replay 1`.
+for root segment).
 
 | Term | Meaning |
 |---|---|

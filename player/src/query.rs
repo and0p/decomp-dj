@@ -111,7 +111,7 @@ impl Project {
     fn need_flags(&mut self) -> Result<(Vec<u8>, Vec<u8>)> {
         let prg = self.need_prg()?;
         let flags = self.report()?.detail.prg.clone();
-        if !analysis::has_operand_flags(&flags) && !self.cpu.as_deref().is_some_and(analysis::has_decoder) {
+        if !analysis::has_operand_flags(&flags) && !self.cpu.as_deref().is_some_and(|c| self.col.decoders.get(c).is_some()) {
             bail!("this needs a symbol map. {ADD_SYMBOLS}");
         }
         Ok((prg, flags))
@@ -251,6 +251,7 @@ impl Project {
                 r.sort_by_key(|r| std::cmp::Reverse(r.unique));
                 r.iter().take(5).map(|r| format!("{} {} (+{} only it runs)", &r.id[..8], r.title, r.unique)).collect()
             },
+            notes: rep.notes.clone(),
         })
     }
 
@@ -282,7 +283,7 @@ impl Project {
     pub fn uncovered_ranges(&mut self, _sort: GapSort, limit: usize, cursor: usize) -> Result<Page<UncoveredRange>> {
         let (prg, flags) = self.need_flags()?;
         let cpu = self.cpu.clone();
-        let (mut exec, from_flags) = analysis::executed_bytes(cpu.as_deref().and_then(crate::decode::decoder_for), &prg, &flags);
+        let (mut exec, from_flags) = analysis::executed_bytes(cpu.as_deref().and_then(|c| self.col.decoders.get(c)), &prg, &flags);
         let region = self.report()?.detail.region.clone();
         self.mark_annotated(&mut exec)?;
         let mut rows: Vec<UncoveredRange> = analysis::uncovered_ranges(&exec)
@@ -693,6 +694,9 @@ pub struct Summary {
     pub functions_never_entered: usize,
     pub functions_partly_covered: usize,
     pub top_segments: Vec<String>,
+    /// What the report wants said: no decoder for the code's CPU, which decoder plugin
+    /// decoded it, a ROM in the wrong byte order, ...
+    pub notes: Vec<String>,
 }
 
 #[derive(Serialize)]

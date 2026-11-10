@@ -357,6 +357,7 @@ fn init(dir: &Path, name: &str, rom: &Path, core_path: &Path, core_build: Option
         syms.push(SymbolsConfig { file: format!("symbols/{}", fname.to_string_lossy()), format: format.into(), rom_header: None, region: None, cpu_base: None });
     }
     let config = Config {
+        decoders: vec![],
         format: 1,
         name: name.to_string(),
         rom: RomConfig { sha256: sha256_file(rom)?, file: rom.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default() },
@@ -867,7 +868,7 @@ fn print_connector_regions(core: &mut libretro::Core, rom: &Path) -> Result<()> 
         let place = f.file_offset.map(|o| format!("ROM file from byte {o}")).unwrap_or_else(|| "not from the ROM file".into());
         let decoder = match f.cpu.as_deref() {
             Some(c) if decomp_dj::analysis::has_decoder(c) => format!("{c}"),
-            Some(c) => format!("{c} (no decoder yet)"),
+            Some(c) => format!("{c} (no built-in decoder: a plugin or the core can add one, docs/decoders.md)"),
             None => "no instruction set".into(),
         };
         let mark = if f.name == code { "  <- coverage rolls up here" } else { "" };

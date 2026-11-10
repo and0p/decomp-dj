@@ -62,6 +62,7 @@ Details, and starting your own project, are in [install.md](docs/install.md).
 | [gui.md](docs/gui.md) | A tour of `dj-gui` |
 | [connectors.md](docs/connectors.md) | The coverage API, and adding a core |
 | [mcp.md](docs/mcp.md) | `dj mcp`: queries, traces, sessions, drafts and search jobs for AI agents |
+| [decoders.md](docs/decoders.md) | Instruction decoders, and writing a decoder plugin in C or Rust |
 
 **Format version 1** is defined by [segments.md](docs/segments.md),
 [playback.md](docs/playback.md), the tree edits in [editing.md](docs/editing.md#tree-edits)
@@ -77,6 +78,7 @@ Work in progress lives in [.agents/](.agents/): the [roadmap](.agents/ROADMAP.md
 | --- | --- |
 | [player/](player/) | `dj`, the headless player (Rust), and the `decomp_dj` library both tools use |
 | [gui/](gui/) | `dj-gui`, the desktop viewer and editor (Rust, egui) |
+| [decoders/](decoders/) | The decoder interface: the C header, the `dj-decoder` crate (with the built-in decoders) and a reference plugin |
 | [connectors/](connectors/) | Per-core coverage patches: [mesen](connectors/mesen/) (NES), [mgba](connectors/mgba/) (GBA) and [mupen64plus](connectors/mupen64plus/) (N64) |
 | [examples/thwaite/](examples/thwaite/) | The end-to-end test project |
 | [examples/tetris/](examples/tetris/) | A commercial game (bring your own ROM), with a C decomp built as a comparison core |

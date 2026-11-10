@@ -58,6 +58,7 @@ Not legal advice; worth a second look before the release.
    decomp-dj-0.1.0-macos-arm64/
      dj, dj-gui                 (dj.exe, dj-gui.exe on Windows)
      connectors/                (patches, build scripts, READMEs)
+     decoders/                  (dj_decoder.h, the dj-decoder crate, the reference plugin)
      examples/thwaite/          (config, segments, README with build-rom.sh)
      docs/
      README.md, LICENSE, CHANGELOG.md

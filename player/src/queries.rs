@@ -78,6 +78,9 @@ pub fn summary(dir: &Path, q: &QueryArgs) -> Result<()> {
     for w in &s.annotation_warnings {
         println!("warning: {w}");
     }
+    for n in &s.notes {
+        println!("note: {n}");
+    }
     println!("{} segments ({} dirty and {} unplayed left out)", s.segments, s.segments_left_out.dirty, s.segments_left_out.unplayed);
     for t in &s.top_segments {
         println!("  {t}");

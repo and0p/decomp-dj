@@ -1,0 +1,8 @@
+[package]
+name = "dj-decoder"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "The instruction decoder interface of decomp-dj: the trait, the C plugin interface, and the built-in decoders"
+
+[dependencies]

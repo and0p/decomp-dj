@@ -188,7 +188,9 @@ error or a failed `dj_run` stops playback at that frame ([gui.md](gui.md#compari
 3. Expose the functions above through the proc address callback.
 4. Check that state hashes are identical with and without the patch, on every segment of a project, and measure the slowdown (about 5% for Mesen). With a symbol map, `dj check-connector` compares the flags with the decoder ([cli.md](cli.md)). A disagreement can also mean data inside a function that annotations.toml doesn't mark yet, such as inline arguments after a `JSR`.
 5. Pin the upstream commit and ship a `build.sh` and the patch under `connectors/<core>/`, like Mesen's.
+6. If dj has no decoder for the CPU, write one ([decoders.md](decoders.md)): a plugin, or exported by the core itself (`dj_decoders`).
 
 Rolling coverage up into functions and blocks also needs a decoder for the region's `cpu`.
-The 6502, MIPS (`mips3`) and ARMv4T (`armv4t`: ARM and Thumb, for the GBA) have one so far ([coverage.md](coverage.md#symbol-maps)); for any
-other, the report counts opcode bytes and says no decoder exists yet.
+The 6502, MIPS (`mips3`) and ARMv4T (`armv4t`: ARM and Thumb, for the GBA) are built in ([coverage.md](coverage.md#symbol-maps)), and a decoder plugin can add any
+other ([decoders.md](decoders.md)); without one, the report counts opcode bytes and says no
+decoder exists yet.

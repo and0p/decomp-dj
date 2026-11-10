@@ -202,7 +202,7 @@ static DECODED: std::sync::Mutex<Option<([u8; 32], Vec<AnalyzedFunction>)>> = st
 
 fn decode_cached(dec: &dyn crate::decode::Decoder, funcs: &[(analysis::Function, u64)], rom: &[u8], data: &[(u64, u64)], in_file: bool) -> Vec<AnalyzedFunction> {
     let mut h = blake3::Hasher::new();
-    h.update(format!("{}\n{in_file}\n{data:?}\n{funcs:?}\n", dec.cpu()).as_bytes());
+    h.update(format!("{}\n{in_file}\n{data:?}\n{funcs:?}\n", dec.id()).as_bytes());
     h.update(rom);
     let key: [u8; 32] = h.finalize().into();
     if let Some((k, v)) = DECODED.lock().unwrap().as_ref() {
@@ -314,9 +314,12 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
     // The decoder comes from the region's instruction set; with nothing recorded, an NES
     // project is 6502 as before.
     let cpu = facts.iter().find(|f| f.name == code).and_then(|f| f.cpu.clone()).unwrap_or_else(|| "6502".into());
-    let dec = crate::decode::decoder_for(&cpu);
+    let dec = col.decoders.get(&cpu);
     if !funcs.is_empty() && dec.is_none() {
-        notes.push(format!("no decoder for the {cpu} instruction set yet: {code} is counted in opcode bytes, without functions or blocks"));
+        notes.push(format!("no decoder for the {cpu} instruction set yet: {code} is counted in opcode bytes, without functions or blocks (a decoder plugin can add one: docs/decoders.md)"));
+    }
+    if let Some(dec) = dec.filter(|d| !d.id().starts_with("built-in")) {
+        notes.push(format!("{code} ({cpu}) decoded by {}", dec.id()));
     }
     if let (false, Some(dec)) = (funcs.is_empty(), dec) {
         let Some(rom) = rom else { bail!("symbols need the ROM to disassemble") };
@@ -341,6 +344,10 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
             }
         }
         analyzed = decode_cached(dec, &funcs, rom, &data, in_file);
+        let invalid = col.decoders.invalid_answers(&cpu);
+        if invalid > 0 {
+            notes.push(format!("the {cpu} decoder ({}) gave {invalid} answers out of range (an unknown kind, or a length over its max_length); they were read as \"not an instruction\"", dec.id()));
+        }
     }
     analyzed.sort_by_key(|f| f.func.offset);
     let symbols = !analyzed.is_empty();
@@ -624,6 +631,9 @@ fn pct(a: usize, b: usize) -> String {
 pub fn print_report(rep: &Report, col: &Collection) {
     let t = &rep.totals;
     println!("Coverage of the current segments (setup {})", rep.setup);
+    for n in &rep.notes {
+        println!("  note: {n}");
+    }
     if t.dirty_segments + t.unplayed_segments > 0 {
         println!("  left out: {} dirty, {} not played with their current content", t.dirty_segments, t.unplayed_segments);
     }

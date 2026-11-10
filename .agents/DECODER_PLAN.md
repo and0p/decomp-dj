@@ -1,6 +1,7 @@
 # Plan: decoders as loadable libraries
 
-Status: step 1 done 2026-11-09, and an ARMv4T decoder (below); steps 2 and 3 not started. The question: can instruction decoders be
+Status: step 1 done 2026-11-09, an ARMv4T decoder and the GBA end to end, and step 2
+(decoder plugins) done 2026-11-10 (below). The question: can instruction decoders be
 libraries loaded at run time, like cores, so a user can bring a decoder for a CPU dj doesn't
 know, and point at it from config? Background on why decoding is per CPU and lives outside
 the connector: [CONNECTOR_PLAN.md](CONNECTOR_PLAN.md#where-decoding-could-live).
@@ -191,7 +192,61 @@ addresses, so it could place them in `IWRAM` with a `file` offset, as the N64 do
 
 ## Step 2: loading decoders from libraries
 
-### The C interface
+**Done 2026-11-10.** User docs: [docs/decoders.md](../docs/decoders.md). What was built:
+
+- **`decoders/dj-decoder`** (new crate, no dependencies): the `Decoder` trait, `Decoded` and
+  `Kind` (moved from the player), the built-in decoders (`isa`: `Mos6502`, `Mips3`,
+  `arm::Armv4t`, moved too; the player re-exports them), the C interface (`ffi`) and
+  `export_decoders!`.
+- **`decoders/include/dj_decoder.h`** (MIT): `struct dj_instruction`, `enum dj_kind`,
+  `struct dj_decoder` (`api_version`, `size`, `cpu`, `max_length`, `fixed_length`,
+  `alignment`, `mode_from_flags`, `decode`) and the one export,
+  `const struct dj_decoder* const* dj_decoders(size_t* count)`.
+- **Player:** `decode::PluginDecoder` (loads a library, checks every table: API version,
+  size, required fields; checks every answer: a kind it doesn't know or a length over
+  `max_length` reads as "not an instruction" and is counted) and `decode::Decoders`, the
+  project's list on `Collection` (`col.decoders`), loaded by `Collection::open`:
+  `[[decoders]]` plugins, then built-ins, then the core's own `dj_decoders` (loaded the first
+  time a CPU nothing else decodes is asked for). `Decoder::id()` names a decoder ("built-in
+  6502", or the library's path and sha256) for the decode cache's key and a report note.
+  `dj summary` and `dj report` now print the report's notes, which nothing showed before.
+- **`decoders/reference`**: the built-in decoders exported through `export_decoders!`.
+- **Tests** (`player/tests/decoder_plugins.rs`): the reference plugin, built by the test,
+  decodes exactly as the built-ins on 600,000 random instructions (all three CPUs, short
+  slices, both ARM modes, every flag byte for `mode_from_flags`) and on every function of
+  Thwaite, Tetris and gba-test (4,656, 4,930 and 191 instructions); a plugin in C
+  (`tests/testdecoder/toy.c`, a made-up instruction set) checks the header's layout, literal
+  skipping, call sites and the answer checks; `[[decoders]]` loading with a suffix-less path
+  and a sha256 pin, a wrong pin, a missing file, and decoders exported by a core.
+- **End to end:** each example project with the reference plugin in `.local/local.toml`:
+  every `dj summary`, `report`, `gaps`, `frontier`, `check-connector`, `annotations` and
+  `function` output byte-identical to the built-in decoders', apart from the note naming the
+  plugin.
+
+Decisions on the way (2026-11-10):
+
+- Names: `dj_instruction` (not `dj_insn`, and not `dj_cpu_instruction`: the decoder is
+  already per CPU).
+- One exported function handing out tables, not a function per call: one library can carry
+  several instruction sets, and `size` lets later versions add fields.
+- A core exports `dj_decoders` as an ordinary exported symbol, not through the libretro proc
+  address callback, so dj can read it without starting the core (queries run without one).
+- No `decode_range` batch call: a native call costs a few ns. It would matter for
+  WebAssembly, which isn't planned (wasmi later, if ever).
+- Decoders must be thread-safe and pure; a Rust plugin's panics are caught by the export
+  macro and read as "not an instruction".
+
+Limits:
+
+- `analysis::code_region` still prefers regions whose CPU has a *built-in* decoder when
+  choosing where coverage rolls up; a CPU only a plugin decodes is still chosen through the
+  next rule (a region from the ROM file that a CPU runs), which covers every connector so far.
+- A plugin can crash dj; plugins are trusted like cores.
+- `dj init` names only built-in decoders when it lists the connector's regions.
+
+### The interface as first sketched (superseded by the header)
+
+
 
 ```c
 #define DJ_DECODER_API 1
@@ -344,6 +399,6 @@ reads flags per frame the same way, so it gains from the same fixes.
 1. **Done 2026-11-09.** The `Decoder` trait and one generic sweep, 6502 and MIPS moved
    onto it, with the sweep fixes, `fixed_len` and `alignment`, and caching
    ([Step 1](#step-1-a-decoder-trait-inside-the-player-no-plugins-yet)).
-2. The C interface and `[[decoders]]` loading, with the 6502 decoder also built as a test
-   `cdylib` (`player/tests/testdecoder/`) so loading is tested against a known answer.
-3. Decide native or WASM after a first outside decoder (65816 is the likely one).
+2. **Done 2026-11-10.** The C interface, `[[decoders]]` loading, decoders from cores, the
+   `dj-decoder` crate and the reference plugin ([Step 2](#step-2-loading-decoders-from-libraries)).
+3. Native, decided 2026-11-10; WebAssembly (wasmi) only if it's ever needed.

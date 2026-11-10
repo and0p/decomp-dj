@@ -243,6 +243,7 @@ dependencies = [
  "base64",
  "blake3",
  "clap",
+ "dj-decoder",
  "libc",
  "libloading",
  "object",
@@ -265,6 +266,10 @@ dependencies = [
  "block-buffer",
  "crypto-common",
 ]
+
+[[package]]
+name = "dj-decoder"
+version = "0.1.0"
 
 [[package]]
 name = "equivalent"

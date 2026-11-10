@@ -6,89 +6,16 @@
 //! it, and its delay slots. Everything built from those answers (blocks, successors, call
 //! sites) is worked out here once, for every instruction set.
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock, RwLock};
+
+use anyhow::{anyhow, bail, Context, Result};
+
 use crate::analysis::{AnalyzedFunction, Block, CallSite, Function, Instruction};
-
-/// How control leaves an instruction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kind {
-    /// On to the next instruction.
-    Next,
-    /// To `target` (None: indirect, such as a jump table). A conditional jump is a branch.
-    Jump,
-    /// To `target` (None: indirect), coming back after the instruction and its delay slots.
-    Call,
-    /// Back to the caller.
-    Return,
-    /// Execution doesn't go on (BRK, KIL, BREAK).
-    Stop,
-}
-
-/// One decoded instruction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Decoded {
-    /// Bytes. 0: not an instruction.
-    pub len: u8,
-    pub kind: Kind,
-    /// Whether execution may also go on to the next instruction (a branch, a conditional
-    /// return or call). Calls always come back, so this only matters for the others.
-    pub conditional: bool,
-    /// The CPU address control goes to, for jumps and calls whose target the bytes say.
-    pub target: Option<u64>,
-    /// Instructions that run before control moves (MIPS branches and jumps: 1).
-    pub delay_slots: u8,
-    /// The mode the next instruction runs in (65816 REP/SEP, ARM/Thumb); 0 where the
-    /// instruction set has none.
-    pub mode_after: u32,
-    /// How a call site through this instruction is listed ("JSR", "JAL", ...), for jumps
-    /// and calls.
-    pub site: &'static str,
-    /// The mode code runs in at `target`, when the jump changes it (ARM `bx pc` from Thumb).
-    /// None: the same mode.
-    pub target_mode: Option<u32>,
-    /// Data the instruction reads at a CPU address its bytes give (a PC-relative literal on
-    /// ARM): the address and how many bytes. The sweep doesn't read those bytes as code.
-    pub data_ref: Option<(u64, u8)>,
-}
-
-impl Decoded {
-    fn next(len: u8) -> Decoded {
-        Decoded { len, kind: Kind::Next, conditional: false, target: None, delay_slots: 0, mode_after: 0, site: "", target_mode: None, data_ref: None }
-    }
-
-    /// Whether this instruction ends a basic block (after its delay slots). Calls don't:
-    /// control comes back.
-    pub fn ends_block(&self) -> bool {
-        !matches!(self.kind, Kind::Next | Kind::Call)
-    }
-}
-
-/// An instruction set the player can split into instructions and blocks.
-pub trait Decoder: Sync {
-    /// The name connectors report for it (`dj_region.cpu`): "6502", "mips3".
-    fn cpu(&self) -> &'static str;
-    /// The most bytes one instruction takes; the sweep offers this many where it can.
-    fn max_len(&self) -> usize;
-    /// Every instruction this long, for fixed-width instruction sets. Lets callers skip
-    /// decoding lengths.
-    fn fixed_len(&self) -> Option<u8> {
-        None
-    }
-    /// Instructions in `mode` start only at multiples of this many bytes (from the
-    /// function's start).
-    fn alignment(&self, _mode: u32) -> u8 {
-        1
-    }
-    /// The mode an opcode ran in, from the connector's mode bits on its first byte
-    /// (`0x04`-`0x20`, defined per instruction set in docs/connectors.md). None: the bits
-    /// don't say (no mode bits, or more than one mode).
-    fn mode_from_flags(&self, _flags: u8) -> Option<u32> {
-        None
-    }
-    /// Decodes the instruction at the start of `bytes` (in the ROM file's order), which runs
-    /// at CPU address `pc` in `mode`. `bytes` may be shorter than `max_len` at the end of the
-    /// code; a length past it means the instruction doesn't fit.
-    fn decode(&self, bytes: &[u8], pc: u64, mode: u32) -> Decoded;
-}
+pub use dj_decoder::isa::{op_len_6502, Mips3, Mos6502};
+pub use dj_decoder::{Decoded, Decoder, Kind};
 
 /// The built-in decoder for an instruction set, by the name connectors report.
 pub fn decoder_for(cpu: &str) -> Option<&'static dyn Decoder> {
@@ -97,122 +24,196 @@ pub fn decoder_for(cpu: &str) -> Option<&'static dyn Decoder> {
 
 static BUILT_IN: [&dyn Decoder; 3] = [&Mos6502, &Mips3, &crate::arm::Armv4t];
 
-// ---- 6502 ---------------------------------------------------------------------------
+// ---- plugins ------------------------------------------------------------------------
 
-/// The 6502 (NES 2A03 included), with the stable undocumented opcodes.
-pub struct Mos6502;
-
-/// Instruction length for each 6502 opcode, including the stable undocumented ones.
-pub fn op_len_6502(op: u8) -> u8 {
-    let odd_row = (op >> 4) & 1 == 1;
-    match op & 0x0f {
-        0x0 if odd_row => 2,
-        0x0 => match op {
-            0x20 => 3,
-            0x00 | 0x40 | 0x60 => 1,
-            _ => 2,
-        },
-        0x1 | 0x3 | 0x4 | 0x5 | 0x6 | 0x7 => 2,
-        0x2 => match op {
-            0x82 | 0xA2 | 0xC2 | 0xE2 => 2,
-            _ => 1, // KIL / JAM
-        },
-        0x8 | 0xA => 1,
-        0x9 | 0xB if odd_row => 3,
-        0x9 | 0xB => 2,
-        _ => 3, // 0xC..0xF
-    }
+/// `[[decoders]]` in config.toml or .local/local.toml (docs/decoders.md).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct DecoderConfig {
+    /// The library. A bare name is looked for in the project folder, then in `decoders/`
+    /// next to the dj executable; a relative path is from the project folder. The platform's
+    /// suffix may be left out, as for cores.
+    pub path: PathBuf,
+    /// Pins the library, like `[core] sha256`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sha256: String,
+    /// Optional: entries with a name merge with local.toml's by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
-impl Decoder for Mos6502 {
-    fn cpu(&self) -> &'static str {
-        "6502"
+/// Where a `[[decoders]]` path points (docs/decoders.md).
+pub fn resolve_library(root: &Path, path: &Path, folder: &str) -> PathBuf {
+    if path.is_absolute() {
+        return crate::libretro::library_path(path);
     }
-
-    fn max_len(&self) -> usize {
-        3
+    let in_project = crate::libretro::library_path(&root.join(path));
+    if in_project.exists() || path.components().count() > 1 {
+        return in_project;
     }
+    let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| crate::libretro::library_path(&d.join(folder).join(path))));
+    beside.filter(|p| p.exists()).unwrap_or(in_project)
+}
 
-    fn decode(&self, bytes: &[u8], pc: u64, _mode: u32) -> Decoded {
-        let Some(&op) = bytes.first() else { return Decoded::next(0) };
-        let len = op_len_6502(op);
-        let b = |i: usize| bytes.get(i).copied().unwrap_or(0);
-        let abs = || u16::from_le_bytes([b(1), b(2)]) as u64;
-        let d = Decoded::next(len);
-        match op {
-            0x10 | 0x30 | 0x50 | 0x70 | 0x90 | 0xB0 | 0xD0 | 0xF0 => {
-                let target = ((pc as i64 + 2 + b(1) as i8 as i64) & 0xffff) as u64;
-                Decoded { kind: Kind::Jump, conditional: true, target: Some(target), ..d }
+/// A decoder from a plugin library (`dj_decoders`, decoders/include/dj_decoder.h).
+pub struct PluginDecoder {
+    cpu: &'static str,
+    id: String,
+    table: &'static dj_decoder::ffi::DjDecoder,
+    max_len: usize,
+    /// Answers out of range (a kind it doesn't know, a length over `max_length`): read as
+    /// "not an instruction", and counted for the report.
+    invalid: AtomicUsize,
+    _library: Arc<libloading::Library>,
+}
+
+impl PluginDecoder {
+    /// Every decoder in the library at `path`; none when it doesn't export `dj_decoders`.
+    /// `what` names the library in messages ("decoder plugin", "core").
+    pub fn load(path: &Path, what: &str) -> Result<Vec<PluginDecoder>> {
+        use dj_decoder::ffi::{DjDecodersFn, DJ_DECODERS_SYMBOL, DJ_DECODER_API, DJ_DECODER_V1_SIZE};
+        let sha = crate::collection::sha256_file(path).with_context(|| format!("reading the {what} {}", path.display()))?;
+        // SAFETY: loading a library runs its initialisers; plugins are trusted like cores.
+        let library = Arc::new(unsafe { libloading::Library::new(path) }.with_context(|| format!("loading the {what} {}", path.display()))?);
+        let Ok(entry) = (unsafe { library.get::<DjDecodersFn>(DJ_DECODERS_SYMBOL) }) else { return Ok(vec![]) };
+        let mut count = 0usize;
+        let tables = unsafe { entry(&mut count) };
+        let mut out = vec![];
+        for i in 0..if tables.is_null() { 0 } else { count } {
+            let t = unsafe { *tables.add(i) };
+            let Some(t) = (unsafe { t.as_ref() }) else { bail!("{what} {}: decoder {i} is NULL", path.display()) };
+            if t.api_version != DJ_DECODER_API {
+                bail!("{what} {}: decoder {i} is for decoder API {}, and this dj reads version {DJ_DECODER_API}; rebuild it", path.display(), t.api_version);
             }
-            0x20 => Decoded { kind: Kind::Call, target: Some(abs()), site: "JSR", ..d },
-            0x4C => Decoded { kind: Kind::Jump, target: Some(abs()), site: "JMP", ..d },
-            0x6C => Decoded { kind: Kind::Jump, site: "JMP", ..d },
-            0x40 | 0x60 => Decoded { kind: Kind::Return, ..d },
-            0x00 => Decoded { kind: Kind::Stop, ..d },
-            op if op & 0x0f == 0x2 && !matches!(op, 0x82 | 0xA2 | 0xC2 | 0xE2) => Decoded { kind: Kind::Stop, ..d },
-            _ => d,
+            if (t.size as usize) < DJ_DECODER_V1_SIZE || t.cpu.is_null() || t.decode.is_none() || t.max_length == 0 {
+                bail!("{what} {}: decoder {i} is incomplete (size {}, cpu, decode and max_length are required)", path.display(), t.size);
+            }
+            let cpu = unsafe { std::ffi::CStr::from_ptr(t.cpu) }.to_str().map_err(|_| anyhow!("{what} {}: decoder {i}'s cpu isn't UTF-8", path.display()))?;
+            // The table and its strings live as long as the library, which is never unloaded.
+            let cpu: &'static str = Box::leak(cpu.to_string().into_boxed_str());
+            let table: &'static dj_decoder::ffi::DjDecoder = unsafe { &*(t as *const _) };
+            out.push(PluginDecoder { cpu, id: format!("{} sha256 {}", path.display(), &sha[..12.min(sha.len())]), table, max_len: t.max_length as usize, invalid: AtomicUsize::new(0), _library: library.clone() });
         }
+        // Keep the library loaded for good: the tables point into it.
+        std::mem::forget(library);
+        Ok(out)
+    }
+
+    /// Answers so far that were out of range.
+    pub fn invalid_answers(&self) -> usize {
+        self.invalid.load(Ordering::Relaxed)
+    }
+
+    fn site(ptr: *const std::ffi::c_char) -> &'static str {
+        static SITES: OnceLock<RwLock<HashMap<usize, &'static str>>> = OnceLock::new();
+        if ptr.is_null() {
+            return "";
+        }
+        let map = SITES.get_or_init(Default::default);
+        if let Some(s) = map.read().unwrap_or_else(|e| e.into_inner()).get(&(ptr as usize)) {
+            return s;
+        }
+        let s: &'static str = Box::leak(unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned().into_boxed_str());
+        map.write().unwrap_or_else(|e| e.into_inner()).insert(ptr as usize, s);
+        s
     }
 }
 
-// ---- MIPS (the N64's VR4300, "mips3") -----------------------------------------------
-
-/// MIPS III, big-endian (the N64's VR4300; ROMs in .z64 order).
-pub struct Mips3;
-
-impl Decoder for Mips3 {
+impl Decoder for PluginDecoder {
     fn cpu(&self) -> &'static str {
-        "mips3"
+        self.cpu
+    }
+
+    fn id(&self) -> String {
+        self.id.clone()
     }
 
     fn max_len(&self) -> usize {
-        4
+        self.max_len
     }
 
     fn fixed_len(&self) -> Option<u8> {
-        Some(4)
+        (self.table.fixed_length != 0).then_some(self.table.fixed_length)
     }
 
-    fn alignment(&self, _mode: u32) -> u8 {
-        4
+    fn alignment(&self, mode: u32) -> u8 {
+        self.table.alignment.map_or(1, |f| unsafe { f(mode) }).max(1)
     }
 
-    fn decode(&self, bytes: &[u8], pc: u64, _mode: u32) -> Decoded {
-        let Some(w) = bytes.get(..4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]])) else { return Decoded::next(4) };
-        let op = w >> 26;
-        let (rs, rt, funct) = ((w >> 21) & 31, (w >> 16) & 31, w & 63);
-        let branch = pc.wrapping_add(4).wrapping_add(((w as u16 as i16 as i64) << 2) as u64) & 0xFFFF_FFFF;
-        let region = (pc.wrapping_add(4) & 0xF000_0000) | (((w & 0x03FF_FFFF) as u64) << 2);
-        let d = Decoded::next(4);
-        // Branches and jumps run the next instruction (the delay slot) before control moves.
-        let slot = Decoded { delay_slots: 1, ..d };
-        let jump = |target| Decoded { kind: Kind::Jump, target, site: "J", ..slot };
-        let call = |target| Decoded { kind: Kind::Call, target, site: "JAL", ..slot };
-        let branch_to = |target| Decoded { kind: Kind::Jump, conditional: true, target: Some(target), ..slot };
-        match op {
-            0 => match funct {
-                0x08 if rs == 31 => Decoded { kind: Kind::Return, ..slot }, // jr $ra
-                0x08 => jump(None),                                         // jr: jump tables
-                0x09 => call(None),                                         // jalr
-                0x0D => Decoded { kind: Kind::Stop, ..d },                  // break: no delay slot
-                _ => d,
-            },
-            // REGIMM: BLTZ, BGEZ, their likely forms, and the linking ones (BAL is BGEZAL $0).
-            1 => match rt {
-                0x00..=0x03 => branch_to(branch),
-                0x10..=0x13 => call(Some(branch)),
-                _ => d,
-            },
-            2 => jump(Some(region)),
-            3 => call(Some(region)),
-            // BEQ $0,$0 (and BEQL) is an unconditional branch.
-            4 | 0x14 if rs == 0 && rt == 0 => jump(Some(branch)),
-            4..=7 | 0x14..=0x17 => branch_to(branch),
-            0x10 if rs == 0x10 && funct == 0x18 => Decoded { kind: Kind::Return, ..d }, // eret: no delay slot
-            // BC1F, BC1T and their likely forms.
-            0x11 if rs == 8 => branch_to(branch),
-            _ => d,
+    fn mode_from_flags(&self, flags: u8) -> Option<u32> {
+        let f = self.table.mode_from_flags?;
+        let mut mode = 0u32;
+        (unsafe { f(flags, &mut mode) } != 0).then_some(mode)
+    }
+
+    fn decode(&self, bytes: &[u8], pc: u64, mode: u32) -> Decoded {
+        let mut out = dj_decoder::ffi::DjInstruction::default();
+        // SAFETY: decode is non-NULL (checked on load); bytes and out are valid for the call.
+        unsafe { (self.table.decode.unwrap())(bytes.as_ptr(), bytes.len(), pc, mode, &mut out) };
+        match out.to_decoded(Self::site(out.site)) {
+            Ok(d) if (d.len as usize) <= self.max_len => d,
+            _ => {
+                self.invalid.fetch_add(1, Ordering::Relaxed);
+                Decoded::next(0)
+            }
         }
+    }
+}
+
+/// The decoders a project uses, by instruction set: its `[[decoders]]` plugins first, then
+/// the built-in ones, then any the project's core exports (docs/decoders.md).
+pub struct Decoders {
+    plugins: Vec<PluginDecoder>,
+    /// The core library, whose decoders are loaded the first time a CPU nothing else
+    /// decodes is asked for.
+    core: Option<PathBuf>,
+    from_core: OnceLock<Vec<PluginDecoder>>,
+}
+
+impl Decoders {
+    /// Only the built-in decoders.
+    pub fn built_in() -> Decoders {
+        Decoders { plugins: vec![], core: None, from_core: OnceLock::new() }
+    }
+
+    /// The project's: its `[[decoders]]`, loaded now (an error names the entry), and its core.
+    pub fn load(col: &crate::collection::Collection) -> Result<Decoders> {
+        let mut plugins = vec![];
+        for d in &col.config.decoders {
+            let path = resolve_library(&col.root, &d.path, "decoders");
+            if !path.is_file() {
+                bail!("[[decoders]] {}: {} doesn't exist", d.path.display(), path.display());
+            }
+            if !d.sha256.is_empty() {
+                let sha = crate::collection::sha256_file(&path)?;
+                if sha != d.sha256 {
+                    bail!("[[decoders]] {}: {} has sha256 {sha}, but the entry is pinned to {}", d.path.display(), path.display(), d.sha256);
+                }
+            }
+            let found = PluginDecoder::load(&path, "decoder plugin")?;
+            if found.is_empty() {
+                bail!("[[decoders]] {}: {} exports no decoders (no dj_decoders function)", d.path.display(), path.display());
+            }
+            plugins.extend(found);
+        }
+        let core = col.settings().ok().and_then(|s| s.core).map(|p| crate::libretro::library_path(&p)).filter(|p| p.is_file());
+        Ok(Decoders { plugins, core, from_core: OnceLock::new() })
+    }
+
+    /// The decoder for an instruction set, by the name connectors report.
+    pub fn get(&self, cpu: &str) -> Option<&dyn Decoder> {
+        if let Some(p) = self.plugins.iter().find(|d| d.cpu == cpu) {
+            return Some(p);
+        }
+        if let Some(b) = decoder_for(cpu) {
+            return Some(b);
+        }
+        let from_core = self.from_core.get_or_init(|| self.core.as_deref().and_then(|p| PluginDecoder::load(p, "core").ok()).unwrap_or_default());
+        from_core.iter().find(|d| d.cpu == cpu).map(|d| d as &dyn Decoder)
+    }
+
+    /// Answers out of range from the plugin decoding `cpu`, if a plugin does.
+    pub fn invalid_answers(&self, cpu: &str) -> usize {
+        self.plugins.iter().chain(self.from_core.get().into_iter().flatten()).filter(|d| d.cpu == cpu).map(|d| d.invalid_answers()).sum()
     }
 }
 
@@ -384,44 +385,7 @@ mod tests {
         Function { name: "f".into(), region: region.into(), offset, size, cpu_addr: Some(cpu), file_offset: file, mode: 0 }
     }
 
-    #[test]
-    fn mips_kinds() {
-        let pc = 0x8000_1004;
-        let k = |w: u32| {
-            let d = Mips3.decode(&w.to_be_bytes(), pc, 0);
-            (d.kind, d.conditional, d.target, d.delay_slots)
-        };
-        assert_eq!(k(0x27BD_FFE8), (Kind::Next, false, None, 0)); // addiu $sp,$sp,-0x18
-        assert_eq!(k(0x1080_0003), (Kind::Jump, true, Some(0x8000_1014), 1)); // beq $a0,$0,+3
-        assert_eq!(k(0x5080_FFFF), (Kind::Jump, true, Some(0x8000_1004), 1)); // beql $a0,$0,-1
-        assert_eq!(k(0x1000_0002), (Kind::Jump, false, Some(0x8000_1010), 1)); // b +2
-        assert_eq!(k(0x0411_0004), (Kind::Call, false, Some(0x8000_1018), 1)); // bal +4
-        assert_eq!(k(0x0C00_0800), (Kind::Call, false, Some(0x8000_2000), 1)); // jal 0x80002000
-        assert_eq!(k(0x0800_0400), (Kind::Jump, false, Some(0x8000_1000), 1)); // j 0x80001000
-        assert_eq!(k(0x03E0_0008), (Kind::Return, false, None, 1)); // jr $ra
-        assert_eq!(k(0x0100_0008), (Kind::Jump, false, None, 1)); // jr $t0 (a jump table)
-        assert_eq!(k(0x0100_F809), (Kind::Call, false, None, 1)); // jalr $t0
-        assert_eq!(k(0x4200_0018), (Kind::Return, false, None, 0)); // eret
-        assert_eq!(k(0x4501_0003), (Kind::Jump, true, Some(0x8000_1014), 1)); // bc1t +3
-        assert_eq!(k(0x0000_000D), (Kind::Stop, false, None, 0)); // break
-    }
 
-    #[test]
-    fn mos6502_kinds() {
-        let k = |b: &[u8]| {
-            let d = Mos6502.decode(b, 0xC000, 0);
-            (d.len, d.kind, d.conditional, d.target, d.site)
-        };
-        assert_eq!(k(&[0xA9, 0x05]), (2, Kind::Next, false, None, ""));
-        assert_eq!(k(&[0xD0, 0xFE]), (2, Kind::Jump, true, Some(0xC000), ""));
-        assert_eq!(k(&[0x20, 0x34, 0x12]), (3, Kind::Call, false, Some(0x1234), "JSR"));
-        assert_eq!(k(&[0x4C, 0x34, 0x12]), (3, Kind::Jump, false, Some(0x1234), "JMP"));
-        assert_eq!(k(&[0x6C, 0x34, 0x12]), (3, Kind::Jump, false, None, "JMP"));
-        assert_eq!(k(&[0x60]), (1, Kind::Return, false, None, ""));
-        assert_eq!(k(&[0x00]), (1, Kind::Stop, false, None, ""));
-        assert_eq!(k(&[0x02]), (1, Kind::Stop, false, None, ""));
-        assert_eq!(k(&[0xA2, 0x00]), (2, Kind::Next, false, None, ""));
-    }
 
     #[test]
     fn mips_blocks_end_after_the_delay_slot() {

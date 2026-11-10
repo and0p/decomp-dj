@@ -178,6 +178,17 @@ mesen_ntsc_filter = "Composite"
 | `content` | no | What the core loads: `true` (the default) is the project's ROM, which a decomp may need for its assets or may ignore; `false` loads nothing; a path loads that file. |
 | `[compare.options]` | no | Core options, like `[core.options]`. |
 
+### `[[decoders]]` (optional, repeatable)
+
+Decoder plugins: shared libraries that decode instruction sets dj doesn't, or stand in for a
+built-in decoder ([decoders.md](decoders.md)).
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `path` | yes | The library. Absolute as written; relative from the project folder; a bare name is looked for in the project folder, then in `decoders/` next to `dj`. It may leave out the suffix ([core paths](#core-paths)). |
+| `sha256` | no | Pins the library: a different file stops the project from opening. |
+| `name` | no | When every entry has one, local.toml's entries merge with config.toml's by name; otherwise local.toml's list replaces config.toml's. |
+
 ### `[cache]` (optional)
 
 Defaults for the local database (`.local/cache.db`) that everyone on the project starts from. Any key can be overridden per machine in `.local/local.toml`.

@@ -1,0 +1,17 @@
+[package]
+name = "dj-reference-decoders"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "decomp-dj's built-in decoders (6502, MIPS III, ARMv4T) as a decoder plugin: the example for writing one in Rust, and the plugin the player's tests load"
+publish = false
+
+[lib]
+name = "dj_reference_decoders"
+crate-type = ["cdylib"]
+
+[dependencies]
+dj-decoder = { path = "../dj-decoder" }
+
+[profile.release]
+panic = "unwind"

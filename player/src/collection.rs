@@ -26,6 +26,9 @@ pub struct Config {
     /// `[[compare]]`: comparison cores that can play beside the baseline (docs/config.md).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub compare: Vec<crate::compare::CompareConfig>,
+    /// `[[decoders]]`: decoder plugins (docs/decoders.md).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decoders: Vec<crate::decode::DecoderConfig>,
 }
 
 /// `[mcp]` in .local/local.toml (docs/mcp.md).
@@ -241,6 +244,9 @@ pub struct RecordLocal {
 pub struct Collection {
     pub root: PathBuf,
     pub config: Config,
+    /// The decoders this project uses: its `[[decoders]]` plugins, the built-in ones, and any
+    /// its core exports (docs/decoders.md).
+    pub decoders: crate::decode::Decoders,
     pub replays: BTreeMap<String, Replay>,
     pub paths: HashMap<String, PathBuf>,
     /// Segments loaded from .local/drafts/ (agent drafts, docs/mcp.md#drafts): shown and
@@ -325,7 +331,8 @@ impl Collection {
                 replays.insert(id, r);
             }
         }
-        let c = Collection { root: root.to_path_buf(), config, replays, paths, drafts: Default::default() };
+        let mut c = Collection { root: root.to_path_buf(), config, replays, paths, drafts: Default::default(), decoders: crate::decode::Decoders::built_in() };
+        c.decoders = crate::decode::Decoders::load(&c)?;
         c.check_tree()?;
         c.upgrade_blob_names()?;
         Ok(c)

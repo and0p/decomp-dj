@@ -660,7 +660,8 @@ pub struct RegionFacts {
     pub file_offset: Option<u64>,
 }
 
-/// Instruction sets the player can decode (split into instructions and blocks).
+/// Instruction sets the player decodes itself (split into instructions and blocks). A
+/// project's plugins can add others (`Collection::decoders`).
 pub fn has_decoder(cpu: &str) -> bool {
     crate::decode::decoder_for(cpu).is_some()
 }

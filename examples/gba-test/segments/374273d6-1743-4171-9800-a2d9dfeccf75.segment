@@ -1,0 +1,11 @@
+dj-replay 1
+id: 374273d6-1743-4171-9800-a2d9dfeccf75
+parent: 9991bc4f-1fbc-47f9-9757-a0f563639680
+title: Hold A
+frames: 60
+start-hash: cefcb1187ebeccee8a0d2dfce7abde2f
+end-hash: 9a459a5a0e2f4a3c901fff4521865e32
+start-frame: 60
+---
+5 P1 JOYPAD A 1
+40 P1 JOYPAD A 0

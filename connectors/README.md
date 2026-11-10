@@ -40,3 +40,4 @@ uint64_t dj_get_tick_count(void);
 | --- | --- | --- | --- |
 | [mesen](mesen/) | NES / Famicom | libretro/Mesen | API 2 |
 | [mupen64plus](mupen64plus/) | Nintendo 64 | libretro/mupen64plus-libretro-nx | API 2, first version: RDRAM coverage, no ticks or trace hook yet |
+| [mgba](mgba/) | Game Boy Advance | libretro/mgba | API 2: ROM, IWRAM, EWRAM and BIOS, ARM/Thumb mode bits, ticks; no trace hook |

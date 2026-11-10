@@ -15,7 +15,7 @@ Priorities: **high** blocks the release, **medium** should be in it, **low** can
 | high | Projects record the format and tool version; older tools refuse newer projects; a core rebuild re-pins | [below](#project-and-cli), "Versioning projects" | not started |
 | high | Clean-up and licensing: scratch files, terminology in the CLI help, the Tetris data tables, connector licences | [RELEASE_PLAN.md](RELEASE_PLAN.md#licensing-of-the-connectors-to-settle) | not started |
 | high | Release workflow and install docs (`v0.1.0`) | [RELEASE_PLAN.md](RELEASE_PLAN.md) | planned |
-| medium | Decoder interface (step 1: one trait and one sweep; step 2: loadable decoders) | [DECODER_PLAN.md](DECODER_PLAN.md) | exploring |
+| medium | Decoder interface (step 1: one trait and one sweep; step 2: loadable decoders) | [DECODER_PLAN.md](DECODER_PLAN.md) | step 1 done |
 | medium | Root segments that start from a snapshot, finished ([below](#root-segments-from-a-snapshot)) | | partly built |
 
 ### Root segments from a snapshot
@@ -59,9 +59,10 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
 
 ## Known limits
 
-- Two cores have connectors: Mesen (NES) and Mupen64Plus-Next (N64, first version;
-  [connectors/mupen64plus/](../connectors/mupen64plus/README.md)).
-- Block and function rollup decodes the 6502 and MIPS (`mips3`). Other CPUs get raw opcode-byte counts until their decoder is added.
+- Three cores have connectors: Mesen (NES), mGBA (GBA; [connectors/mgba/](../connectors/mgba/README.md)) and
+  Mupen64Plus-Next (N64, first version; [connectors/mupen64plus/](../connectors/mupen64plus/README.md)).
+- Block and function rollup decodes the 6502, MIPS (`mips3`) and ARMv4T (`armv4t`). Other CPUs get raw opcode-byte counts until their decoder is added.
+- GBA: only the `ROM` region rolls up, so functions a game runs from IWRAM or EWRAM show as never entered; `dj init` picks `RAM` to hash, which on mGBA is only 32 KB of EWRAM (use the `BUS:` ranges in [connectors/mgba](../connectors/mgba/README.md#for-a-project)); the mGBA connector costs about 37% speed (a call per instruction).
 - N64: code in an overlay is credited to whatever the symbol map names at its addresses, whichever overlay was loaded (see "N64 follow-ups").
 - Determinism has been checked on Linux x86_64 and macOS arm64; Windows still needs a run.
 - The GUI is a first prototype: button inputs only (no analog, lightgun or pointer rows yet), keyboard-only recording for one controller at a time, one core at a time. Tested on Linux and macOS; Windows not tried yet.
@@ -428,6 +429,11 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
     40 MB, 32 MB of it the `ROM` region, which has no flags yet. Hand out no `ROM` flags
     until provenance sets them, and scan only what changed (the connector could keep a
     per-page dirty bit, or the player could compare only pages a frame touched).
+    Measured 2026-11-09: the first-hit scan in `player.rs` (`Recorder`, 64-byte chunks,
+    byte by byte) takes about 28 ms for 40 MB on Apple silicon, more than a frame's budget
+    by itself. Cheap fixes, any CPU: skip regions that have set no flags; compare 8 bytes
+    (or SIMD) at a time; with a fixed-width decoder, look only at aligned positions
+    ([DECODER_PLAN.md](DECODER_PLAN.md#performance)). Parity's per-frame flags gain the same.
   - **Provenance and overlays.** Overlays share addresses, so code that ran there is
     credited to whatever the map names. `dj_origin` (which ROM offset a RAM word was DMA'd
     from), flags on the `ROM` region, and a way for symbol maps to say which overlay an

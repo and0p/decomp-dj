@@ -75,19 +75,40 @@ A project can list several symbol maps. Where two describe the same bytes, the f
 listed wins, so a linker map can come first and a hand-edited `symbol_addrs.txt` can fill
 in what isn't matched yet. `dj init --symbols FILE` picks the format from the file's
 name. Functions are rolled up in the connector's code region (`PRG` on the NES, `RDRAM` on
-the N64), by the decoder for its instruction set: 6502 and MIPS (`mips3`) so far.
+the N64), by the decoder for its instruction set: 6502, MIPS (`mips3`) and ARMv4T (`armv4t`) so far.
 
-For 6502 code the player splits each function into instructions and basic
-blocks by a linear sweep (a block ends at a branch, jump, return or `BRK`, and
-starts at a branch or jump target). A block counts as covered when its first
-instruction ran. Data placed inside a function's range can confuse the sweep.
+The player splits each function into instructions and basic blocks by a linear sweep
+from its start, the same for every instruction set: a block ends after a branch, jump,
+return or stop (and its delay slots), and one starts at every branch or jump target inside
+the function. Calls don't end a block. A block counts as covered when its first instruction
+ran. Data placed inside a function's range can confuse the sweep; `[[data]]` entries keep
+it out. The callers list holds every direct call, and every jump that leaves the function
+(a tail call); a jump back into the same function is a loop, not a caller.
+
+For 6502 code a block ends at a branch, `JMP`, `RTS`, `RTI`, `BRK` or `KIL`; `JSR` is a
+call.
 
 For MIPS the words are read from the ROM file at each function's `file` offset (a `.z64`
-ROM, big-endian). A block ends after the delay slot of a branch or jump; `jr $ra` and `eret`
-return, other `jr`s are indirect (jump tables); calls (`jal`, `jalr`, `bal` and the other
-linking branches) don't end a block, and `jal` targets feed the callers list. On the N64,
+ROM, big-endian). A block ends after the delay slot of a branch or jump, and at `break` and
+`eret` (which have none); `jr $ra` and `eret` return, other `jr`s are indirect (jump
+tables); calls (`jal`, `jalr`, `bal` and the other linking branches) don't end a block,
+and their targets feed the callers list. On the N64,
 overlays share addresses: code that ran at an overlay's addresses is credited to whatever
 the symbol map names there, whichever overlay was loaded ([.agents/CONNECTOR_PLAN.md](../.agents/CONNECTOR_PLAN.md)).
+
+For ARMv4T (the GBA's ARM7TDMI; `armv4t`) a function starts in the mode its first
+instruction ran in (the connector's mode bits), else the one its symbol says: bit 0 of an
+ELF symbol marks Thumb code. Every ARM instruction can be conditional, so a conditional
+return (`bxeq lr`, `popne {..., pc}`) ends a block and falls through. Anything that writes
+the PC ends a block: `B`, `BX`, `MOV pc`, `ADD pc` (jump tables), `LDR pc` and `LDM` or `POP`
+with the PC; `BL` and `SWI` are calls. Literals loaded PC-relative (`ldr r0, [pc, #n]`)
+from further on in the function are skipped like data, so literal pools aren't read as
+code, and `bx pc` switches the sweep to ARM at its target. The `mov lr, pc; bx rN` call idiom
+reads as a jump. An ARM ELF also marks data inside code with `$d` mapping symbols (literal
+pools, jump tables, a cartridge header): those ranges count as data, as `[[data]]` entries
+do, without writing them in annotations.toml. The mGBA connector reports `armv4t`
+([connectors/mgba](../connectors/mgba/README.md)); coverage rolls up its `ROM` region, so
+code a game copies to IWRAM or EWRAM is flagged there but not counted in functions yet.
 
 ## Gap lists
 
@@ -167,5 +188,5 @@ that segment runs.
 ## Limits
 
 - Two cores have connectors: Mesen (NES) and Mupen64Plus-Next (N64, first version).
-- Block and function rollup decodes the 6502 and MIPS (`mips3`), in the connector's code region (`PRG`, `RDRAM`). Other CPUs get raw opcode-byte counts until their decoder is added.
+- Block and function rollup decodes the 6502, MIPS (`mips3`) and ARMv4T (`armv4t`), in the connector's code region (`PRG`, `RDRAM`, the GBA's `ROM`); code that runs from the GBA's IWRAM or EWRAM isn't rolled up. Other CPUs get raw opcode-byte counts until their decoder is added.
 - N64: code that ran at an overlay's addresses is credited to whatever the symbol map names there, whichever overlay was loaded.

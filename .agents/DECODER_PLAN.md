@@ -1,13 +1,13 @@
 # Plan: decoders as loadable libraries
 
-Status: exploring, 2026-11-09. Nothing built. The question: can instruction decoders be
+Status: step 1 done 2026-11-09, and an ARMv4T decoder (below); steps 2 and 3 not started. The question: can instruction decoders be
 libraries loaded at run time, like cores, so a user can bring a decoder for a CPU dj doesn't
 know, and point at it from config? Background on why decoding is per CPU and lives outside
 the connector: [CONNECTOR_PLAN.md](CONNECTOR_PLAN.md#where-decoding-could-live).
 
-## What the decoders do today
+## What the decoders did before step 1
 
-Two decoders are compiled into the player (`player/src/analysis.rs`, `trace.rs`):
+Two decoders were compiled into the player (`player/src/analysis.rs`, `trace.rs`); step 1 moved them into `decode.rs`:
 
 | Piece | 6502 | MIPS (`mips3`) |
 | --- | --- | --- |
@@ -30,6 +30,52 @@ conformance check (`dj check-connector`) and executed bytes stay in the player, 
 once.
 
 ## Step 1: a decoder trait inside the player (no plugins yet)
+
+**Done 2026-11-09.** `player/src/decode.rs`: the `Decoder` trait, `Mos6502` and `Mips3`,
+`decoder_for(cpu)` (a table of built-ins; `analysis::has_decoder` asks it), and one
+`analyze(dec, funcs, code, data, base)` sweep that replaced `analyze_6502_with`,
+`analyze_mips_with`, `block_successors_6502` and `call_target_6502`. The report
+(`coverage.rs`) picks the decoder from the code region's `cpu` and reads each function at
+its `file` offset, else at its region offset when the region comes from the ROM file; the
+no-map executed bytes (`analysis::executed_bytes`) take lengths from the region's decoder
+instead of always the 6502.
+
+What changed from the sketch below:
+
+- **Kinds and a flag instead of `Flow`.** `Decoded { len, kind, conditional, target,
+  delay_slots, mode_after, site }`, with `Kind` = Next, Jump, Call, Return, Stop. A branch is
+  a conditional jump, so conditional returns and calls (SM83, Z80, ARM, PowerPC) need no new
+  kinds. `site` is how a call site is listed ("JSR", "JAL"). Not added yet, for when a CPU
+  needs them: `target_mode` (ARM `BX`/`BLX`), `data_ref` (PC-relative literal pools, ARM and
+  SH-2), and `disasm` (traces stay `trace::disasm_6502` until traces carry wider addresses).
+- **`fixed_len` and `alignment`** are on the trait (MIPS: 4 and 4). The sweep uses
+  `alignment` to restart after data; `executed_bytes_by_length` uses `fixed_len`.
+- **`mode`** is carried from each instruction's `mode_after` to the next; nothing reads the
+  connector's mode bits into it yet (no CPU with modes has a decoder).
+
+Behaviour, checked against the old code (a temporary test comparing both on 200k random
+MIPS words, 64 KB of random 6502 bytes, and the Thwaite and Tetris ROMs with their maps;
+then every `dj summary`, `report`, `gaps`, `frontier`, `check-connector`, `annotations` and
+`function` output on both projects, diffed against a build of the previous commit):
+
+- Identical totals, instructions, blocks and successors. Thwaite 3733 / 4656 instructions,
+  835 / 1087 blocks; Tetris 3625 / 4657, 806 / 1026; `dj check-connector` clean on both.
+- **Callers:** a 6502 `JMP` back to its own function's start (a loop) no longer lists the
+  function as its own caller: 2 functions in Thwaite (`main`, `cut_handle_state_script`), 4 in Tetris. Jumps
+  inside a function aren't call sites on any CPU now, as MIPS already did.
+- **MIPS `break` and `eret`** end their block at once (they have no delay slot); before,
+  the next instruction was taken into the block. Not checked on No Mercy: that scratch
+  project is gone.
+- A jump in another's delay slot (undefined on MIPS, seen only in random data) leaves the
+  first one in charge, as before.
+
+Speed (the benchmark in [Performance](#performance), same random input): MIPS 107 to
+64 ns per instruction (1M instructions in 67 ms); 6502 about the same (60 ns, under 1 ms for
+the ROM; the call through the trait shows at this size). The decoded functions are cached
+(`coverage::decode_cached`, keyed by a hash of the decoder, the functions, the data ranges
+and the ROM), so the GUI's report after an edit doesn't decode again.
+
+The sketch as first written:
 
 Worth doing whatever is decided about plugins: it removes the duplicated sweep and makes
 a third CPU a table rather than a third copy.
@@ -74,6 +120,74 @@ pub trait Decoder {
 
 Check: Tetris, Thwaite and the No Mercy scratch project give the same totals, blocks,
 successors and callers before and after; `dj check-connector` unchanged.
+
+## ARMv4T (GBA)
+
+**Decoder done 2026-11-09; not used yet**, because no connector reports `armv4t`.
+`player/src/arm.rs`: `Armv4t`, ARM and Thumb, little-endian; modes `arm::ARM` (0) and
+`arm::THUMB` (1).
+
+Interface additions it needed, now on `Decoder`/`Decoded` (the 6502 and MIPS leave them at
+their defaults; their output is byte-identical to before, checked as in step 1):
+
+- `entry(addr) -> (addr, mode)`: a symbol's bit 0 means Thumb, as in ELF. The sweep starts
+  each function in that mode at the address with the bit cleared.
+- `alignment(mode)`: 4 in ARM, 2 in Thumb.
+- `target_mode`: `bx pc` from Thumb jumps to the next word in ARM mode; the sweep switches
+  mode when it reaches that target.
+- `data_ref`: PC-relative literal loads (`LDR`, `LDRB`, `LDRH`, `LDRSB`, `LDRSH` from
+  `[pc, #n]`; Thumb `ldr rN, [pc, #n]`). A literal further on in the function is skipped
+  like `[[data]]`, so pools aren't decoded and don't count as instructions. One already
+  passed (a backward reference) stays as read.
+
+What it reads: `B`/`BL` and Thumb's two-halfword `BL`; conditional execution on every ARM
+instruction (a conditional return falls through); `BX` (`bx lr` returns, `bx pc`, other
+registers indirect); data processing that writes the PC (`mov pc, lr` and `subs pc, lr, #n`
+return, the rest, such as `add pc, pc, r0, lsl #2`, jump indirectly); `LDR pc` (`ldr pc,
+[sp], #4` returns); `LDM`/`POP` with the PC (from `sp` returns); Thumb hi-register
+`MOV`/`ADD` to the PC; `SWI` as a call. Unpredictable forms (byte or halfword loads into the
+PC, `LDRT pc`, cond `0xF`, `BLX` from ARMv5) read as plain instructions.
+
+**Checked against LLVM 23** (`llvm-mc` assembling `.inst` words into an ELF,
+`llvm-objdump --triple=armv4t`/`thumbv4t` disassembling it, the text classified by a
+script): 300,000 random ARM words and 300,000 Thumb halfwords, biased toward branches, PC
+writes, PC-relative loads and `BL` pairs. 524,410 instructions LLVM decodes; ours agree on
+length, kind, condition, target and literal on all of them. Left out: encodings LLVM
+rejects, and ~900 halfword pairs LLVM reads as `BL` by Thumb-2's rules (a second half of
+`11110`), which on ARMv4T are two `BL` first halves; ours follows ARMv4T. The script isn't
+kept in the repo.
+
+Known limits:
+
+- `mov lr, pc; bx rN` (an ARM-mode call through a register) reads as an indirect jump,
+  so the block ends there and the code after it isn't a successor. A decoder sees one
+  instruction; recognising the pair would need the sweep to look back.
+- A function's mode comes only from its symbol's bit 0. Symbol maps without it (csv, `.map`
+  files) start in ARM mode; the connector's mode bit on code that ran (see below) could
+  correct that.
+- `executed_bytes_by_length` (no-map gaps on a core without operand flags) decodes in ARM
+  mode. A GBA connector should set operand flags, which avoids it.
+
+**GBA end to end: done 2026-11-09** (mGBA connector, [connectors/mgba](../connectors/mgba/README.md);
+test project [examples/gba-test](../examples/gba-test/)):
+
+1. Connector for libretro's mGBA: regions `ROM`, `IWRAM`, `EWRAM`, `BIOS`; flags per
+   instruction and the mode bits `0x04` Thumb / `0x08` ARM (now in docs/connectors.md).
+2. The player takes a function's starting mode from the mode bits where its first
+   instruction ran (`Decoder::mode_from_flags`, in `coverage.rs` before decoding), over the
+   symbol's. `Function` gained `mode`; the `entry()` method sketched above went, since the
+   ELF loader now clears Thumb's bit 0 from the address and sets `mode`.
+3. ELF: Thumb bit 0 read as above; `$d` mapping symbols read as data ranges
+   (`analysis::load_elf_data`), merged with `[[data]]` in the report. Symbol maps' bytes are
+   now read where the connector places the region, over `rom_header`, which for an ELF is the
+   address of the ROM file's first byte.
+4. A test ROM built from source with LLVM (no GBA toolchain): `dj check-connector` clean on
+   ARM and Thumb, 113 / 140 instructions, hashes the same with and without the patch.
+   Still to try: a real game and its pret decomp build (locally; needs the user's ROM).
+
+Follow-ups: IWRAM/EWRAM rollup (functions linked to run from RAM; the ELF knows both
+addresses, so it could place them in `IWRAM` with a `file` offset, as the N64 does);
+`dj init` choosing GBA hash regions; the connector's speed (37% slower).
 
 ## Step 2: loading decoders from libraries
 
@@ -138,6 +252,73 @@ sha256 = "…"                     # optional pin, as for cores
 Lean: native first, since it matches cores and adds nothing; the C interface above maps
 one to one onto a WASM module's exports if portability turns out to matter.
 
+## Performance
+
+Measured 2026-11-09 with a throwaway benchmark (release build, Apple silicon), on random
+bytes, which branch more often than real code, so the decode numbers are an upper bound:
+
+| Work | How often | Time |
+| --- | --- | --- |
+| `analyze_6502_with`, 32 KB, 245 functions (15k instructions) | per coverage report | 0.8 ms, 52 ns per instruction |
+| `analyze_mips_with`, 4 MB, 1,136 functions (1M instructions) | per coverage report | 112 ms, 107 ns per instruction |
+| `dj summary` on Tetris, whole command | per command | 30 ms |
+| First-hit scan of the coverage flags (`player.rs`, `Recorder`), 40 MB (N64) | every frame while recording | 28 ms |
+
+**The universal interface costs little.** A call through a trait object is a few ns per
+instruction, through a C library about 5-10 ns. Most of the 107 ns is the sweep's
+bookkeeping, shared by every CPU: a `BTreeSet` of leaders, a scan of every `[[data]]`
+range per instruction, and `flow_at` in `analyze_mips_with`, a linear search per block that
+makes the successor pass quadratic in function size. Step 1's single sweep fixes these once:
+leaders in a sorted `Vec` or bitset, data ranges sorted and walked alongside the sweep, flows
+indexed by instruction.
+
+**Cache the decoded functions.** Decoding depends on the ROM, the symbol maps,
+annotations.toml and the decoder (its build or sha256), not on segments, yet the GUI
+rebuilds the report, decoding included, after every edit. Keep the `AnalyzedFunction`s
+until one of those inputs changes (in memory in the GUI and `dj mcp`, maybe in the local
+database keyed by their hashes).
+
+**Where CPU differences do matter: fixed-width instruction sets.** MIPS, PowerPC, ARM mode
+and the SH-2 start instructions only at aligned 2- or 4-byte positions. A decoder declares
+it, and the player picks faster paths:
+
+```rust
+fn fixed_len(&self) -> Option<u8> { None }   // Some(4) for MIPS: every instruction this long
+fn alignment(&self) -> u8 { 1 }              // instructions start only at multiples of this
+```
+
+```c
+/* optional in DJ_DECODER_API 1 */
+uint8_t dj_decoder_fixed_len(const char *cpu);   /* 0: variable */
+uint8_t dj_decoder_alignment(const char *cpu);
+```
+
+- Instruction boundaries are known without decoding lengths, so the sweep only looks for
+  control flow.
+- Scans of the flags (first hits, unions, executed bytes) need only look at aligned
+  positions: 4x less for MIPS.
+- Coverage can be held as one bit per instruction slot instead of a byte per byte (up to
+  32x smaller unions for N64-sized regions, in memory and in the local database). Mode bits
+  are the exception; a fixed-width CPU with modes (ARM/Thumb) keeps the bytes.
+
+Variable-length CPUs with modes (65816, x86, ARM/Thumb mixed) can't take these shortcuts,
+and lose nothing to the shared interface either: their sweep goes instruction by
+instruction anyway.
+
+**Plugins: an optional batch call.** Where a call crosses into a library, and more so into
+WebAssembly (tens of ns per call), decoding a whole function per call removes the per-call
+cost. Built-in decoders don't need it.
+
+```c
+/* optional: decode up to `max` instructions from `bytes`, in order, stopping at `avail` */
+size_t dj_decode_range(const char *cpu, const uint8_t *bytes, size_t avail, uint64_t pc,
+                       uint32_t mode, struct dj_insn *out, size_t max);
+```
+
+**Not the decoder: the per-frame flag scan.** The real hot path. See the N64 playback
+speed entry in [ROADMAP.md](ROADMAP.md#comparison-and-parity) ("N64 follow-ups"); parity
+reads flags per frame the same way, so it gains from the same fixes.
+
 ## Open questions
 
 - **Who writes decoders?** Probably whoever writes the connector for a new system. If
@@ -160,8 +341,9 @@ one to one onto a WASM module's exports if portability turns out to matter.
 
 ## Suggested order
 
-1. The `Decoder` trait and one generic sweep, 6502 and MIPS moved onto it; totals
-   unchanged on all three projects.
+1. **Done 2026-11-09.** The `Decoder` trait and one generic sweep, 6502 and MIPS moved
+   onto it, with the sweep fixes, `fixed_len` and `alignment`, and caching
+   ([Step 1](#step-1-a-decoder-trait-inside-the-player-no-plugins-yet)).
 2. The C interface and `[[decoders]]` loading, with the 6502 decoder also built as a test
    `cdylib` (`player/tests/testdecoder/`) so loading is tested against a known answer.
 3. Decide native or WASM after a first outside decoder (65816 is the likely one).

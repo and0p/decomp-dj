@@ -195,6 +195,33 @@ fn opcode_set(flags: &[u8]) -> Vec<bool> {
 /// Coverage of the collection as it is now, from the local database: every segment that
 /// isn't dirty and has been played with its current content counts (docs/coverage.md).
 /// `setup` picks the setup (ROM, core and options) to report on; by default, the one played last.
+/// The last decoding, by a hash of everything it depends on: the decoder, the functions and
+/// where their bytes are, the data ranges and the ROM. Segments don't change it, so the GUI's
+/// rebuild after an edit doesn't decode again.
+static DECODED: std::sync::Mutex<Option<([u8; 32], Vec<AnalyzedFunction>)>> = std::sync::Mutex::new(None);
+
+fn decode_cached(dec: &dyn crate::decode::Decoder, funcs: &[(analysis::Function, u64)], rom: &[u8], data: &[(u64, u64)], in_file: bool) -> Vec<AnalyzedFunction> {
+    let mut h = blake3::Hasher::new();
+    h.update(format!("{}\n{in_file}\n{data:?}\n{funcs:?}\n", dec.cpu()).as_bytes());
+    h.update(rom);
+    let key: [u8; 32] = h.finalize().into();
+    if let Some((k, v)) = DECODED.lock().unwrap().as_ref() {
+        if *k == key {
+            return v.clone();
+        }
+    }
+    let mut out = vec![];
+    let mut headers: Vec<u64> = funcs.iter().map(|(_, h)| *h).collect();
+    headers.sort();
+    headers.dedup();
+    for header in headers {
+        let these: Vec<_> = funcs.iter().filter(|(_, h)| *h == header).map(|(f, _)| f.clone()).collect();
+        out.extend(crate::decode::analyze(dec, &these, rom, data, |f| f.file_offset.or(in_file.then(|| header + f.offset))));
+    }
+    *DECODED.lock().unwrap() = Some((key, out.clone()));
+    out
+}
+
 pub fn build_report(col: &Collection, conn: &Connection, rom: Option<&[u8]>, setup: Option<&str>) -> Result<Report> {
     build_report_with(col, conn, rom, setup, &std::collections::HashSet::new())
 }
@@ -272,45 +299,48 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
     }
     let ann = Annotations::load(&col.root)?;
     let unreachable = ann.ranges(Kind::Unreachable, code);
-    let data = ann.ranges(Kind::Data, code);
+    // Data: annotations.toml's `[[data]]`, and what the symbol maps mark (ARM ELF `$d`).
+    let mut data = ann.ranges(Kind::Data, code);
+    data.extend(analysis::project_map_data(col, rom, &facts, code)?);
+    data.sort();
     let in_ranges = |r: &[(u64, u64)], off: u64| r.iter().any(|(a, b)| off >= *a && off <= *b);
     let is_unreachable = |off: u64| in_ranges(&unreachable, off);
     let is_data = |off: u64| in_ranges(&data, off);
 
-    // Symbols -> analyzed functions (PRG only for now, 6502), with annotations.toml's
-    // functions merged in and its data skipped.
+    // Symbols -> analyzed functions in the code region, by its instruction set's decoder,
+    // with annotations.toml's functions merged in and its data skipped.
     let mut analyzed: Vec<AnalyzedFunction> = vec![];
     let funcs: Vec<_> = analysis::project_functions_with(col, rom, &ann, &facts)?.into_iter().filter(|(f, _)| f.region == code).collect();
     // The decoder comes from the region's instruction set; with nothing recorded, an NES
     // project is 6502 as before.
     let cpu = facts.iter().find(|f| f.name == code).and_then(|f| f.cpu.clone()).unwrap_or_else(|| "6502".into());
-    let decodable = analysis::has_decoder(&cpu);
-    if !funcs.is_empty() && !decodable {
+    let dec = crate::decode::decoder_for(&cpu);
+    if !funcs.is_empty() && dec.is_none() {
         notes.push(format!("no decoder for the {cpu} instruction set yet: {code} is counted in opcode bytes, without functions or blocks"));
     }
-    if !funcs.is_empty() && cpu == "mips3" {
-        // N64 code runs from RAM; each function's words are read from the ROM file at its
-        // file_offset, which assumes the big-endian .z64 order.
+    if let (false, Some(dec)) = (funcs.is_empty(), dec) {
         let Some(rom) = rom else { bail!("symbols need the ROM to disassemble") };
-        if !rom.starts_with(&[0x80, 0x37, 0x12, 0x40]) {
+        if cpu == "mips3" && !rom.starts_with(&[0x80, 0x37, 0x12, 0x40]) {
             notes.push("the ROM isn't in .z64 (big-endian) order, so its words can't be read as MIPS; convert it to .z64".into());
         }
-        let these: Vec<_> = funcs.iter().map(|(f, _)| f.clone()).collect();
-        let missing = these.iter().filter(|f| f.file_offset.is_none()).count();
+        // Each function's bytes: at its file offset in the ROM file (code that runs from a copy
+        // in RAM, N64), else at its region offset past the header its symbol map gives, when
+        // the region comes from the ROM file (NES PRG; also when nothing is recorded).
+        let in_file = facts.iter().find(|f| f.name == code).map_or(true, |f| f.file_offset.is_some());
+        let missing = funcs.iter().filter(|(f, _)| f.file_offset.is_none() && !in_file).count();
         if missing > 0 {
             notes.push(format!("{missing} functions say nowhere where their code lies in the ROM file (the csv's sixth column), so they aren't decoded"));
         }
-        analyzed.extend(analysis::analyze_mips_with(&these, rom, &data));
-    } else if !funcs.is_empty() && decodable {
-        let Some(rom) = rom else { bail!("symbols need the ROM to disassemble") };
-        let mut headers: Vec<u64> = funcs.iter().map(|(_, h)| *h).collect();
-        headers.sort();
-        headers.dedup();
-        for h in headers {
-            let these: Vec<_> = funcs.iter().filter(|(_, fh)| *fh == h).map(|(f, _)| f.clone()).collect();
-            let prg = &rom[(h as usize).min(rom.len())..];
-            analyzed.extend(analysis::analyze_6502_with(&these, prg, &data));
+        // Where a function's first instruction ran, the connector's mode bits say which mode
+        // it starts in (ARM or Thumb), over what the symbol map says.
+        let mut funcs = funcs.clone();
+        for (f, _) in funcs.iter_mut() {
+            let bits = cov.values().filter_map(|m| m.get(code)).fold(0u8, |acc, flags| acc | flags.get(f.offset as usize).copied().unwrap_or(0));
+            if let Some(m) = dec.mode_from_flags(bits) {
+                f.mode = m;
+            }
         }
+        analyzed = decode_cached(dec, &funcs, rom, &data, in_file);
     }
     analyzed.sort_by_key(|f| f.func.offset);
     let symbols = !analyzed.is_empty();
@@ -608,7 +638,7 @@ pub fn print_report(rep: &Report, col: &Collection) {
         println!("  unreachable (annotations.toml): {} {what}, not counted", t.unreachable_instructions);
     }
     if t.data_bytes > 0 {
-        println!("  data (annotations.toml): {} bytes, not counted", t.data_bytes);
+        println!("  data (annotations.toml and symbol maps): {} bytes, not counted", t.data_bytes);
     }
     if t.annotated_functions > 0 {
         println!("  {} functions wholly unreachable or data (annotations.toml), not counted", t.annotated_functions);

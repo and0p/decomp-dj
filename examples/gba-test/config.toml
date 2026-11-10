@@ -1,0 +1,50 @@
+format = 1
+name = "GBA test ROM"
+
+[rom]
+sha256 = "455be507ae7da205035e3f0662bc030b546356be8cdf0d41cdb8cd2d40830a54"
+file = "gba-test.gba"
+
+[core]
+name = "mgba"
+build = "mgba@7a12d6d4+dj1"
+sha256 = ""
+
+[core.options]
+mgba_allow_opposing_directions = "no"
+mgba_audio_low_pass_filter = "disabled"
+mgba_audio_low_pass_range = "60"
+mgba_color_correction = "OFF"
+mgba_force_gbp = "OFF"
+mgba_frameskip = "disabled"
+mgba_frameskip_interval = "0"
+mgba_frameskip_threshold = "33"
+mgba_gb_colors = "Grayscale"
+mgba_gb_colors_preset = "0"
+mgba_gb_model = "Autodetect"
+mgba_idle_optimization = "Remove Known"
+mgba_interframe_blending = "OFF"
+mgba_sgb_borders = "ON"
+mgba_skip_bios = "OFF"
+mgba_solar_sensor_level = "0"
+mgba_use_bios = "ON"
+
+[[ports]]
+port = 1
+device = "JOYPAD"
+
+[hash]
+algorithm = "blake3"
+# IWRAM and EWRAM through the memory maps (mGBA's RAM is only the first 32 KB of EWRAM)
+regions = [
+    "BUS:0x03000000-0x03007FFF",
+    "BUS:0x02000000-0x0203FFFF",
+    "SRAM",
+]
+
+[[symbols]]
+file = "symbols/gba-test.elf"
+format = "elf"
+# ELF addresses: ROM code is linked at 0x08000000, byte 0 of the file
+rom_header = 0x08000000
+region = "ROM"

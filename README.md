@@ -27,9 +27,9 @@ flowchart LR
 
 A working prototype, tested end to end on [Thwaite](examples/thwaite/), a free NES game:
 12 segments replay their hashes on Linux and macOS, and cover 80.2% of its instructions
-([results](.agents/RESULTS.md)). Two cores have coverage connectors: Mesen (NES) and, in a
-first version, Mupen64Plus-Next (N64); coverage rolls up into functions and blocks for 6502
-and MIPS code. A decompiled game built as a libretro core can play beside the original in
+([results](.agents/RESULTS.md)). Three cores have coverage connectors: Mesen (NES), mGBA
+(GBA) and, in a first version, Mupen64Plus-Next (N64); coverage rolls up into functions and
+blocks for 6502, MIPS and ARM/Thumb code. A decompiled game built as a libretro core can play beside the original in
 the GUI and be checked for parity frame by frame. Limits and plans are in the
 [roadmap](.agents/ROADMAP.md).
 
@@ -77,9 +77,10 @@ Work in progress lives in [.agents/](.agents/): the [roadmap](.agents/ROADMAP.md
 | --- | --- |
 | [player/](player/) | `dj`, the headless player (Rust), and the `decomp_dj` library both tools use |
 | [gui/](gui/) | `dj-gui`, the desktop viewer and editor (Rust, egui) |
-| [connectors/](connectors/) | Per-core coverage patches: [mesen](connectors/mesen/) (NES) and [mupen64plus](connectors/mupen64plus/) (N64) |
+| [connectors/](connectors/) | Per-core coverage patches: [mesen](connectors/mesen/) (NES), [mgba](connectors/mgba/) (GBA) and [mupen64plus](connectors/mupen64plus/) (N64) |
 | [examples/thwaite/](examples/thwaite/) | The end-to-end test project |
 | [examples/tetris/](examples/tetris/) | A commercial game (bring your own ROM), with a C decomp built as a comparison core |
+| [examples/gba-test/](examples/gba-test/) | A tiny GBA program built from source with LLVM, for the mGBA connector and the ARM decoder |
 | [scripts/](scripts/) | Helpers: the MCP smoke test, and `func_toml_to_csv.py` for N64 symbol maps |
 | [docs/](docs/) | User documentation |
 

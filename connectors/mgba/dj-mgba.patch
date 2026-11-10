@@ -1,0 +1,301 @@
+diff --git a/include/mgba/internal/arm/arm.h b/include/mgba/internal/arm/arm.h
+index 5ef2da965..895013d2f 100644
+--- a/include/mgba/internal/arm/arm.h
++++ b/include/mgba/internal/arm/arm.h
+@@ -209,6 +209,9 @@ void ARMRaiseSWI(struct ARMCore*);
+ void ARMRaiseUndefined(struct ARMCore*);
+ 
+ void ARMRun(struct ARMCore* cpu);
++/* decomp-dj: called for every instruction the CPU reaches (before its condition is checked),
++ * with its address, its opcode and whether it's Thumb. NULL when dj isn't driving the core. */
++extern void (*ARMDjExecHook)(uint32_t address, uint32_t opcode, bool thumb);
+ void ARMRunLoop(struct ARMCore* cpu);
+ void ARMRunFake(struct ARMCore* cpu, uint32_t opcode);
+ 
+diff --git a/src/arm/arm.c b/src/arm/arm.c
+index 0b92d7f55..212cd535c 100644
+--- a/src/arm/arm.c
++++ b/src/arm/arm.c
+@@ -198,10 +198,15 @@ static const uint16_t conditionLut[16] = {
+ 	0x0000 // NV
+ };
+ 
++void (*ARMDjExecHook)(uint32_t address, uint32_t opcode, bool thumb) = NULL;
++
+ static inline void ARMStep(struct ARMCore* cpu) {
+ 	uint32_t opcode = cpu->prefetch[0];
+ 	cpu->prefetch[0] = cpu->prefetch[1];
+ 	cpu->gprs[ARM_PC] += WORD_SIZE_ARM;
++	if (ARMDjExecHook) {
++		ARMDjExecHook(cpu->gprs[ARM_PC] - 2 * WORD_SIZE_ARM, opcode, false);
++	}
+ 	LOAD_32(cpu->prefetch[1], cpu->gprs[ARM_PC] & cpu->memory.activeMask, cpu->memory.activeRegion);
+ 
+ 	unsigned condition = opcode >> 28;
+@@ -221,6 +226,9 @@ static inline void ThumbStep(struct ARMCore* cpu) {
+ 	uint32_t opcode = cpu->prefetch[0];
+ 	cpu->prefetch[0] = cpu->prefetch[1];
+ 	cpu->gprs[ARM_PC] += WORD_SIZE_THUMB;
++	if (ARMDjExecHook) {
++		ARMDjExecHook(cpu->gprs[ARM_PC] - 2 * WORD_SIZE_THUMB, opcode, true);
++	}
+ 	LOAD_16(cpu->prefetch[1], cpu->gprs[ARM_PC] & cpu->memory.activeMask, cpu->memory.activeRegion);
+ 	ThumbInstruction instruction = _thumbTable[opcode >> 6];
+ 	instruction(cpu, opcode);
+diff --git a/src/platform/libretro/dj_connector.c b/src/platform/libretro/dj_connector.c
+new file mode 100644
+index 000000000..58d4d94e1
+--- /dev/null
++++ b/src/platform/libretro/dj_connector.c
+@@ -0,0 +1,170 @@
++/* decomp-dj coverage connector for mGBA's libretro core (docs/connectors.md in decomp-dj,
++ * API version 2). MIT-licensed new file; see connectors/mgba/README.md.
++ *
++ * Regions, in index order (all "armv4t"):
++ *   ROM    the cartridge, from byte 0 of the file, as long as the file; addresses
++ *          0x08000000-0x0DFFFFFF, the three wait-state mirrors folded together.
++ *   IWRAM  32 KB at 0x03000000 (fast RAM; games copy hot code here).
++ *   EWRAM  256 KB at 0x02000000.
++ *   BIOS   16 KB at 0x00000000 (mGBA's own HLE BIOS unless a real one is loaded; dj gives
++ *          the core an empty system directory, so it's always mGBA's).
++ *
++ * Flags come from the CPU loop (ARMStep and ThumbStep in src/arm/arm.c), for every
++ * instruction it reaches, before its condition is checked: 0x01 on the opcode's first byte,
++ * 0x02 on the rest, and a mode bit on the first byte, 0x04 Thumb or 0x08 ARM. Thumb's BL is
++ * two halfwords that the CPU runs one after the other; the second is flagged as operand
++ * bytes, so the pair reads as one 4-byte instruction, as dj's decoder reads it. */
++#include <stdlib.h>
++#include <string.h>
++
++#include <mgba/internal/arm/arm.h>
++#include <mgba/internal/gba/gba.h>
++#include <mgba/internal/gba/memory.h>
++
++#include "dj_connector.h"
++
++enum { DJ_ROM, DJ_IWRAM, DJ_EWRAM, DJ_BIOS, DJ_REGIONS };
++
++static const char* const djNames[DJ_REGIONS] = { "ROM", "IWRAM", "EWRAM", "BIOS" };
++static const size_t djFixedSize[DJ_REGIONS] = { 0, GBA_SIZE_IWRAM, GBA_SIZE_EWRAM, GBA_SIZE_BIOS };
++
++static struct GBA* djGBA;
++static uint8_t* djFlags[DJ_REGIONS];
++static size_t djSize[DJ_REGIONS];
++static int djTickRegion = -1;
++static uint32_t djTickOffset;
++static uint64_t djTicks;
++
++static void djExec(uint32_t address, uint32_t opcode, bool thumb) {
++	int region;
++	uint32_t off;
++	switch (address >> 24) {
++	case 0x00:
++		region = DJ_BIOS;
++		off = address;
++		break;
++	case 0x02:
++		region = DJ_EWRAM;
++		off = address & (GBA_SIZE_EWRAM - 1);
++		break;
++	case 0x03:
++		region = DJ_IWRAM;
++		off = address & (GBA_SIZE_IWRAM - 1);
++		break;
++	case 0x08: case 0x09: case 0x0A: case 0x0B: case 0x0C: case 0x0D:
++		region = DJ_ROM;
++		off = address & 0x01FFFFFF;
++		/* A 1 MB ROM shows up four times (mGBA mirrors it): fold the mirrors together. */
++		if (djSize[DJ_ROM] && off >= djSize[DJ_ROM]) {
++			off %= djSize[DJ_ROM];
++		}
++		break;
++	default:
++		return; /* VRAM, OAM, I/O: code there isn't counted */
++	}
++	uint8_t* flags = djFlags[region];
++	size_t len = thumb ? 2 : 4;
++	if (!flags || off + len > djSize[region]) {
++		return;
++	}
++	if (thumb && (opcode >> 11) == 0x1F) {
++		/* The second half of a BL: operand bytes of the pair. */
++		flags[off] |= DJ_FLAG_OPERAND;
++		flags[off + 1] |= DJ_FLAG_OPERAND;
++		return;
++	}
++	flags[off] |= DJ_FLAG_OPCODE | (thumb ? DJ_FLAG_THUMB : DJ_FLAG_ARM);
++	size_t i;
++	for (i = 1; i < len; ++i) {
++		flags[off + i] |= DJ_FLAG_OPERAND;
++	}
++	if (region == djTickRegion && off == djTickOffset) {
++		++djTicks;
++	}
++}
++
++void dj_attach(void* gba) {
++	size_t i;
++	djGBA = gba;
++	for (i = 0; i < DJ_REGIONS; ++i) {
++		free(djFlags[i]);
++		djFlags[i] = NULL;
++		djSize[i] = 0;
++	}
++	if (!djGBA) {
++		return;
++	}
++	for (i = 0; i < DJ_REGIONS; ++i) {
++		/* The ROM as the file has it (memory.romSize is padded for mirrors and the bus). */
++		djSize[i] = i == DJ_ROM ? djGBA->pristineRomSize : djFixedSize[i];
++		djFlags[i] = djSize[i] ? calloc(djSize[i], 1) : NULL;
++		if (!djFlags[i]) {
++			djSize[i] = 0;
++		}
++	}
++	djTicks = 0;
++}
++
++static unsigned djApiVersion(void) {
++	/* dj is driving the core: from here on every instruction is reported. */
++	ARMDjExecHook = djExec;
++	return DJ_API_VERSION;
++}
++
++static size_t djRegionCount(void) {
++	return djGBA ? DJ_REGIONS : 0;
++}
++
++static const uint8_t* djData(size_t index) {
++	switch (index) {
++	case DJ_ROM: return (const uint8_t*) djGBA->memory.rom;
++	case DJ_IWRAM: return (const uint8_t*) djGBA->memory.iwram;
++	case DJ_EWRAM: return (const uint8_t*) djGBA->memory.wram;
++	case DJ_BIOS: return (const uint8_t*) djGBA->memory.bios;
++	}
++	return NULL;
++}
++
++static bool djGetRegion(size_t index, struct dj_region* out) {
++	if (!out || !djGBA || index >= DJ_REGIONS) {
++		return false;
++	}
++	out->name = djNames[index];
++	out->flags = djFlags[index];
++	out->size = djSize[index];
++	out->cpu = "armv4t";
++	out->data = djData(index);
++	out->file_offset = index == DJ_ROM ? 0 : -1;
++	return true;
++}
++
++static void djClear(void) {
++	size_t i;
++	for (i = 0; i < DJ_REGIONS; ++i) {
++		if (djFlags[i]) {
++			memset(djFlags[i], 0, djSize[i]);
++		}
++	}
++	djTicks = 0;
++}
++
++static void djSetTickExec(int region, int64_t offset) {
++	djTickRegion = (region >= 0 && region < DJ_REGIONS && offset >= 0) ? region : -1;
++	djTickOffset = (uint32_t) offset;
++	djTicks = 0;
++}
++
++static uint64_t djGetTickCount(void) {
++	return djTicks;
++}
++
++void* dj_get_proc_address(const char* sym) {
++	if (!sym) return NULL;
++	if (!strcmp(sym, "dj_api_version")) return (void*) &djApiVersion;
++	if (!strcmp(sym, "dj_region_count")) return (void*) &djRegionCount;
++	if (!strcmp(sym, "dj_get_region")) return (void*) &djGetRegion;
++	if (!strcmp(sym, "dj_clear")) return (void*) &djClear;
++	if (!strcmp(sym, "dj_set_tick_exec")) return (void*) &djSetTickExec;
++	if (!strcmp(sym, "dj_get_tick_count")) return (void*) &djGetTickCount;
++	return NULL;
++}
+diff --git a/src/platform/libretro/dj_connector.h b/src/platform/libretro/dj_connector.h
+new file mode 100644
+index 000000000..4bf02c945
+--- /dev/null
++++ b/src/platform/libretro/dj_connector.h
+@@ -0,0 +1,31 @@
++/* decomp-dj coverage connector for mGBA's libretro core (docs/connectors.md in decomp-dj,
++ * API version 2). MIT-licensed new file; see connectors/mgba/README.md. */
++#ifndef DJ_CONNECTOR_H
++#define DJ_CONNECTOR_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#define DJ_API_VERSION   2
++#define DJ_FLAG_OPCODE   0x01 /* executed as the first byte of an instruction */
++#define DJ_FLAG_OPERAND  0x02 /* executed as another byte of an instruction */
++#define DJ_FLAG_THUMB    0x04 /* armv4t mode bit: the opcode ran in Thumb state */
++#define DJ_FLAG_ARM      0x08 /* armv4t mode bit: the opcode ran in ARM state */
++
++struct dj_region {
++	const char* name;     /* "ROM", "IWRAM", "EWRAM", "BIOS" */
++	uint8_t* flags;       /* one byte of DJ_FLAG_* per byte of the region */
++	size_t size;
++	const char* cpu;      /* instruction set that runs here ("armv4t"), or NULL */
++	const uint8_t* data;  /* the region's bytes, or NULL */
++	int64_t file_offset;  /* where offset 0 lies in the ROM file, or -1 */
++};
++
++/* The GBA being emulated (struct GBA*), from retro_load_game; NULL on unload or for a
++ * Game Boy game, which reports no regions. */
++void dj_attach(void* gba);
++
++void* dj_get_proc_address(const char* sym);
++
++#endif
+diff --git a/src/platform/libretro/libretro.c b/src/platform/libretro/libretro.c
+index abed4cc7c..1744e3aa9 100644
+--- a/src/platform/libretro/libretro.c
++++ b/src/platform/libretro/libretro.c
+@@ -43,6 +43,7 @@ FS_Archive sdmcArchive;
+ #endif
+ 
+ #include "libretro_core_options.h"
++#include "dj_connector.h"
+ 
+ #define GBA_AUDIO_CHUNK_FRAMES 1024
+ #define GB_SAMPLES 512
+@@ -1284,6 +1285,11 @@ unsigned retro_api_version(void) {
+ 
+ void retro_set_environment(retro_environment_t env) {
+ 	environCallback = env;
++	{
++		/* decomp-dj: the connector's functions (dj_connector.c) */
++		static const struct retro_get_proc_address_interface djInterface = { (retro_get_proc_address_t) dj_get_proc_address };
++		env(RETRO_ENVIRONMENT_SET_PROC_ADDRESS_CALLBACK, (void*) &djInterface);
++	}
+ 	libretroVFSInit(env);
+ 
+ #ifdef M_CORE_GB
+@@ -2056,6 +2062,9 @@ bool retro_load_game(const struct retro_game_info* game) {
+ 	_reloadSettings();
+ 	core->loadROM(core, rom);
+ 	deferredSetup = true;
++#ifdef M_CORE_GBA
++	dj_attach(core->platform(core) == mPLATFORM_GBA ? core->board : NULL);
++#endif
+ 
+ 	const char* sysDir = 0;
+ 	const char* biosName = 0;
+@@ -2121,6 +2130,9 @@ bool retro_load_game(const struct retro_game_info* game) {
+ }
+ 
+ void retro_unload_game(void) {
++#ifdef M_CORE_GBA
++	dj_attach(NULL);
++#endif
+ 	if (!core) {
+ 		return;
+ 	}

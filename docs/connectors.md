@@ -3,7 +3,8 @@
 A coverage connector is a small patch to a libretro core that reports which ROM bytes ran.
 Without one, a core still plays segments and checks hashes, but records no coverage and
 counts no [ticks](playback.md#logic-ticks-draft). There are connectors for Mesen (NES),
-[connectors/mesen/](../connectors/mesen/README.md), and, in a first version, Mupen64Plus-Next
+[connectors/mesen/](../connectors/mesen/README.md), mGBA (GBA),
+[connectors/mgba/](../connectors/mgba/README.md), and, in a first version, Mupen64Plus-Next
 (N64), [connectors/mupen64plus/](../connectors/mupen64plus/README.md).
 
 ## What a connector reports
@@ -11,7 +12,7 @@ counts no [ticks](playback.md#logic-ticks-draft). There are connectors for Mesen
 - Executed locations as **offsets into ROM regions**, never CPU addresses, because bank switching maps different ROM bytes to the same CPU address.
 - One flag byte per byte of each region (below). Flags only ever get set, until the player clears them.
 - For each region: its name, the instruction set that runs there, its bytes, and where it lies in the ROM file. The connector is the source of these facts; projects don't configure them ([.agents/CONNECTOR_PLAN.md](../.agents/CONNECTOR_PLAN.md) has the reasoning).
-- **Region names are a contract per system**, so that two cores for one system can share a project's coverage, annotations and symbol maps. NES: `PRG` (program ROM), `RAM`, `WRAM`, `SRAM`. N64: `RDRAM` (main RAM, by physical address, where code runs) and `ROM` (the cartridge, `.z64` order). Coverage rolls up into the first region from the ROM file whose instruction set has a decoder (`PRG` on the NES), else into the first region a CPU runs (`RDRAM` on the N64).
+- **Region names are a contract per system**, so that two cores for one system can share a project's coverage, annotations and symbol maps. NES: `PRG` (program ROM), `RAM`, `WRAM`, `SRAM`. N64: `RDRAM` (main RAM, by physical address, where code runs) and `ROM` (the cartridge, `.z64` order). GBA: `ROM` (the cartridge, from byte 0 of the file, its address mirrors folded together), `IWRAM`, `EWRAM` and `BIOS`. Coverage rolls up into the first region from the ROM file whose instruction set has a decoder (`PRG` on the NES), else into the first region a CPU runs (`RDRAM` on the N64).
 
 | Bits | Meaning |
 | --- | --- |
@@ -24,6 +25,11 @@ Mode bits are generic: what each means comes from the region's `cpu`. For the 65
 example, they would record the register widths an opcode ran with, so an opcode run in both
 keeps both: `0x04` 8-bit accumulator, `0x08` 16-bit accumulator, `0x10` 8-bit index
 registers, `0x20` 16-bit index registers.
+
+| `cpu` | Mode bits |
+| --- | --- |
+| `6502`, `mips3` | none |
+| `armv4t` | `0x04` ran in Thumb state, `0x08` in ARM state. The player starts a function in the mode its first instruction ran in. Thumb's `BL` pair is one instruction: its second halfword carries operand flags |
 
 ## The API
 
@@ -184,5 +190,5 @@ error or a failed `dj_run` stops playback at that frame ([gui.md](gui.md#compari
 5. Pin the upstream commit and ship a `build.sh` and the patch under `connectors/<core>/`, like Mesen's.
 
 Rolling coverage up into functions and blocks also needs a decoder for the region's `cpu`.
-The 6502 and MIPS (`mips3`) have one so far ([coverage.md](coverage.md#symbol-maps)); for any
+The 6502, MIPS (`mips3`) and ARMv4T (`armv4t`: ARM and Thumb, for the GBA) have one so far ([coverage.md](coverage.md#symbol-maps)); for any
 other, the report counts opcode bytes and says no decoder exists yet.

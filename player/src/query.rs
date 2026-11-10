@@ -30,6 +30,8 @@ pub struct Project {
     rom_problem: Option<String>,
     /// Where PRG sits in CPU space, when the ROM alone says so.
     fixed_prg: Option<FixedPrg>,
+    /// The code region's instruction set, from the connector (6502 when nothing is recorded).
+    cpu: Option<String>,
     report: Option<Report>,
 }
 
@@ -60,15 +62,17 @@ impl Project {
         let placed = facts.iter().find(|f| f.name == analysis::code_region(&facts)).and_then(|f| f.file_offset);
         let prg = rom.as_ref().map(|rom| {
             let header = match (placed, col.config.symbols.first()) {
-                (_, Some(s)) if s.rom_header.is_some() => s.rom_header.unwrap(),
                 (Some(p), _) => p,
+                (_, Some(s)) if s.rom_header.is_some() => s.rom_header.unwrap(),
                 (None, Some(s)) => analysis::default_rom_header(&s.format, Some(rom)),
                 (None, None) => analysis::default_rom_header("", Some(rom)),
             } as usize;
             rom[header.min(rom.len())..].to_vec()
         });
         let fixed_prg = rom.as_deref().and_then(FixedPrg::of_rom);
-        Ok(Project { col, conn, setup, rom, funcs, prg, rom_problem, fixed_prg, report: None })
+        let code = analysis::code_region(&facts);
+        let cpu = facts.iter().find(|f| f.name == code).map_or(Some("6502".to_string()), |f| f.cpu.clone());
+        Ok(Project { col, conn, setup, rom, funcs, prg, rom_problem, fixed_prg, cpu, report: None })
     }
 
     /// The coverage report, worked out once per opened project.
@@ -102,12 +106,12 @@ impl Project {
 
     /// The PRG bytes and the flags of what ran, for listing uncovered bytes without a symbol
     /// map. The connector's operand flags say which bytes an instruction that ran occupies;
-    /// a core that sets none leaves it to 6502 instruction lengths, so then only NES ROMs
-    /// can do without symbols.
+    /// a core that sets none leaves it to the lengths the code region's decoder reads, so
+    /// then only instruction sets with a decoder can do without symbols.
     fn need_flags(&mut self) -> Result<(Vec<u8>, Vec<u8>)> {
         let prg = self.need_prg()?;
         let flags = self.report()?.detail.prg.clone();
-        if !analysis::has_operand_flags(&flags) && !self.rom.as_deref().is_some_and(|r| r.starts_with(b"NES\x1a")) {
+        if !analysis::has_operand_flags(&flags) && !self.cpu.as_deref().is_some_and(analysis::has_decoder) {
             bail!("this needs a symbol map. {ADD_SYMBOLS}");
         }
         Ok((prg, flags))
@@ -277,7 +281,8 @@ impl Project {
     /// shows up here too.
     pub fn uncovered_ranges(&mut self, _sort: GapSort, limit: usize, cursor: usize) -> Result<Page<UncoveredRange>> {
         let (prg, flags) = self.need_flags()?;
-        let (mut exec, from_flags) = analysis::executed_bytes(&prg, &flags);
+        let cpu = self.cpu.clone();
+        let (mut exec, from_flags) = analysis::executed_bytes(cpu.as_deref().and_then(crate::decode::decoder_for), &prg, &flags);
         let region = self.report()?.detail.region.clone();
         self.mark_annotated(&mut exec)?;
         let mut rows: Vec<UncoveredRange> = analysis::uncovered_ranges(&exec)
@@ -286,7 +291,7 @@ impl Project {
             .collect();
         rows.sort_by(|a, b| b.bytes.cmp(&a.bytes).then(a.at.cmp(&b.at)));
         let total = rows.len();
-        let how = if from_flags { "" } else { " This core sets no operand flags, so the bytes each instruction occupies come from 6502 instruction lengths." };
+        let how = if from_flags { String::new() } else { format!(" This core sets no operand flags, so the bytes each instruction occupies come from {} instruction lengths.", cpu.as_deref().unwrap_or("6502")) };
         let note = format!("no symbol map: these are {region} byte ranges that no instruction that ran occupies, largest first, and they include any data annotations.toml doesn't mark.{how} For gaps by function, add a symbol map: {ADD_SYMBOLS}");
         Ok(Page::new(rows.into_iter().skip(cursor).take(limit).collect(), total, cursor).with_note(note))
     }

@@ -80,7 +80,7 @@ there is more.
 | `where_runs(addr)` | Segments that run this code, best first (counting before dirty, shallow, early): the first frame that runs it, its depth, and the nearest stored snapshot |
 | `coverage_summary()` | Instructions, blocks and functions covered, segments left out, the segments that add most |
 | `gaps(sort, only)` | Functions with uncovered code. `sort=size` puts the most uncovered first; `sort=nearness` puts first those a covered branch skips. `only=never\|partial\|all` |
-| `function(addr)` | Every block of one function: covered or not, the first segment and frame that runs it, where control goes next; its callers (JSR and JMP sites) and whether they run; the segments that enter it |
+| `function(addr)` | Every block of one function: covered or not, the first segment and frame that runs it, where control goes next; its callers (direct calls, and jumps from other functions: JSR and JMP on the 6502, JAL and J on MIPS) and whether they run; the segments that enter it |
 | `frontier(addr?)` | Covered branches and calls that lead into uncovered code, with the segments and frames that run that branch. For an address in uncovered code, the ways into its block; for a function never entered, its covered callers; with none, the largest across the ROM |
 | `segments(filter?)` | The tree: id, title, parent, frames, status, poked, children |
 | `gui_view()` | What the person is looking at in `dj-gui`, when they share it ([below](#the-gui)) |

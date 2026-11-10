@@ -1,0 +1,13 @@
+dj-replay 1
+id: dbe7a097-0c2a-471f-bdad-dc6cc7140337
+parent: 9991bc4f-1fbc-47f9-9757-a0f563639680
+title: Tap B twice
+frames: 60
+start-hash: cefcb1187ebeccee8a0d2dfce7abde2f
+end-hash: 8f97ab36b5e95b2a26ba6a2884eec723
+start-frame: 60
+---
+5 P1 JOYPAD B 1
+8 P1 JOYPAD B 0
+20 P1 JOYPAD B 1
+23 P1 JOYPAD B 0

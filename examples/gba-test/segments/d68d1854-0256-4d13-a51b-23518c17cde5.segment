@@ -1,0 +1,11 @@
+dj-replay 1
+id: d68d1854-0256-4d13-a51b-23518c17cde5
+parent: 9991bc4f-1fbc-47f9-9757-a0f563639680
+title: Press Right
+frames: 60
+start-hash: cefcb1187ebeccee8a0d2dfce7abde2f
+end-hash: 428968822ae3c281842470b89d1ef9d1
+start-frame: 60
+---
+10 P1 JOYPAD RIGHT 1
+14 P1 JOYPAD RIGHT 0

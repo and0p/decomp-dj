@@ -140,7 +140,7 @@ Symbol maps that roll coverage up into functions and basic blocks ([coverage.md]
 | --- | --- | --- |
 | `file` | yes | Path relative to the project root. |
 | `format` | yes | One of the formats in coverage.md. `dj init --symbols FILE` guesses it from the file name. |
-| `rom_header` | no | Bytes before the region's data in the ROM file. Default: 16 for an iNES ROM, otherwise 0. Subtracted from file offsets for `ca65-dbg`, `splat`, `ld-map` and `elf`. |
+| `rom_header` | no | Subtracted from the map's file offsets (`ca65-dbg`, `splat`, `ld-map`) or load addresses (`elf`) to give region offsets: the bytes before the region's data in the ROM file, or, for an ELF, the address of the ROM file's first byte (`0x08000000` on the GBA). Default: where the connector says the region lies in the ROM file; else 16 for an iNES ROM, otherwise 0. The bytes the decoder reads are always taken from where the connector says, when it has said. |
 | `region` | no | The connector region the offsets belong to. Default `PRG`. Only `PRG` is rolled up for now. |
 | `cpu_base` | no | CPU address of region offset 0, for formats that don't carry CPU addresses (`mesen-mlb`, `csv` without the column). For example `0x8000` for a 32 KB NROM game. Without it, blocks split only at branches, jumps and returns. |
 

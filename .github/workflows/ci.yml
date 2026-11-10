@@ -1,0 +1,134 @@
+# Builds, tests and packages decomp-dj on Linux, macOS and Windows on every push to main and
+# every pull request; the portable ZIPs are kept as artifacts of the run. Also replays the
+# Thwaite example from power-on with the Mesen core (Linux and macOS), so a change that makes
+# playback differ shows up. Windows is allowed to fail until it has been tried by hand
+# (.agents/RELEASE_PLAN.md).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build and test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-22.04, experimental: false }
+          - { name: macos-arm64, os: macos-14, experimental: false }
+          - { name: windows-x86_64, os: windows-2022, experimental: true }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            player
+            gui
+            decoders/dj-decoder
+            decoders/reference
+
+      - name: Build
+        run: |
+          (cd player && cargo build --release --locked)
+          (cd gui && cargo build --release --locked)
+          (cd decoders/reference && cargo build --release --locked)
+
+      - name: Test
+        # The tests that compile C test cores and plugins skip themselves where there's no
+        # `cc` (Windows).
+        run: |
+          (cd player && cargo test --release --locked)
+          (cd decoders/dj-decoder && cargo test --locked)
+
+      - name: Clippy
+        # Reported, not yet failing the build: the code has never been through it.
+        continue-on-error: true
+        run: |
+          (cd player && cargo clippy --release --locked -- -D warnings)
+          (cd gui && cargo clippy --release --locked -- -D warnings)
+
+      - name: Package
+        run: scripts/package.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: decomp-dj-${{ matrix.name }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  replay:
+    name: Replay Thwaite (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-22.04 }
+          - { name: macos-arm64, os: macos-14 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: player
+
+      - name: Build dj
+        run: cd player && cargo build --release --locked
+
+      # The Mesen core and the Thwaite ROM are built from pinned sources, so they're cached
+      # by the scripts and patch that pin them.
+      - uses: actions/cache@v4
+        id: mesen
+        with:
+          path: build/cores
+          key: mesen-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('connectors/mesen/build.sh', 'connectors/mesen/dj-mesen.patch') }}
+
+      - name: Build the Mesen core
+        if: steps.mesen.outputs.cache-hit != 'true'
+        run: connectors/mesen/build.sh
+
+      - uses: actions/cache@v4
+        id: thwaite
+        with:
+          path: examples/thwaite/build
+          key: thwaite-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('examples/thwaite/build-rom.sh') }}
+
+      - uses: actions/setup-python@v5
+        if: steps.thwaite.outputs.cache-hit != 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Build the Thwaite ROM
+        if: steps.thwaite.outputs.cache-hit != 'true'
+        run: |
+          python -m pip install pillow
+          cd examples/thwaite && ./build-rom.sh
+
+      - name: Replay every segment from power-on
+        # Checks every recorded hash; fails if any segment plays differently here.
+        run: |
+          core=build/cores/mesen_libretro
+          player/target/release/dj run examples/thwaite --from-scratch --rom examples/thwaite/build/thwaite.nes --core "$core"

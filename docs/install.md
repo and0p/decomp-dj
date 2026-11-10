@@ -1,7 +1,28 @@
 # Install
 
-decomp-dj is built from source. There are three parts: the CLI, the GUI and a patched
-core that reports coverage.
+## Portable builds
+
+Each release has a ZIP for Linux (x86_64), macOS (Apple silicon) and Windows (x86_64), with
+`SHA256SUMS` to check them against. Nothing to install: unzip it anywhere and run.
+
+| In the folder | What it is |
+| --- | --- |
+| `dj` (`dj.exe`) | The command line ([cli.md](cli.md)) |
+| `dj-gui` (`dj-gui.exe`); `decomp-dj.app` on macOS | The GUI ([gui.md](gui.md)) |
+| `decoders/` | Decoder plugins: the C header and an example plugin ([decoders.md](decoders.md)). A bare `[[decoders]]` path is looked for here |
+| `connectors/` | The patches and scripts that build a core with a coverage connector. Cores aren't included |
+| `linux/` | Linux: `install-desktop-entry.sh`, so launchers and Wayland desktops show dj-gui's icon |
+| `docs/`, `LICENSE.txt` | These docs, and the licence |
+
+- **macOS:** the app isn't signed with a Developer ID, so macOS stops it the first time.
+  After unzipping, run `xattr -dr com.apple.quarantine decomp-dj-*` once in the folder you
+  unzipped into, or right-click `decomp-dj.app` and choose Open.
+- **Windows:** SmartScreen may warn about an unrecognised app: More info > Run anyway.
+- `scripts/package.sh --build` builds the same folder and ZIP from source, into `dist/`.
+
+## Building from source
+
+decomp-dj has three parts: the CLI, the GUI and a patched core that reports coverage.
 
 ```sh
 cd player && cargo build --release        # Rust 1.75+; the binary is player/target/release/dj

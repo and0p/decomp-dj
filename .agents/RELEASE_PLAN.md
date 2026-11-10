@@ -41,7 +41,14 @@ Not legal advice; worth a second look before the release.
 1. **One Cargo workspace.** A root `Cargo.toml` over `player/` and `gui/`: one lock file,
    one `target/`, one version (`version.workspace`). `cargo build --release` builds both;
    docs and scripts use `target/release/dj`.
-2. **CI** (`.github/workflows/ci.yml`, every push and pull request):
+2. **CI** (`.github/workflows/ci.yml`, every push to main and pull request). **Written
+   2026-11-10, not run yet** (it runs once pushed): build, test, clippy (reported, not failing)
+   and package on Linux, macOS and Windows (Windows allowed to fail), the ZIPs kept as
+   artifacts; and Thwaite replayed from power-on with the Mesen core on Linux and macOS (core
+   and ROM cached by their pinning scripts). The GBA test project isn't replayed yet (it needs
+   LLVM and an ELF linker on the runner). Before it was written, the player and GUI were
+   type-checked for Windows here (`cargo check --target x86_64-pc-windows-gnu`, C
+   dependencies stubbed): no errors. As planned:
    - Linux (ubuntu-22.04, for an older glibc) and macOS (arm64): build, `cargo test`,
      `cargo clippy`, build the Mesen core and the Thwaite ROM (cached by their pinned
      commits), then `dj run examples/thwaite` to check all 12 hashes. Determinism becomes a
@@ -51,7 +58,14 @@ Not legal advice; worth a second look before the release.
      (no WGL context yet).
 3. **Core search path** (above), and the Thwaite example pointing at `mesen_libretro` so it
    needs no `.local/` set-up once the core is built.
-4. **Release workflow** (`.github/workflows/release.yml`, on a `v*` tag): build each target
+4. **Release workflow** (`.github/workflows/release.yml`, on a `v*` tag). **Written
+   2026-11-10, not run yet:** each system runs `scripts/package.sh --build` (also usable
+   locally; tried on macOS: the unzipped folder runs, the app's signature survives), a last
+   job writes `SHA256SUMS` and makes a draft release with the ZIPs; a hand-run builds the ZIPs
+   as artifacts only, and a tag must match `player/Cargo.toml`'s version. The ZIP holds `dj`,
+   `dj-gui` (`decomp-dj.app` on macOS), `decoders/` (the header and the reference plugin),
+   `connectors/` (patches and scripts, no cores), `linux/` (desktop entry), `docs/`, the
+   licence and README; no examples. As planned: build each target
    and zip a folder, then create a draft GitHub Release with the zips and a
    `SHA256SUMS` file. Published by hand.
    ```

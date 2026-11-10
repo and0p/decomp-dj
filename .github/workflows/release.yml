@@ -1,0 +1,75 @@
+# Builds the portable ZIPs for Linux, macOS and Windows and puts them, with their SHA-256
+# sums, on a draft GitHub release, to check and publish by hand. Runs when a version tag
+# (v0.1.0) is pushed, or by hand from the Actions tab (which builds the ZIPs as artifacts
+# without a release).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    name: Package (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-22.04 }
+          - { name: macos-arm64, os: macos-14 }
+          - { name: windows-x86_64, os: windows-2022 }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' player/Cargo.toml | head -1)"
+          [ "v$version" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} but player/Cargo.toml says $version"; exit 1; }
+
+      - name: Build and package
+        run: scripts/package.sh --build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: decomp-dj-${{ matrix.name }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    name: Draft release
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: cd dist && sha256sum *.zip > SHA256SUMS && cat SHA256SUMS
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: decomp-dj ${{ github.ref_name }}
+          files: |
+            dist/*.zip
+            dist/SHA256SUMS
+          body: |
+            Portable builds: unzip and run `dj` (the command line) or `dj-gui` (`decomp-dj.app` on macOS). Nothing to install; cores aren't included (see `connectors/README.md` to build one).
+            macOS: the app isn't signed with a Developer ID; after unzipping, run `xattr -dr com.apple.quarantine decomp-dj-*` once, or right-click the app and choose Open.
+            Check a download against `SHA256SUMS`.

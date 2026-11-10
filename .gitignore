@@ -4,4 +4,5 @@ target/
 build/
 .local/
 .DS_Store
-scratchpad.md
+scratchpad.md# Portable ZIPs (scripts/package.sh)
+dist/

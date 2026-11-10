@@ -11,10 +11,10 @@ Priorities: **high** blocks the release, **medium** should be in it, **low** can
 | Priority | Item | Plan | Status |
 | --- | --- | --- | --- |
 | high | Land the N64 connector and MIPS decoder; docs agree on what's supported | [CONNECTOR_PLAN.md](CONNECTOR_PLAN.md) | done 2026-11-09 |
-| high | CI on Linux and macOS (Windows as a template), Thwaite hashes on every change | [RELEASE_PLAN.md](RELEASE_PLAN.md) | planned |
+| high | CI on Linux and macOS (Windows as a template), Thwaite hashes on every change | [RELEASE_PLAN.md](RELEASE_PLAN.md) | written 2026-11-10, not run yet (push to run) |
 | high | Projects record the format and tool version; older tools refuse newer projects; a core rebuild re-pins | [below](#project-and-cli), "Versioning projects" | done 2026-11-10 |
 | high | Clean-up and licensing: scratch files, terminology in the CLI help, the Tetris data tables, connector licences | [RELEASE_PLAN.md](RELEASE_PLAN.md#licensing-of-the-connectors-to-settle) | not started |
-| high | Release workflow and install docs (`v0.1.0`) | [RELEASE_PLAN.md](RELEASE_PLAN.md) | planned |
+| high | Release workflow and install docs (`v0.1.0`) | [RELEASE_PLAN.md](RELEASE_PLAN.md) | portable ZIPs and draft release written 2026-11-10, not run yet |
 | medium | Decoder interface (step 1: one trait and one sweep; step 2: loadable decoders) | [DECODER_PLAN.md](DECODER_PLAN.md) | done (plugins 2026-11-10) |
 | high | Cores and plugins can't crash or hang dj: workers for decoder plugins, comparison cores, batch commands, then the GUI's core | [ISOLATION_PLAN.md](ISOLATION_PLAN.md) | done for plugins, comparison cores and batch commands; the GUI's core protected in process (edits kept, crash note); moving it to a worker designed, not built (decided 2026-11-10: not now, maybe before the release) |
 | medium | Root segments that start from a snapshot, finished ([below](#root-segments-from-a-snapshot)) | | partly built |

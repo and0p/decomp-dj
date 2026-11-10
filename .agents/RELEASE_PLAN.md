@@ -56,7 +56,9 @@ Not legal advice; worth a second look before the release.
    `SHA256SUMS` file. Published by hand.
    ```
    decomp-dj-0.1.0-macos-arm64/
-     dj, dj-gui                 (dj.exe, dj-gui.exe on Windows)
+     dj, dj-gui                 (dj.exe, dj-gui.exe on Windows, with their icons built in;
+                                macOS: decomp-dj.app from gui/macos/bundle.sh instead of
+                                a bare dj-gui; Linux: gui/linux/ with the desktop entry)
      connectors/                (patches, build scripts, READMEs)
      decoders/                  (dj_decoder.h, the dj-decoder crate, the reference plugin)
      examples/thwaite/          (config, segments, README with build-rom.sh)

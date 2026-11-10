@@ -138,14 +138,14 @@ dj snapshot <dir> SEGMENT FRAME --out FILE        # the core state there, to sta
 **Coverage map.** Always at the bottom of the left sidebar, whatever the tab; drag its top
 edge to resize it. There is one square per function in ROM order (about 1,024 equal slices
 of PRG without a symbol map), so a square never moves as coverage grows. Tabs over it choose
-what it shows: **Combined** (at launch: coverage, with parity's purple, orange and red over
-it once a comparison core is loaded), **Coverage**, **Parity** ([gui.md](gui.md#parity)) and
-**Hidden** (only the tabs). The colour key under the map lists only the colours some square
+what it shows: **Hide** (first; only the tabs), **Combined** (at launch: coverage, with
+parity's purple, orange and red over it once a comparison core is loaded), **Coverage** and
+**Parity** ([gui.md](gui.md#parity)). The colour key under the map lists only the colours some square
 shows. The function list's squares use the same colours. The coverage colours, in order of
 precedence where several segments run the same code:
 
 - **Green:** run by a clean, saved segment. Counted. A square goes from grey to green as more of the function is covered.
-- **Yellow-green:** new, not counted yet: run by an unsaved segment (your edits, hashes recorded but not saved, or an agent's draft) or by the pass being played, and by no saved clean segment. It counts once saved and clean. Unsaved code a saved segment already runs is just green.
+- **Yellow-green:** new, not counted yet (the key says "new, not counted yet"): run by an unsaved segment (your edits, hashes recorded but not saved, or an agent's draft) or by the pass being played, and by no segment that counts. A segment counts once it is saved, clean, and a full pass of its current content is recorded in the local database. Code a counted segment already runs is just green.
 - **Dark, faded green:** run only by dirty segments, from the last time each played (found in the database, without playing anything). Not counted; it comes back when they are clean again.
 - **Grey:** never run. **Blue:** all of it is unreachable or data in [annotations.toml](config.md#annotationstoml); the key calls both "unreachable".
 
@@ -155,13 +155,17 @@ Clicking a square opens that function in the Functions tab.
 **Live coverage.** While a segment plays, every square whose code runs glows and fades over
 half a second, so code that runs every frame stays lit. Code that runs while playing but
 that no counted segment runs is new: yellow-green on the map and the bars, with a white
-outline on squares that gain some, and counted as "+N new in this segment, counted once
-saved". The count covers what the selected segment runs that no counted segment does: in
+outline on squares that gain some, and counted as "+N new in this segment, ..." with what it
+still needs to count: "counted once saved" (unsaved changes), "counted once saved and clean",
+"counted once the segment is clean" (saved but dirty), or "not counted: no full pass of its
+current content is recorded" (saved and clean, but the database has no pass of the file as it
+is now, for example after it was edited outside dj-gui, or played with another core build;
+playing it from start to end records one). Saving only clears the first. The count covers what the selected segment runs that no counted segment does: in
 the play now, and in its last full pass if it is unsaved, so it stays the same once the
 pass reaches the end and is recorded in the database ([database.md](database.md#in-the-gui)).
 The live part starts again when you select or edit a segment, undo or redo a change to it,
 and when playback continues into a child. It counts towards the project once the segment
-is clean and saved.
+is saved and clean and its current content's pass is recorded.
 
 **Functions tab.** The project's coverage from the local database, the same numbers as
 `dj report`, and a function list that sorts by ROM order, most uncovered, least covered or

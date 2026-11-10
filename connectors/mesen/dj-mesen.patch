@@ -361,7 +361,7 @@ index a25e4467..32aac144 100644
                 $(CORE_DIR)/DefaultVideoFilter.cpp \
                 $(CORE_DIR)/RawVideoFilter.cpp \
 diff --git a/Libretro/libretro.cpp b/Libretro/libretro.cpp
-index 48fa6412..6607c282 100644
+index 48fa6412..bbcbcad8 100644
 --- a/Libretro/libretro.cpp
 +++ b/Libretro/libretro.cpp
 @@ -5,6 +5,9 @@
@@ -374,7 +374,15 @@ index 48fa6412..6607c282 100644
  #include "libretro_core_options.h"
  #include "../Core/Console.h"
  #include "../Core/VideoDecoder.h"
-@@ -148,6 +151,15 @@ extern "C" {
+@@ -77,6 +80,7 @@ static constexpr const char* MesenScreenRotation = "mesen_screenrotation";
+ static constexpr const char* MesenFakeStereo = "mesen_fake_stereo";
+ static constexpr const char* MesenMuteTriangleUltrasonic = "mesen_mute_triangle_ultrasonic";
+ static constexpr const char* MesenReduceDmcPopping = "mesen_reduce_dmc_popping";
++static constexpr const char* MesenAllowInvalidInput = "mesen_allow_invalid_input";
+ static constexpr const char* MesenSwapDutyCycle = "mesen_swap_duty_cycle";
+ static constexpr const char* MesenDisableNoiseModeFlag = "mesen_disable_noise_mode_flag";
+ static constexpr const char* MesenShiftButtonsClockwise = "mesen_shift_buttons_clockwise";
+@@ -148,6 +152,15 @@ extern "C" {
  		bool option_categories = false;
  		env_cb = env;
  
@@ -390,7 +398,15 @@ index 48fa6412..6607c282 100644
  		libretro_set_core_options(env_cb, &option_categories);
  
  		static constexpr struct retro_controller_description pads1[] = {
-@@ -1135,6 +1147,9 @@ extern "C" {
+@@ -337,6 +350,7 @@ extern "C" {
+ 		set_flag(MesenDisableNoiseModeFlag, EmulationFlags::DisableNoiseModeFlag);
+ 		set_flag(MesenFdsAutoSelectDisk, EmulationFlags::FdsAutoInsertDisk);
+ 		set_flag(MesenFdsFastForwardLoad, EmulationFlags::FdsFastForwardOnLoad);
++		set_flag(MesenAllowInvalidInput, EmulationFlags::AllowInvalidInput);
+ 
+ 		if(readVariable(MesenFakeStereo, var)) {
+ 			string value = string(var.value);
+@@ -1135,6 +1149,9 @@ extern "C" {
  			//Round up to the next 1kb multiple
  			_saveStateSize = ((ss.str().size() * 2) + 0x400) & ~0x3FF;
  			retro_set_memory_maps();
@@ -400,3 +416,28 @@ index 48fa6412..6607c282 100644
  		}
  
  		return result;
+diff --git a/Libretro/libretro_core_options.h b/Libretro/libretro_core_options.h
+index 55992167..b3e8810d 100644
+--- a/Libretro/libretro_core_options.h
++++ b/Libretro/libretro_core_options.h
+@@ -462,6 +462,20 @@ struct retro_core_option_v2_definition option_defs_us[] = {
+       },
+       "disabled"
+    },
++   {
++      "mesen_allow_invalid_input",
++      "Allow opposite directions",
++      NULL,
++      "Let the game see Left+Right or Up+Down held at once, as a real NES does. Off, they read as neither (Mesen's default). TAS movies use them.",
++      NULL,
++      "input",
++      {
++         { "disabled", NULL },
++         { "enabled",  NULL },
++         { NULL, NULL },
++      },
++      "disabled"
++   },
+    { NULL, NULL, NULL, NULL, NULL, NULL, {{0}}, NULL },
+ };
+ 

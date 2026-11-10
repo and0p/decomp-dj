@@ -13,6 +13,27 @@ The core is Mesen (NES), patched as described in
 [connectors/mesen/README.md](../connectors/mesen/README.md). Any other libretro core plays
 segments too, but records no coverage until it has a [connector](connectors.md).
 
+## Icons
+
+The icons are `assets/icon_gui.png` (dj-gui) and `assets/icon_cli.png` (dj).
+
+- **dj-gui's window** carries its icon on every system: the title bar and taskbar on Windows
+  and Linux (X11), the Dock on macOS.
+- **Windows:** both `.exe` files have their icon built in (`build.rs`, from
+  `assets/icon_*.ico`), as Explorer shows them. This needs a resource compiler: `rc.exe`
+  from the Windows SDK (with Visual Studio or its Build Tools), or `windres` with MinGW;
+  without one, the build warns and the files get no icon.
+- **macOS:** a bare executable has no icon in Finder. `gui/macos/bundle.sh` builds dj-gui and
+  wraps it in `gui/target/release/decomp-dj.app`, with the icon, to keep in Applications.
+- **Linux:** on Wayland, the taskbar shows the icon of the desktop entry that matches the
+  window's app id (`decomp-dj`). `gui/linux/install-desktop-entry.sh` installs that entry and
+  the icon for you (in `~/.local/share`), pointing at the dj-gui you built.
+- **dj** gets an icon only on Windows: macOS and Linux have nowhere to show one for a
+  command-line program.
+
+After changing a PNG, `scripts/make_icons.py` makes the `.ico` files and (on macOS) the
+`.icns` again; they're committed, so building doesn't need it.
+
 ## Cores that draw with OpenGL
 
 Cores that render on the GPU (libretro's `SET_HW_RENDER`) are supported with OpenGL, in the

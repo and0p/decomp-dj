@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=decomp-dj
+Comment=Record and play input segments, and measure code coverage, for decompilation projects
+Exec=dj-gui %f
+Icon=decomp-dj
+Terminal=false
+Categories=Development;
+StartupWMClass=decomp-dj

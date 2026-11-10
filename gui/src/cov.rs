@@ -19,7 +19,9 @@ use crate::App;
 pub const COVERED: Color32 = Color32::from_rgb(92, 184, 92);
 pub const UNREACHABLE: Color32 = Color32::from_rgb(90, 140, 230);
 /// New code not counted yet: run by unsaved segments (drafts too) or by the segment being
-/// played, and by no saved clean segment. It counts once saved (and clean).
+/// played, and by no segment that counts. A segment counts once it is saved, clean, and a
+/// full pass of its current content is in the database (`App::live_pending` says which is
+/// missing).
 pub const LIVE: Color32 = Color32::from_rgb(214, 226, 110);
 /// Run only by dirty segments, the last time each played: it counts once they are clean.
 pub const DIRTY_ONLY: Color32 = Color32::from_rgb(58, 92, 62);
@@ -483,7 +485,7 @@ impl CovState {
             out.push((COVERED, "covered"));
         }
         if any(&|i| live(i) > 0) {
-            out.push((LIVE, "new, unsaved"));
+            out.push((LIVE, "new, not counted yet"));
         }
         if any(&|i| c[i].dirty > 0 && live(i) == 0) {
             out.push((DIRTY_ONLY, "dirty only"));
@@ -528,6 +530,23 @@ pub(crate) fn take_prg_flags(core: &mut decomp_dj::libretro::Core) -> Option<Vec
 }
 
 impl App {
+    /// Why what the selected segment `id` runs doesn't count yet, for the "+N new" line:
+    /// unsaved, dirty, or saved and clean but with no full pass of its current content in
+    /// the database (edited outside dj-gui, or played with another core or setup).
+    fn live_pending(&self, id: &str) -> &'static str {
+        let Some(col) = &self.col else { return "not counted yet" };
+        let unsaved = self.edited.contains(id) || col.is_draft(id);
+        let dirty = col.replays.contains_key(id) && col.tree_status(id) == decomp_dj::collection::Status::Dirty;
+        let counted = self.cov.report.as_ref().is_some_and(|r| r.detail.per_segment_prg.contains_key(id));
+        match (unsaved, dirty) {
+            (true, false) => "counted once saved",
+            (true, true) => "counted once saved and clean",
+            (false, true) => "counted once the segment is clean",
+            (false, false) if !counted => "not counted: no full pass of its current content is recorded",
+            (false, false) => "not counted yet",
+        }
+    }
+
     /// The report is out of date: rebuild it the next time it is needed.
     pub(crate) fn coverage_stale(&mut self) {
         self.cov.stale = true;
@@ -612,10 +631,10 @@ impl App {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             for (v, name, tip) in [
+                (MapView::Hidden, "Hide", "Hide the map"),
                 (MapView::Combined, "Combined", "Coverage, with parity's purple, orange and red over it"),
                 (MapView::Coverage, "Coverage", "Coverage only"),
                 (MapView::Parity, "Parity", "Parity with the comparison core only"),
-                (MapView::Hidden, "Hidden", "Hide the map"),
             ] {
                 if ui.selectable_label(self.map_view == v, RichText::new(name).small()).on_hover_text(tip).clicked() {
                     self.map_view = v;
@@ -668,9 +687,9 @@ impl App {
                 ui.horizontal(|ui| {
                     let title = crate::col_title(self.col.as_ref(), id);
                     let n = cov.live.segment;
-                    let text = if n > 0 { RichText::new(format!("+{n} new in this segment, counted once saved")).small().strong().color(LIVE) } else { RichText::new("No new code in this segment").small().weak() };
+                    let text = if n > 0 { RichText::new(format!("+{n} new in this segment, {}", self.live_pending(id))).small().strong().color(LIVE) } else { RichText::new("No new code in this segment").small().weak() };
                     ui.label(text).on_hover_text(format!(
-                        "Code that \"{title}\" runs (while playing now, or in its last full pass since it changed) and that no saved clean segment runs. It counts once the segment is clean and saved."
+                        "Code that \"{title}\" runs (while playing now, or in its last full pass since it changed) and that no segment that counts runs. A segment counts once it is saved, clean, and a full pass of its current content is recorded in the local database (playing it from its start to its end records one)."
                     ));
                 });
             }
@@ -731,7 +750,7 @@ impl App {
                             ui.label(format!("{} of {} bytes ran as an opcode", c.covered, c.units));
                         }
                         if live_new > 0 {
-                            ui.label(RichText::new(format!("+{live_new} new, counted once saved")).color(LIVE));
+                            ui.label(RichText::new(format!("+{live_new} new, not counted yet")).color(LIVE));
                         }
                         if has_parity && view != MapView::Coverage {
                             let pc = cov.parity_cells.get(i).copied().unwrap_or_default();

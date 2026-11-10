@@ -8,10 +8,13 @@ file = "tetris_usa.nes"
 
 [core]
 name = "mesen"
-build = "mesen@0102910c+dj.34266c1a"
+build = "mesen@0102910c+dj.544b752e"
 sha256 = ""
 
 [core.options]
+# Lets the game see Left+Right or Up+Down held at once, as a real NES does. TAS movies
+# use these "invalid" presses (the Mode B TAS does); stock Mesen reads them as neither.
+mesen_allow_invalid_input = "enabled"
 mesen_aspect_ratio = "Auto"
 mesen_audio_sample_rate = "48000"
 mesen_controllerturbospeed = "Fast"

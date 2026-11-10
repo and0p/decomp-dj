@@ -29,9 +29,16 @@ uuid = { version = "1", features = ["v4"] }
 zstd = "0.13"
 object = { version = "0.36", default-features = false, features = ["read_core", "elf", "std"] }
 base64 = "0.22"
+md-5 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+sha1 = "0.10"
+crc32fast = "1"
 
 [profile.release]
 debug = 1
 
 [target."cfg(unix)".dependencies]
 libc = "0.2"
+
+[build-dependencies]
+embed-resource = "3.0.12"

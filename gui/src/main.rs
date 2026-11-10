@@ -34,7 +34,14 @@ fn main() -> eframe::Result {
     decomp_dj::isolate::run_if_worker();
     let start = std::env::args().nth(1).map(PathBuf::from);
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 860.0]).with_min_inner_size([800.0, 560.0]).with_title("decomp-dj"),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1280.0, 860.0])
+            .with_min_inner_size([800.0, 560.0])
+            .with_title("decomp-dj")
+            // The window, taskbar (Windows) and Dock (macOS) icon. On Wayland the desktop shows
+            // the icon of the desktop entry with this app id (gui/linux/).
+            .with_app_id("decomp-dj")
+            .with_icon(std::sync::Arc::new(eframe::icon_data::from_png_bytes(include_bytes!("../../assets/icon_gui.png")).expect("assets/icon_gui.png is a PNG"))),
         ..Default::default()
     };
     eframe::run_native(

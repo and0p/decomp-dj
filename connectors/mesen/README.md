@@ -28,6 +28,10 @@ debugger, so the patch adds a small hook instead of reusing it.
 
 - `retro_load_game` sizes the regions for the loaded game (`DjCoverage::OnLoad`), so
   they can be read right after loading.
+- Adds the core option `mesen_allow_invalid_input` (default `disabled`). Enabled, it
+  sets Mesen's `AllowInvalidInput` flag, so the game sees Left+Right or Up+Down held at
+  once, as on a real NES. The libretro core had no way to turn it on, and TAS movies rely
+  on it ([docs/tas.md](../../docs/tas.md#sync)).
 
 Regions, in index order: `RAM` (2 KB internal), `PRG` (PRG ROM), `WRAM`, `SRAM`, all
 with `cpu` `"6502"` (connector API version 2). `PRG` hands out the mapper's PRG ROM as

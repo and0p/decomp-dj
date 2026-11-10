@@ -81,6 +81,40 @@ enum Cmd {
     },
     /// Show the segment tree with clean and dirty marks (no emulation)
     Status { dir: PathBuf },
+    /// Import a BizHawk TAS movie (.bk2) as a new root segment, and print its id
+    ImportTas {
+        dir: PathBuf,
+        file: PathBuf,
+        /// Title of the new segment (default: the game and the movie's author)
+        #[arg(long)]
+        title: Option<String>,
+        /// Refuse a movie made with a different ROM, instead of warning
+        #[arg(long)]
+        strict: bool,
+        /// ROM to check the movie against (default: the one in .local/local.toml)
+        #[command(flatten)]
+        local: Local,
+    },
+    /// Export the chain from the root segment down to SEGMENT as a BizHawk TAS movie (.bk2)
+    ExportTas {
+        dir: PathBuf,
+        segment: String,
+        /// The movie to write (.bk2)
+        #[arg(long)]
+        out: PathBuf,
+        /// The last frame of SEGMENT to include, counted from its start (default: its last frame)
+        #[arg(long)]
+        through: Option<u64>,
+        /// The movie's author
+        #[arg(long)]
+        author: Option<String>,
+        /// Refuse a chain with what the movie can't carry (resets, [WRITE], [RNG], [DEVICE], a snapshot start), instead of leaving it out with a warning
+        #[arg(long)]
+        strict: bool,
+        /// ROM the movie names (default: the one in .local/local.toml)
+        #[command(flatten)]
+        local: Local,
+    },
     /// Play one segment (and its ancestors), check hashes, and save screenshots
     Play {
         dir: PathBuf,
@@ -300,6 +334,8 @@ fn real_main() -> Result<()> {
         Cmd::Init { dir, name, rom, core, core_build, options, symbols } => init(&dir, &name, &rom, &core, core_build, &options, symbols.as_deref()),
         Cmd::New { dir, parent, title, frames } => new_replay(&dir, parent, &title, frames),
         Cmd::Status { dir } => status(&dir),
+        Cmd::ImportTas { dir, file, title, strict, local } => import_tas(&dir, &file, title.as_deref(), strict, &local),
+        Cmd::ExportTas { dir, segment, out, through, author, strict, local } => export_tas(&dir, &segment, &out, through, author.as_deref(), strict, &local),
         Cmd::Play { dir, id, local, screenshots, shot, no_cache, accept } => play(&dir, &id, &local, screenshots, shot, no_cache, accept),
         Cmd::Run { dir, local, from_scratch, accept, screenshots } => run(&dir, &local, from_scratch, accept, screenshots),
         Cmd::Report { dir, local, json, gaps } => report(&dir, &local, json, gaps),
@@ -327,6 +363,7 @@ fn real_main() -> Result<()> {
 fn cmd_dir(cmd: &Cmd) -> Option<&Path> {
     Some(match cmd {
         Cmd::Init { .. } => return None,
+        Cmd::ImportTas { dir, .. } | Cmd::ExportTas { dir, .. } => dir,
         Cmd::New { dir, .. } | Cmd::Status { dir } | Cmd::Play { dir, .. } | Cmd::Run { dir, .. } | Cmd::Report { dir, .. } | Cmd::Annotations { dir, .. } | Cmd::Hydrate { dir, .. } | Cmd::Clean { dir, .. } => dir,
         Cmd::Xref { dir, .. } | Cmd::Summary { dir, .. } | Cmd::Gaps { dir, .. } | Cmd::Function { dir, .. } | Cmd::Frontier { dir, .. } | Cmd::CheckConnector { dir, .. } => dir,
         Cmd::Snapshot { dir, .. } | Cmd::Sql { dir, .. } | Cmd::Worker { dir } | Cmd::Mcp { dir, .. } | Cmd::Repin { dir, .. } | Cmd::Upgrade { dir } => dir,
@@ -435,6 +472,55 @@ fn new_replay(dir: &Path, parent: Option<String>, title: &str, frames: u64) -> R
     col.replays.insert(id.clone(), r);
     col.save_replay(&id)?;
     println!("{}", col.paths[&id].display());
+    Ok(())
+}
+
+/// The project's ROM, for checking a movie against or naming in one: `--rom`, else the one
+/// in the settings. None when neither is set.
+fn tas_rom(col: &Collection, local: &Local) -> Result<Option<Vec<u8>>> {
+    match local.rom.clone().or(col.settings()?.rom) {
+        Some(p) => Ok(Some(std::fs::read(&p).with_context(|| format!("reading the ROM {}", p.display()))?)),
+        None => Ok(None),
+    }
+}
+
+fn import_tas(dir: &Path, file: &Path, title: Option<&str>, strict: bool, local: &Local) -> Result<()> {
+    let mut col = Collection::open(dir)?;
+    let rom = tas_rom(&col, local)?;
+    let ctx = decomp_dj::tas::Ctx { col: &col, rom: rom.as_deref() };
+    let imp = decomp_dj::tas::import(&ctx, file, title, strict)?;
+    for w in &imp.warnings {
+        eprintln!("warning: {w}");
+    }
+    let id = imp.replay.id()?.to_string();
+    let frames = imp.replay.frames()?;
+    let lines = imp.replay.lines.len();
+    col.replays.insert(id.clone(), imp.replay);
+    col.save_replay(&id)?;
+    eprintln!(
+        "imported {} frames ({lines} lines, {} subtitles) from {} as a root segment; play it (dj play {} {}) to record its hashes and see how far it stays in sync",
+        frames,
+        imp.movie.markers.len(),
+        imp.movie.meta.emulator,
+        dir.display(),
+        &id[..8]
+    );
+    println!("{id}");
+    Ok(())
+}
+
+fn export_tas(dir: &Path, segment: &str, out: &Path, through: Option<u64>, author: Option<&str>, strict: bool, local: &Local) -> Result<()> {
+    let col = Collection::open(dir)?;
+    decomp_dj::tas::check_ext(out)?;
+    let id = col.resolve(segment)?.to_string();
+    let rom = tas_rom(&col, local)?;
+    let ctx = decomp_dj::tas::Ctx { col: &col, rom: rom.as_deref() };
+    let ex = decomp_dj::tas::export(&ctx, decomp_dj::tas::ExportEnd { segment: &id, through }, strict, author)?;
+    for w in &ex.warnings {
+        eprintln!("warning: {w}");
+    }
+    std::fs::write(out, &ex.bytes).with_context(|| format!("writing {}", out.display()))?;
+    eprintln!("wrote {} frames ({} segment{}) to {}", ex.frames, ex.segments, if ex.segments == 1 { "" } else { "s" }, out.display());
     Ok(())
 }
 

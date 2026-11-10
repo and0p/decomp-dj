@@ -1,6 +1,16 @@
 # Plan: importing and exporting TAS movies
 
-Status: proposed 2026-11-10, not started.
+Status: proposed 2026-11-10. Done 2026-11-10: `player/src/tas/` reads and writes `.bk2`,
+with profiles for NES, SNES, GB/GBC, GBA and N64; `dj import-tas` and `dj export-tas`;
+[docs/tas.md](../docs/tas.md). Checked by exporting and importing chains on Thwaite (NES),
+the GBA test and an N64 game: each reaches the chain's end hash.
+
+Scope cut 2026-11-10: `.bk2` only. Readers and writers for `.fm2`, `.lsmv`, `.mmo`, `.m64`
+(with its play-along input hook) and `.bsv` were written and checked, then dropped to keep
+the surface small; they were never committed. The research on them below stays for if
+they come back.
+
+Left for `.bk2`: see "Finishing `.bk2`" at the end.
 
 ## The goal
 
@@ -344,3 +354,23 @@ checks that for every format.
 - **Movie identity:** should exported movies carry the chain's end hash in their
   comments, so a later import can reconnect to it? That's cheap and harmless, so probably
   yes.
+
+## Finishing `.bk2`
+
+Done 2026-11-10:
+
+- 22 published BizHawk movies (TASVideos, every supported console) import. They showed
+  BizHawk's whole-file NES SHA-1 (the export had hashed without the iNES header),
+  zstd-compressed members (`MovieSaveRam.bin.zst`), and BizHawk 2.6 to 2.11's N64
+  `A Up`-style stick helpers, which are now ignored. The fixtures aren't kept in the repo.
+- Super Painter (NES, freeware) syncs to its ending on Mesen. Exporting it again matches
+  BizHawk's file frame for frame.
+- Four Score export and import, with BizHawk's port-based player numbering (its P2 is the
+  console's player 3), and `SyncSettings.json` for NES ports.
+
+Left:
+
+1. Open an exported movie in BizHawk (skipped for now).
+2. Sync for SNES, GB, GBA and N64 movies: no free game with a published BizHawk movie
+   was found, and there is no SNES or GB core here.
+3. **GUI** import and export (step 3 above).

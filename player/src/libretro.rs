@@ -245,6 +245,9 @@ thread_local! {
 }
 
 static CORE_LOADED: [AtomicBool; SLOTS] = [AtomicBool::new(false), AtomicBool::new(false)];
+/// Where each slot's `retro_run` lives, while a core is loaded there (0: none): two slots
+/// with the same address would be one library instance shared by two cores.
+static CORE_RUN: [std::sync::atomic::AtomicUsize; SLOTS] = [std::sync::atomic::AtomicUsize::new(0), std::sync::atomic::AtomicUsize::new(0)];
 
 fn with_host<R>(slot: usize, f: impl FnOnce(&mut Host) -> R) -> Option<R> {
     HOST.with(|h| h.borrow_mut()[slot].as_mut().map(f))
@@ -655,6 +658,7 @@ impl Core {
         if r.is_err() {
             HOST.with(|h| h.borrow_mut()[slot] = None);
             CORE_LOADED[slot].store(false, Ordering::SeqCst);
+            CORE_RUN[slot].store(0, Ordering::SeqCst);
         }
         r
     }
@@ -686,6 +690,21 @@ impl Core {
 
         unsafe {
             let lib = libloading::Library::new(core_path).with_context(|| format!("loading core {}", core_path.display()))?;
+            // One library instance must never serve two slots: its callbacks and globals
+            // would be shared. macOS hands back an already-loaded library when the path asked
+            // for is that library's install name, which a copy of a file built with its
+            // absolute path as install name (`cc -o /abs/lib.dylib`) has. Checked before
+            // any of its functions is called, so the other core isn't touched.
+            {
+                let run = lib.get::<unsafe extern "C" fn()>(b"retro_run\0").map(|f| *f as usize).unwrap_or(0);
+                if let Some(other) = (0..SLOTS).find(|o| *o != slot && run != 0 && CORE_RUN[*o].load(Ordering::SeqCst) == run) {
+                    bail!(
+                        "{} is the same loaded library as the core in slot {other}, so the two would share one instance. On macOS this happens when the library's install name (otool -D) is the path being opened and a copy of it is already loaded; rebuild it with a relative install name (-install_name @rpath/NAME), or load the original first",
+                        core_path.display()
+                    );
+                }
+                CORE_RUN[slot].store(run, Ordering::SeqCst);
+            }
             macro_rules! sym {
                 ($name:literal) => {
                     *lib.get(concat!($name, "\0").as_bytes()).with_context(|| format!("core is missing {}", $name))?
@@ -1180,6 +1199,7 @@ impl Drop for Core {
         drop(ctx);
         HOST.with(|h| h.borrow_mut()[self.slot] = None);
         CORE_LOADED[self.slot].store(false, Ordering::SeqCst);
+        CORE_RUN[self.slot].store(0, Ordering::SeqCst);
     }
 }
 

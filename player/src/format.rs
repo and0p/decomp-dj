@@ -99,7 +99,7 @@ pub const DEVICE_ANALOG: u32 = 5;
 pub const DEVICE_POINTER: u32 = 6;
 
 /// One input value as libretro addresses it: `input_state(port, device, index, id)`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct InputKey {
     pub port: u32,
     pub device: u32,

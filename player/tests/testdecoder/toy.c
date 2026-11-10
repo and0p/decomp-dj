@@ -8,8 +8,11 @@
  *   50        HALT
  *   60 rr     LDL: reads 2 bytes of data at pc + 2 + rr
  *   EE        a broken answer (an unknown kind), which the player must refuse
+ *   CC        crashes the decoder (a write through NULL)
+ *   DD        hangs the decoder (loops forever)
  *   FF        not an instruction
- *   others    1-byte instructions */
+ *   others    1-byte instructions
+ * Built with -DTOY_CRASH_IN_TABLES, dj_decoders itself crashes. */
 #include "../../../decoders/include/dj_decoder.h"
 
 static void toy_decode(const uint8_t* b, size_t n, uint64_t pc, uint32_t mode, struct dj_instruction* out) {
@@ -50,6 +53,13 @@ static void toy_decode(const uint8_t* b, size_t n, uint64_t pc, uint32_t mode, s
 		out->length = 1;
 		out->kind = 9;
 		break;
+	case 0xCC:
+		*(volatile int*) 0 = 1;
+		break;
+	case 0xDD:
+		for (volatile int spin = 1; spin;) {
+		}
+		break;
 	case 0xFF:
 		break;
 	default:
@@ -64,6 +74,9 @@ static const struct dj_decoder toy = {
 static const struct dj_decoder* const all[] = { &toy };
 
 const struct dj_decoder* const* dj_decoders(size_t* count) {
+#ifdef TOY_CRASH_IN_TABLES
+	*(volatile int*) 0 = 1;
+#endif
 	*count = 1;
 	return all;
 }

@@ -283,7 +283,11 @@ impl Project {
     pub fn uncovered_ranges(&mut self, _sort: GapSort, limit: usize, cursor: usize) -> Result<Page<UncoveredRange>> {
         let (prg, flags) = self.need_flags()?;
         let cpu = self.cpu.clone();
-        let (mut exec, from_flags) = analysis::executed_bytes(cpu.as_deref().and_then(|c| self.col.decoders.get(c)), &prg, &flags);
+        let (mut exec, from_flags) = match cpu.as_deref().and_then(|c| self.col.decoders.get(c)) {
+            // A plugin decodes the lengths in a worker.
+            Some(crate::decode::DecoderRef::Plugin(p)) if !analysis::has_operand_flags(&flags) => (p.executed_bytes(&prg, &flags)?, false),
+            dec => analysis::executed_bytes(dec.and_then(|d| d.built_in()), &prg, &flags),
+        };
         let region = self.report()?.detail.region.clone();
         self.mark_annotated(&mut exec)?;
         let mut rows: Vec<UncoveredRange> = analysis::uncovered_ranges(&exec)

@@ -12,7 +12,7 @@ use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
 
 use crate::collection::{sha256_file, Collection};
-use crate::format::Command;
+use crate::format::{Command, InputKey};
 use crate::libretro::{Core, Frame, COMPARISON, MEMORY_SYSTEM_RAM};
 use crate::player::{restore_inputs_on, write_memory};
 
@@ -151,38 +151,32 @@ impl Comparison {
     /// is the baseline's library (the same file is loaded from a private copy) and `rom` the
     /// project's ROM.
     pub fn open(col: &Collection, name: &str, baseline_core: &Path, rom: Option<&Path>) -> Result<Comparison> {
-        let cfg = col.config.compare.iter().find(|c| c.name == name).ok_or_else(|| anyhow!("no [[compare]] entry is named \"{name}\""))?;
-        let path = cfg.path.as_ref().ok_or_else(|| anyhow!("[[compare]] \"{name}\" has no path: set `path` (in config.toml, or in .local/local.toml for this machine)"))?;
-        let path = crate::libretro::library_path(&if path.is_relative() { col.root.join(path) } else { path.clone() });
-        let baseline_core = &crate::libretro::library_path(baseline_core);
-        if !path.is_file() {
-            bail!("the core library {} doesn't exist", path.display());
-        }
-        let build = sha256_file(&path)?;
-        if !cfg.sha256.is_empty() && build != cfg.sha256 {
-            bail!("core {} has sha256 {build}, but [[compare]] \"{name}\" is pinned to {}", path.display(), cfg.sha256);
-        }
-        let work = col.local_dir().join("compare").join(sanitize(name));
-        std::fs::create_dir_all(&work)?;
+        Comparison::open_spec(&OpenSpec::resolve(col, name, baseline_core, rom)?)
+    }
+
+    /// Loads a comparison core as `spec` says.
+    pub fn open_spec(spec: &OpenSpec) -> Result<Comparison> {
+        let (name, path) = (&spec.name, &spec.library);
+        std::fs::create_dir_all(&spec.work)?;
         // A library is loaded once per process: the baseline's own file would share its globals.
-        let same = std::fs::canonicalize(&path).ok().is_some_and(|p| std::fs::canonicalize(baseline_core).ok() == Some(p));
+        let same = std::fs::canonicalize(path).ok().is_some_and(|p| std::fs::canonicalize(&spec.baseline_library).ok() == Some(p));
         let (load_path, copy) = if same {
             let file = path.file_name().ok_or_else(|| anyhow!("bad core path {}", path.display()))?.to_string_lossy().into_owned();
-            let copy = work.join(format!("{}-{}", std::process::id(), file));
-            std::fs::copy(&path, &copy).with_context(|| format!("copying {} to load it a second time", path.display()))?;
+            let copy = spec.work.join(format!("{}-{}", std::process::id(), file));
+            std::fs::copy(path, &copy).with_context(|| format!("copying {} to load it a second time", path.display()))?;
             (copy.clone(), Some(copy))
         } else {
             (path.clone(), None)
         };
         let loaded = (|| -> Result<Comparison> {
-            let mut core = Core::load_in(COMPARISON, &load_path, &work, &cfg.options)?;
-            match &cfg.content {
-                None | Some(Content::Rom(true)) => {
-                    let rom = rom.ok_or_else(|| anyhow!("no ROM is set for this project"))?;
+            let mut core = Core::load_in(COMPARISON, &load_path, &spec.work, &spec.options)?;
+            match &spec.content {
+                Loads::Rom => {
+                    let rom = spec.rom.as_ref().ok_or_else(|| anyhow!("no ROM is set for this project"))?;
                     core.load_game(rom)?;
                 }
-                Some(Content::Rom(false)) => core.load_no_game()?,
-                Some(Content::Path(p)) => core.load_game(&if p.is_relative() { col.root.join(p) } else { p.clone() })?,
+                Loads::Nothing => core.load_no_game()?,
+                Loads::File(p) => core.load_game(p)?,
             }
             let sync_ptr = core.proc("dj_sync");
             let write_ptr = core.proc("dj_write");
@@ -192,14 +186,14 @@ impl Comparison {
             let run_ptr = core.proc("dj_run");
             let check_fn: Option<CheckFn> = (!check_ptr.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, CheckFn>(check_ptr) });
             let run_fn: Option<RunFn> = (!run_ptr.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, RunFn>(run_ptr) });
-            match cfg.sync {
+            match spec.mode {
                 SyncMode::DjSync if sync_fn.is_none() => bail!("the core has no dj_sync, which [[compare]] \"{name}\" asks for (sync = \"dj_sync\", the default). For the same emulator as the baseline, sync = \"state\" syncs by save state instead"),
                 SyncMode::State => {
                     core.serialize().context("sync = \"state\" needs save states, and this core can't save one")?;
                 }
                 _ => {}
             }
-            Ok(Comparison { name: name.to_string(), core, mode: cfg.sync, sync_fn, write_fn, check_fn, run_fn, build: build.clone(), copy: None })
+            Ok(Comparison { name: name.to_string(), core, mode: spec.mode, sync_fn, write_fn, check_fn, run_fn, build: spec.build.clone(), copy: None })
         })();
         match loaded {
             Ok(mut c) => {
@@ -220,6 +214,11 @@ impl Comparison {
     /// `dj_sync` is told. `boot` marks a fresh power-on (frame 0 of a root segment).
     /// An error is a sync that went wrong (as opposed to one the core declined).
     pub fn sync(&mut self, baseline: &mut Core, col: &Collection, id: &str, frame: u64, power_on_frame: u64, boot: bool) -> Result<SyncOutcome> {
+        self.sync_with(baseline, power_on_frame, boot, &InputState::at(col, id, frame)?)
+    }
+
+    /// `sync`, with the inputs held at that frame given.
+    pub fn sync_with(&mut self, baseline: &mut Core, power_on_frame: u64, boot: bool, inputs: &InputState) -> Result<SyncOutcome> {
         let out = match self.mode {
             SyncMode::State => {
                 let state = baseline.serialize().context("saving the baseline's state")?;
@@ -241,7 +240,7 @@ impl Comparison {
             }
         };
         if out == SyncOutcome::Synced {
-            restore_inputs_on(&mut self.core, col, id, frame)?;
+            inputs.apply(&mut self.core);
         }
         Ok(out)
     }
@@ -252,26 +251,41 @@ impl Comparison {
         restore_inputs_on(&mut self.core, col, id, 0)
     }
 
+    /// `enter`, with the inputs held at frame 0 given.
+    pub fn enter_with(&mut self, inputs: &InputState) {
+        inputs.apply(&mut self.core);
+    }
+
     /// Applies frame `frame`'s lines of `id` and runs that frame. `baseline` is handed to
     /// `dj_write` for `[WRITE]` lines.
     pub fn step(&mut self, baseline: &Core, col: &Collection, id: &str, frame: u64, capture: bool) -> Result<Stepped> {
-        let r = &col.replays[id];
+        self.step_with(Some(baseline), &Action::of_frame(col, id, frame), capture)
+    }
+
+    /// Whether a frame's `actions` need the baseline (a `[WRITE]` for `dj_write`).
+    pub fn needs_baseline(&self, actions: &[Action]) -> bool {
+        self.mode == SyncMode::DjSync && self.write_fn.is_some() && actions.iter().any(|a| matches!(a, Action::Write { .. }))
+    }
+
+    /// `step`, with the frame's lines given as `actions`. `baseline` is needed only for
+    /// `[WRITE]` lines that go to `dj_write`.
+    pub fn step_with(&mut self, baseline: Option<&Core>, actions: &[Action], capture: bool) -> Result<Stepped> {
         let mut impulses = vec![];
         let mut needs_sync = false;
-        let first = r.lines.partition_point(|l| l.frame < frame);
-        for line in r.lines[first..].iter().take_while(|l| l.frame == frame) {
-            match &line.command {
-                Command::Input { key, value, impulse } => {
+        for action in actions {
+            match action {
+                Action::Input { key, value, impulse } => {
                     self.core.set_input(*key, *value);
                     if *impulse {
                         impulses.push(*key);
                     }
                 }
-                Command::Device { port, device } => self.core.set_port_device(*port, *device),
-                Command::Write { region, address, bytes } => match (self.mode, self.write_fn) {
+                Action::Device { port, device } => self.core.set_port_device(*port, *device),
+                Action::Write { region, address, bytes } => match (self.mode, self.write_fn) {
                     // The same emulator: the write goes straight into its memory.
                     (SyncMode::State, _) => write_memory(&mut self.core, region, *address, bytes)?,
                     (SyncMode::DjSync, Some(f)) => {
+                        let baseline = baseline.ok_or_else(|| anyhow!("a [WRITE] for dj_write needs the baseline"))?;
                         let h = handle(baseline);
                         let region_c = CString::new(region.as_str())?;
                         let mut buf = vec![0u8; 512];
@@ -284,9 +298,8 @@ impl Comparison {
                     // No way to follow the write: sync again after this frame.
                     (SyncMode::DjSync, None) => needs_sync = true,
                 },
-                Command::Event { .. } | Command::Screenshot => {}
-                Command::Reset => self.core.reset(),
-                Command::Rng { .. } => bail!("[RNG] is not supported yet"),
+                Action::Reset => self.core.reset(),
+                Action::Rng => bail!("[RNG] is not supported yet"),
             }
         }
         let (out, tick_failed) = match self.run_fn {
@@ -351,6 +364,367 @@ impl Drop for Comparison {
             // Unix keeps a loaded library's file alive after it is removed.
             let _ = std::fs::remove_file(c);
         }
+    }
+}
+
+/// What a comparison core loads.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum Loads {
+    /// The project's ROM.
+    Rom,
+    Nothing,
+    File(PathBuf),
+}
+
+/// Everything needed to load a comparison core, resolved from the project: what a
+/// comparison worker gets (.agents/ISOLATION_PLAN.md).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct OpenSpec {
+    pub name: String,
+    pub library: PathBuf,
+    /// The library's sha256: the build parity results belong to.
+    pub build: String,
+    pub mode: SyncMode,
+    pub content: Loads,
+    pub options: BTreeMap<String, String>,
+    /// `.local/compare/<name>/`: the core's save and system folders.
+    pub work: PathBuf,
+    /// The baseline core and its options, for a worker's copy of it (the handle `dj_sync`
+    /// and friends get).
+    pub baseline_library: PathBuf,
+    pub baseline_options: BTreeMap<String, String>,
+    pub rom: Option<PathBuf>,
+}
+
+impl OpenSpec {
+    /// Resolves `[[compare]]` entry `name`, checking the library exists and matches its pin.
+    pub fn resolve(col: &Collection, name: &str, baseline_core: &Path, rom: Option<&Path>) -> Result<OpenSpec> {
+        let cfg = col.config.compare.iter().find(|c| c.name == name).ok_or_else(|| anyhow!("no [[compare]] entry is named \"{name}\""))?;
+        let path = cfg.path.as_ref().ok_or_else(|| anyhow!("[[compare]] \"{name}\" has no path: set `path` (in config.toml, or in .local/local.toml for this machine)"))?;
+        let path = crate::libretro::library_path(&if path.is_relative() { col.root.join(path) } else { path.clone() });
+        if !path.is_file() {
+            bail!("the core library {} doesn't exist", path.display());
+        }
+        let build = sha256_file(&path)?;
+        if !cfg.sha256.is_empty() && build != cfg.sha256 {
+            bail!("core {} has sha256 {build}, but [[compare]] \"{name}\" is pinned to {}", path.display(), cfg.sha256);
+        }
+        let content = match &cfg.content {
+            None | Some(Content::Rom(true)) => Loads::Rom,
+            Some(Content::Rom(false)) => Loads::Nothing,
+            Some(Content::Path(p)) => Loads::File(if p.is_relative() { col.root.join(p) } else { p.clone() }),
+        };
+        Ok(OpenSpec {
+            name: name.to_string(),
+            library: path,
+            build,
+            mode: cfg.sync,
+            content,
+            options: cfg.options.clone(),
+            work: col.local_dir().join("compare").join(sanitize(name)),
+            baseline_library: crate::libretro::library_path(baseline_core),
+            baseline_options: col.config.core.options.clone(),
+            rom: rom.map(Path::to_path_buf),
+        })
+    }
+}
+
+/// The inputs held and devices plugged in at a frame: what a sync leaves the comparison
+/// core with (`restore_inputs_on`, as data).
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct InputState {
+    pub devices: Vec<(u32, u32)>,
+    pub held: Vec<(InputKey, i16)>,
+}
+
+impl InputState {
+    pub fn at(col: &Collection, id: &str, frame: u64) -> Result<InputState> {
+        let mut devs = crate::player::devices_at_start(col, id)?;
+        let mut held: BTreeMap<InputKey, i16> = BTreeMap::new();
+        for l in col.replays[id].lines.iter().take_while(|l| l.frame < frame) {
+            match &l.command {
+                Command::Input { key, value, impulse: false } => {
+                    held.insert(*key, *value);
+                }
+                Command::Device { port, device } => {
+                    devs.insert(*port, *device);
+                }
+                _ => {}
+            }
+        }
+        Ok(InputState { devices: devs.into_iter().collect(), held: held.into_iter().collect() })
+    }
+
+    pub fn apply(&self, core: &mut Core) {
+        core.clear_inputs();
+        for (key, value) in &self.held {
+            core.set_input(*key, *value);
+        }
+        for (port, dev) in &self.devices {
+            core.set_port_device(*port, *dev);
+        }
+    }
+}
+
+/// One frame's lines, as a comparison core follows them.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum Action {
+    Input { key: InputKey, value: i16, impulse: bool },
+    Device { port: u32, device: u32 },
+    Write { region: String, address: u64, bytes: Vec<u8> },
+    Reset,
+    Rng,
+}
+
+impl Action {
+    /// The lines of frame `frame` of segment `id` a comparison core acts on.
+    pub fn of_frame(col: &Collection, id: &str, frame: u64) -> Vec<Action> {
+        let r = &col.replays[id];
+        let first = r.lines.partition_point(|l| l.frame < frame);
+        r.lines[first..]
+            .iter()
+            .take_while(|l| l.frame == frame)
+            .filter_map(|l| match &l.command {
+                Command::Input { key, value, impulse } => Some(Action::Input { key: *key, value: *value, impulse: *impulse }),
+                Command::Device { port, device } => Some(Action::Device { port: *port, device: *device }),
+                Command::Write { region, address, bytes } => Some(Action::Write { region: region.clone(), address: *address, bytes: bytes.clone() }),
+                Command::Reset => Some(Action::Reset),
+                Command::Rng { .. } => Some(Action::Rng),
+                Command::Event { .. } | Command::Screenshot => None,
+            })
+            .collect()
+    }
+}
+
+/// The comparison worker (`__dj-worker compare`): the comparison core, and a copy of the
+/// baseline core that the handle given to `dj_sync`, `dj_write` and `dj_check_parity`
+/// points to, loaded with the baseline's state before each of those calls.
+#[derive(Default)]
+pub struct CompareWorker {
+    cmp: Option<Comparison>,
+    shadow: Option<Core>,
+    /// The shadow's private copy of the library, when it's the comparison core's own file.
+    shadow_copy: Option<PathBuf>,
+}
+
+impl Drop for CompareWorker {
+    fn drop(&mut self) {
+        self.cmp = None;
+        self.shadow = None;
+        if let Some(c) = &self.shadow_copy {
+            let _ = std::fs::remove_file(c);
+        }
+    }
+}
+
+fn verdict_json(v: &Verdict) -> serde_json::Value {
+    match v {
+        Verdict::Match => serde_json::json!({ "match": true }),
+        Verdict::Mismatch(w) => serde_json::json!({ "mismatch": w }),
+        Verdict::Skip(w) => serde_json::json!({ "skip": w }),
+    }
+}
+
+impl CompareWorker {
+    /// Loads the baseline's copy. When it's the comparison core's own library, both load
+    /// from private copies of the file, at paths of their own: macOS hands back an
+    /// already-loaded library when the path asked for is its install name, and a library
+    /// built with its absolute path as install name would otherwise have its copy given back
+    /// for the original (the two cores sharing one instance). Loaded first, as in dj's own
+    /// process. Returns the core and its copy's path, to remove.
+    fn load_shadow(spec: &OpenSpec) -> Result<(Core, Option<PathBuf>)> {
+        let work = spec.work.join("baseline");
+        std::fs::create_dir_all(&work)?;
+        let same = std::fs::canonicalize(&spec.library).ok().is_some_and(|p| std::fs::canonicalize(&spec.baseline_library).ok() == Some(p));
+        let copy = if same {
+            let file = spec.baseline_library.file_name().ok_or_else(|| anyhow!("bad core path {}", spec.baseline_library.display()))?.to_string_lossy().into_owned();
+            // Copies left by workers that were killed (a file still loaded elsewhere stays).
+            for e in std::fs::read_dir(&work).into_iter().flatten().flatten() {
+                if e.file_name().to_string_lossy().ends_with(&format!("-{file}")) {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+            let copy = work.join(format!("{}-{file}", std::process::id()));
+            std::fs::copy(&spec.baseline_library, &copy).with_context(|| format!("copying {} for the baseline's copy", spec.baseline_library.display()))?;
+            Some(copy)
+        } else {
+            None
+        };
+        let path = copy.as_deref().unwrap_or(&spec.baseline_library);
+        let core = (|| -> Result<Core> {
+            let mut core = Core::load_in(crate::libretro::BASELINE, path, &work, &spec.baseline_options).context("loading a copy of the baseline core for the comparison core's handle")?;
+            match &spec.rom {
+                Some(rom) => core.load_game(rom)?,
+                None => core.load_no_game()?,
+            }
+            Ok(core)
+        })();
+        match core {
+            Ok(core) => Ok((core, copy)),
+            Err(e) => {
+                if let Some(c) = copy {
+                    let _ = std::fs::remove_file(c);
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// The baseline's copy, with `state` loaded into it.
+    fn shadow<'a>(shadow: &'a mut Option<Core>, state: &[u8]) -> Result<&'a mut Core> {
+        let core = shadow.as_mut().ok_or_else(|| anyhow!("no copy of the baseline is loaded"))?;
+        core.unserialize(state).context("loading the baseline's state into its copy")?;
+        Ok(core)
+    }
+
+    pub fn request(&mut self, cmd: &str, req: crate::isolate::Request) -> crate::isolate::Reply {
+        use serde_json::json;
+        let state = req.bulk.first().map(Vec::as_slice);
+        if cmd == "open" {
+            let spec: OpenSpec = serde_json::from_value(req.args["spec"].clone())?;
+            let (shadow, copy) = Self::load_shadow(&spec)?;
+            self.shadow = Some(shadow);
+            self.shadow_copy = copy;
+            let c = Comparison::open_spec(&spec)?;
+            let info = json!({ "has_check": c.has_check(), "has_write": c.has_write(), "aspect": c.aspect() });
+            self.cmp = Some(c);
+            return Ok((info, vec![]));
+        }
+        let Some(c) = self.cmp.as_mut() else { bail!("no comparison core is loaded") };
+        match cmd {
+            "sync" => {
+                let inputs: InputState = serde_json::from_value(req.args["inputs"].clone())?;
+                let shadow = Self::shadow(&mut self.shadow, state.ok_or_else(|| anyhow!("a sync needs the baseline's state"))?)?;
+                let out = c.sync_with(shadow, req.args["power_on_frame"].as_u64().unwrap_or(0), req.args["boot"].as_bool().unwrap_or(false), &inputs)?;
+                Ok((match out {
+                    SyncOutcome::Synced => json!({ "synced": true }),
+                    SyncOutcome::Failed(why) => json!({ "failed": why }),
+                }, vec![]))
+            }
+            "enter" => {
+                c.enter_with(&serde_json::from_value(req.args["inputs"].clone())?);
+                Ok((json!(null), vec![]))
+            }
+            "step" => {
+                let actions: Vec<Action> = serde_json::from_value(req.args["actions"].clone())?;
+                let baseline = match state {
+                    Some(s) => Some(&*Self::shadow(&mut self.shadow, s)?),
+                    None => None,
+                };
+                let st = c.step_with(baseline, &actions, req.args["capture"].as_bool().unwrap_or(false))?;
+                let size = st.frame.as_ref().map(|f| json!({ "width": f.width, "height": f.height }));
+                Ok((json!({ "needs_sync": st.needs_sync, "tick_failed": st.tick_failed, "frame": size }), st.frame.map(|f| vec![f.rgb]).unwrap_or_default()))
+            }
+            "check" => {
+                let shadow = Self::shadow(&mut self.shadow, state.ok_or_else(|| anyhow!("a parity check needs the baseline's state"))?)?;
+                let v = c.check(shadow, req.args["power_on_frame"].as_u64().unwrap_or(0))?;
+                Ok((verdict_json(&v), vec![]))
+            }
+            other => bail!("unknown comparison request {other}"),
+        }
+    }
+}
+
+/// How long a comparison worker may take: to load, and for anything else.
+const OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A comparison core running in a worker process (.agents/ISOLATION_PLAN.md): the same
+/// calls as [`Comparison`], and a crash or hang in the core ends the worker, not dj.
+pub struct RemoteComparison {
+    pub name: String,
+    pub build: String,
+    pub mode: SyncMode,
+    has_check: bool,
+    has_write: bool,
+    aspect: f32,
+    worker: crate::isolate::Worker,
+}
+
+impl RemoteComparison {
+    pub fn open(col: &Collection, name: &str, baseline_core: &Path, rom: Option<&Path>) -> Result<RemoteComparison> {
+        let spec = OpenSpec::resolve(col, name, baseline_core, rom)?;
+        let mut worker = crate::isolate::Worker::spawn("compare")?;
+        let (info, _) = worker
+            .request("open", serde_json::json!({ "spec": spec }), &[], crate::isolate::timeout(OPEN_TIMEOUT), "while loading")
+            .map_err(|why| if worker.dead().is_some() { anyhow!("the comparison core {why}") } else { anyhow!("{why}") })?;
+        Ok(RemoteComparison {
+            name: spec.name,
+            build: spec.build,
+            mode: spec.mode,
+            has_check: info["has_check"].as_bool().unwrap_or(false),
+            has_write: info["has_write"].as_bool().unwrap_or(false),
+            aspect: info["aspect"].as_f64().unwrap_or(0.0) as f32,
+            worker,
+        })
+    }
+
+    /// Why the worker is gone (it crashed or hung), once it is: the core must be loaded again.
+    pub fn dead(&self) -> Option<&str> {
+        self.worker.dead()
+    }
+
+    fn call(&mut self, cmd: &str, args: serde_json::Value, bulk: &[&[u8]], what: &str) -> Result<(serde_json::Value, Vec<Vec<u8>>)> {
+        self.worker.request(cmd, args, bulk, crate::isolate::timeout(CALL_TIMEOUT), what).map_err(|why| {
+            if self.worker.dead().is_some() {
+                anyhow!("the comparison core {why}; Compare > Restart comparison core loads it again")
+            } else {
+                anyhow!("{why}")
+            }
+        })
+    }
+
+    pub fn sync(&mut self, baseline: &mut Core, col: &Collection, id: &str, frame: u64, power_on_frame: u64, boot: bool) -> Result<SyncOutcome> {
+        let state = baseline.serialize().context("saving the baseline's state")?;
+        let args = serde_json::json!({ "inputs": InputState::at(col, id, frame)?, "power_on_frame": power_on_frame, "boot": boot });
+        let what = if self.mode == SyncMode::DjSync { "while syncing (dj_sync)" } else { "while loading the baseline's state" };
+        let (v, _) = self.call("sync", args, &[&state], what)?;
+        Ok(match v["failed"].as_str() {
+            Some(why) => SyncOutcome::Failed(why.to_string()),
+            None => SyncOutcome::Synced,
+        })
+    }
+
+    pub fn enter(&mut self, col: &Collection, id: &str) -> Result<()> {
+        self.call("enter", serde_json::json!({ "inputs": InputState::at(col, id, 0)? }), &[], "while entering a segment")?;
+        Ok(())
+    }
+
+    pub fn step(&mut self, baseline: &mut Core, col: &Collection, id: &str, frame: u64, capture: bool) -> Result<Stepped> {
+        let actions = Action::of_frame(col, id, frame);
+        let state = if self.mode == SyncMode::DjSync && self.has_write && actions.iter().any(|a| matches!(a, Action::Write { .. })) { Some(baseline.serialize().context("saving the baseline's state")?) } else { None };
+        let bulk: Vec<&[u8]> = state.iter().map(Vec::as_slice).collect();
+        let (v, mut bytes) = self.call("step", serde_json::json!({ "actions": actions, "capture": capture }), &bulk, &format!("while running frame {frame}"))?;
+        let frame = match (&v["frame"], bytes.pop()) {
+            (serde_json::Value::Object(size), Some(rgb)) => Some(Frame { width: size["width"].as_u64().unwrap_or(0) as u32, height: size["height"].as_u64().unwrap_or(0) as u32, rgb }),
+            _ => None,
+        };
+        Ok(Stepped { frame, needs_sync: v["needs_sync"].as_bool().unwrap_or(false), tick_failed: v["tick_failed"].as_str().map(String::from) })
+    }
+
+    pub fn check(&mut self, baseline: &mut Core, power_on_frame: u64) -> Result<Verdict> {
+        let state = baseline.serialize().context("saving the baseline's state")?;
+        let what = if self.has_check { "while checking parity (dj_check_parity)" } else { "while comparing RAM" };
+        let (v, _) = self.call("check", serde_json::json!({ "power_on_frame": power_on_frame }), &[&state], what)?;
+        Ok(if let Some(w) = v["mismatch"].as_str() {
+            Verdict::Mismatch(w.to_string())
+        } else if let Some(w) = v["skip"].as_str() {
+            Verdict::Skip(w.to_string())
+        } else {
+            Verdict::Match
+        })
+    }
+
+    pub fn has_check(&self) -> bool {
+        self.has_check
+    }
+
+    pub fn aspect(&self) -> f32 {
+        self.aspect
+    }
+
+    pub fn has_write(&self) -> bool {
+        self.has_write
     }
 }
 

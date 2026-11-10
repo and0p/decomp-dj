@@ -110,6 +110,14 @@ impl Hydrator {
                 }
             } else {
                 let id = self.targets[self.i].clone();
+                // Left out after it crashed or hung the core in an earlier batch child.
+                if let Some(verdict) = crate::isolate::batch_skipped(col, &id) {
+                    let ev = HydrateEvent { id: id.clone(), action: "skipped", verdict, frames: 0 };
+                    self.events.push(ev.clone());
+                    out.push(ev);
+                    self.i += 1;
+                    continue;
+                }
                 if self.verify {
                     // Its parent may have stayed unclean: its start can't be trusted.
                     let skip = col.replays[&id].parent().filter(|p| col.tree_status(p) != Status::Clean).map(|_| ("skipped", "blocked"));

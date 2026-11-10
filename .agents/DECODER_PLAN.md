@@ -241,7 +241,8 @@ Limits:
 - `analysis::code_region` still prefers regions whose CPU has a *built-in* decoder when
   choosing where coverage rolls up; a CPU only a plugin decodes is still chosen through the
   next rule (a region from the ROM file that a CPU runs), which covers every connector so far.
-- A plugin can crash dj; plugins are trusted like cores.
+- Plugins run in a worker process since 2026-11-10 ([ISOLATION_PLAN.md](ISOLATION_PLAN.md)), so one that
+  crashes or hangs costs a report its functions, not dj.
 - `dj init` names only built-in decoders when it lists the connector's regions.
 
 ### The interface as first sketched (superseded by the header)

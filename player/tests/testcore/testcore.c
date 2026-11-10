@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define RETRO_API_VERSION 1
@@ -73,6 +74,10 @@ void retro_run(void) {
     uint8_t held = 0;
     for (unsigned b = 0; b < 8; b++)
         if (input && input(0, RETRO_DEVICE_JOYPAD, 0, b)) held |= (uint8_t)(1u << b);
+    /* For the batch tests: crash while Select is held, or never return while Start is, when
+     * the environment asks (the core runs in a child dj that inherits it). */
+    if ((held & 4) && getenv("TESTCORE_CRASH_ON_SELECT")) *(volatile int *)0 = 1;
+    if ((held & 8) && getenv("TESTCORE_HANG_ON_START")) for (volatile int spin = 1; spin;) {}
     ram[0]++;
     ram[1] = held;
     ram[2] = (uint8_t)(ram[2] * 31 + held + 1);
@@ -110,6 +115,12 @@ static const char *sync_setting(void) {
     return "ok";
 }
 
+static const char *break_setting(void) {
+    struct retro_variable v = {"testcore_break", NULL};
+    if (env && env(RETRO_ENVIRONMENT_GET_VARIABLE, &v) && v.value) return v.value;
+    return "off";
+}
+
 /* Copies the baseline's RAM (the baseline is another testcore). ram[63] counts boots. */
 int dj_sync(const struct dj_baseline *b, uint64_t frame, uint32_t flags, char *reason, size_t len) {
     const char *s = sync_setting();
@@ -129,6 +140,7 @@ int dj_check_parity(const struct dj_baseline *b, uint64_t frame, char *reason, s
     void *(*mem)(unsigned) = (void *(*)(unsigned))b->get_proc(b->ctx, "retro_get_memory_data");
     if (!mem) { snprintf(reason, len, "no baseline RAM"); return 2; }
     const uint8_t *base = mem(RETRO_MEMORY_SYSTEM_RAM);
+    if (ram[0] == 10 && strcmp(break_setting(), "crash-check") == 0) *(volatile int *)0 = 1;
     for (unsigned i = 0; i < 63; i++)
         if (base[i] != ram[i]) {
             snprintf(reason, len, "RAM 0x%02X is 0x%02X here, 0x%02X in the baseline (frame %llu)", i, ram[i], base[i], (unsigned long long)frame);
@@ -138,18 +150,17 @@ int dj_check_parity(const struct dj_baseline *b, uint64_t frame, char *reason, s
 }
 
 /* The core option `testcore_break` makes the frame where ram[0] becomes 10 go wrong:
- * "mismatch" changes RAM there (a parity failure), "tick" fails the tick with a reason. */
-static const char *break_setting(void) {
-    struct retro_variable v = {"testcore_break", NULL};
-    if (env && env(RETRO_ENVIRONMENT_GET_VARIABLE, &v) && v.value) return v.value;
-    return "off";
-}
+ * "mismatch" changes RAM there (a parity failure), "tick" fails the tick with a reason,
+ * "crash" crashes the core, "hang" never returns, and "crash-check" crashes in
+ * dj_check_parity on that frame. */
 int dj_run(char *reason, size_t len) {
     retro_run();
     if (ram[0] != 10) return 0;
     const char *s = break_setting();
     if (strcmp(s, "mismatch") == 0) ram[2] ^= 0x55;
     if (strcmp(s, "tick") == 0) { snprintf(reason, len, "told to fail the tick"); return 1; }
+    if (strcmp(s, "crash") == 0) *(volatile int *)0 = 1;
+    if (strcmp(s, "hang") == 0) for (volatile int spin = 1; spin;) {}
     return 0;
 }
 

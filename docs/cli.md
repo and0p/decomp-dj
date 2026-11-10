@@ -30,4 +30,13 @@ Common to every command:
 - Ids can be shortened to any unique prefix.
 - `--rom` and `--core` are remembered per project in `.local/local.toml`, so later commands don't need them.
 - Every command that plays takes `--no-db` to run without the local database.
+- `dj run`, `dj clean` and `dj hydrate` play in a child `dj` process that the command
+  watches, so a core that crashes or hangs can't stop the batch. A crash, or a frame that
+  doesn't finish within 30 s (a minute while the core loads), ends the child; the command
+  prints `crashed  <id> <title> at frame N: the core crashed (signal 11, SIGSEGV)` (or "made
+  no progress"), then runs again without that segment and the ones below it (shown as
+  `blocked`), and ends with a list of what was left out and exit code 1. `clean` and
+  `hydrate` keep what they stored before the crash; `run` plays from the start again.
+  `DJ_WORKER_TIMEOUT_SCALE` multiplies the time limits (say for a very slow core);
+  `DJ_IN_PROCESS=1` plays in `dj`'s own process, with no watching (for a debugger).
 - The queries (`xref`, `summary`, `gaps`, `function`, `frontier`) take `--json` for scripts, `--limit` and `--cursor` for paging, and an address as `PRG:0x1F3A`, `0x1F3A` (a PRG offset), `$C123` (a CPU address) or a symbol, optionally `name+0x10`. They read the local database, so clean first (`dj clean`).

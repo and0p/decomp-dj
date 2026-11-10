@@ -344,6 +344,7 @@ impl Session {
     /// Runs the recorder's next frame. `show` captures its video into `last_frame`.
     /// Returns true when the segment has no frames left.
     pub fn advance(&mut self, col: &Collection, rec: &mut Recorder, show: bool) -> Result<bool> {
+        crate::isolate::batch_progress(&rec.id, rec.f);
         if rec.f >= rec.frames {
             return Ok(true);
         }
@@ -461,6 +462,10 @@ impl Session {
         let order: Vec<String> = col.tree_order().into_iter().map(|(id, _)| id.to_string()).collect();
         let mut end_states: HashMap<String, (Vec<u8>, u64)> = HashMap::new();
         for id in &order {
+            // Left out after it crashed or hung the core in an earlier batch child.
+            if crate::isolate::batch_skipped(col, id).is_some() {
+                continue;
+            }
             let chain: Vec<String> = col.chain(id)?.into_iter().map(String::from).collect();
             let result = if from_scratch {
                 let mut start_frame = 0;

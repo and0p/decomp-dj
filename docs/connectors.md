@@ -139,6 +139,12 @@ connector functions. With them `dj_sync` reads whatever it needs from the baseli
 whatever way suits the port: a RAM map, a few watched values, or the save state. The handle
 is only good for the length of the call.
 
+The GUI runs a comparison core in a process of its own, so a crash or a hang in it costs
+the comparison, not the app ([gui.md](gui.md#comparison-cores)). There, the handle points to
+a copy of the baseline core in that process, which has just loaded the baseline's save
+state: it reads exactly what the baseline would, but writing through it changes only the
+copy. A comparison core should only read the baseline.
+
 **When the player syncs.** After every jump (a seek, a step back, choosing a segment,
 switching the comparison on), just before the first frame it shows. While the playhead is
 held (dragging the ruler) it waits for the button to be let go. Playing straight on,

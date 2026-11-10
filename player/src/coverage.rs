@@ -198,28 +198,26 @@ fn opcode_set(flags: &[u8]) -> Vec<bool> {
 /// The last decoding, by a hash of everything it depends on: the decoder, the functions and
 /// where their bytes are, the data ranges and the ROM. Segments don't change it, so the GUI's
 /// rebuild after an edit doesn't decode again.
-static DECODED: std::sync::Mutex<Option<([u8; 32], Vec<AnalyzedFunction>)>> = std::sync::Mutex::new(None);
+static DECODED: std::sync::Mutex<Option<([u8; 32], Vec<AnalyzedFunction>, usize)>> = std::sync::Mutex::new(None);
 
-fn decode_cached(dec: &dyn crate::decode::Decoder, funcs: &[(analysis::Function, u64)], rom: &[u8], data: &[(u64, u64)], in_file: bool) -> Vec<AnalyzedFunction> {
+/// Decodes `funcs` with `dec` (a plugin's in a worker): Ok((functions, a plugin's answers out
+/// of range)), or Err(a sentence) when a plugin's worker crashed, hung or failed.
+fn decode_cached(dec: crate::decode::DecoderRef, funcs: &[(analysis::Function, u64)], rom: &[u8], data: &[(u64, u64)], in_file: bool) -> std::result::Result<(Vec<AnalyzedFunction>, usize), String> {
     let mut h = blake3::Hasher::new();
     h.update(format!("{}\n{in_file}\n{data:?}\n{funcs:?}\n", dec.id()).as_bytes());
     h.update(rom);
     let key: [u8; 32] = h.finalize().into();
-    if let Some((k, v)) = DECODED.lock().unwrap().as_ref() {
+    if let Some((k, v, invalid)) = DECODED.lock().unwrap().as_ref() {
         if *k == key {
-            return v.clone();
+            return Ok((v.clone(), *invalid));
         }
     }
-    let mut out = vec![];
-    let mut headers: Vec<u64> = funcs.iter().map(|(_, h)| *h).collect();
-    headers.sort();
-    headers.dedup();
-    for header in headers {
-        let these: Vec<_> = funcs.iter().filter(|(_, h)| *h == header).map(|(f, _)| f.clone()).collect();
-        out.extend(crate::decode::analyze(dec, &these, rom, data, |f| f.file_offset.or(in_file.then(|| header + f.offset))));
-    }
-    *DECODED.lock().unwrap() = Some((key, out.clone()));
-    out
+    // Each function's bytes: at its file offset (code that runs from a copy in RAM), else
+    // at its region offset past its map's header, when the region comes from the ROM file.
+    let with_bases: Vec<(analysis::Function, Option<u64>)> = funcs.iter().map(|(f, header)| (f.clone(), f.file_offset.or(in_file.then(|| header + f.offset)))).collect();
+    let (out, invalid) = dec.analyze(&with_bases, rom, data)?;
+    *DECODED.lock().unwrap() = Some((key, out.clone(), invalid));
+    Ok((out, invalid))
 }
 
 pub fn build_report(col: &Collection, conn: &Connection, rom: Option<&[u8]>, setup: Option<&str>) -> Result<Report> {
@@ -343,10 +341,15 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
                 f.mode = m;
             }
         }
-        analyzed = decode_cached(dec, &funcs, rom, &data, in_file);
-        let invalid = col.decoders.invalid_answers(&cpu);
-        if invalid > 0 {
-            notes.push(format!("the {cpu} decoder ({}) gave {invalid} answers out of range (an unknown kind, or a length over its max_length); they were read as \"not an instruction\"", dec.id()));
+        match decode_cached(dec, &funcs, rom, &data, in_file) {
+            Ok((a, invalid)) => {
+                analyzed = a;
+                if invalid > 0 {
+                    notes.push(format!("the {cpu} decoder ({}) gave {invalid} answers out of range (an unknown kind, or a length over its max_length); they were read as \"not an instruction\"", dec.id()));
+                }
+            }
+            // A plugin that crashes or hangs costs this report its functions, not dj.
+            Err(why) => notes.push(format!("the {cpu} decoder ({}) {why}: {code} is counted in opcode bytes, without functions or blocks", dec.id())),
         }
     }
     analyzed.sort_by_key(|f| f.func.offset);

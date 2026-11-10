@@ -2,7 +2,7 @@
 //! with the system C compiler; the test is skipped when there is none).
 
 use decomp_dj::collection::Collection;
-use decomp_dj::compare::{Comparison, SyncOutcome, Verdict};
+use decomp_dj::compare::{Comparison, RemoteComparison, SyncOutcome, Verdict};
 use decomp_dj::libretro::MEMORY_SYSTEM_RAM;
 use decomp_dj::player::Session;
 use std::path::{Path, PathBuf};
@@ -32,6 +32,9 @@ fn project(dir: &Path, core: &Path, nodj: &Path) -> Collection {
              [[compare]]\nname = \"dj-fail\"\npath = \"{c}\"\n[compare.options]\ntestcore_sync = \"fail\"\n\
              [[compare]]\nname = \"dj-mismatch\"\npath = \"{c}\"\n[compare.options]\ntestcore_break = \"mismatch\"\n\
              [[compare]]\nname = \"dj-tick\"\npath = \"{c}\"\n[compare.options]\ntestcore_break = \"tick\"\n\
+             [[compare]]\nname = \"dj-crash\"\npath = \"{c}\"\n[compare.options]\ntestcore_break = \"crash\"\n\
+             [[compare]]\nname = \"dj-hang\"\npath = \"{c}\"\n[compare.options]\ntestcore_break = \"hang\"\n\
+             [[compare]]\nname = \"dj-crash-check\"\npath = \"{c}\"\n[compare.options]\ntestcore_break = \"crash-check\"\n\
              [[compare]]\nname = \"nodj\"\npath = \"{}\"\n",
             nodj.display()
         ),
@@ -44,8 +47,12 @@ fn ram(core: &mut decomp_dj::libretro::Core) -> Vec<u8> {
     core.memory(MEMORY_SYSTEM_RAM).unwrap().to_vec()
 }
 
+/// The two tests load cores into the same process-wide slots: one at a time.
+static SLOTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn comparison_cores() {
+    let _slots = SLOTS.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("compare-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
     let (Some(core), Some(nodj)) = (build(&tmp, "testcore.so", &[]), build(&tmp, "testcore_nodj.so", &["-DNO_DJ"])) else {
@@ -135,5 +142,143 @@ fn comparison_cores() {
     let c = Comparison::open(&col, "state", &core, Some(&rom)).unwrap();
     drop(c);
     drop(s2);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// The same comparisons with each comparison core in its own worker process, as the GUI
+/// runs them (.agents/ISOLATION_PLAN.md), and cores that crash or hang there.
+#[test]
+fn comparison_cores_in_workers() {
+    let _slots = SLOTS.lock().unwrap_or_else(|e| e.into_inner());
+    std::env::set_var("DJ_WORKER_EXE", env!("CARGO_BIN_EXE_dj"));
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("compare-workers-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let (Some(core), Some(nodj)) = (build(&tmp, "testcore.so", &[]), build(&tmp, "testcore_nodj.so", &["-DNO_DJ"])) else {
+        eprintln!("skipped: no C compiler");
+        return;
+    };
+    let dir = tmp.join("project");
+    let col = project(&dir, &core, &nodj);
+    let rom = dir.join("rom.bin");
+    let mut s = Session::open_with(&col, &rom, &core, false).unwrap();
+
+    // Save-state sync, inputs and [WRITE] lines followed: parity holds on every frame.
+    s.enter_replay(&col, "seg").unwrap();
+    let mut c = RemoteComparison::open(&col, "state", &core, Some(&rom)).unwrap();
+    for f in 0..5 {
+        s.step(&col, "seg", f, false).unwrap();
+    }
+    assert_eq!(c.sync(&mut s.core, &col, "seg", 5, 5, false).unwrap(), SyncOutcome::Synced);
+    for f in 5..20 {
+        s.step(&col, "seg", f, false).unwrap();
+        let st = c.step(&mut s.core, &col, "seg", f, f == 19).unwrap();
+        assert!(!st.needs_sync);
+        assert_eq!(c.check(&mut s.core, f).unwrap(), Verdict::Match, "frame {f}");
+        if f == 19 {
+            let fr = st.frame.expect("a captured frame");
+            assert_eq!((fr.width, fr.height, fr.rgb.len()), (4, 4, 48));
+        }
+    }
+    drop(c);
+
+    // dj_sync through the worker's copy of the baseline; dj_write with the baseline's state.
+    s.enter_replay(&col, "seg").unwrap();
+    let mut c = RemoteComparison::open(&col, "dj", &core, Some(&rom)).unwrap();
+    assert!(c.has_check() && c.has_write() && c.build.len() == 64);
+    assert_eq!(c.sync(&mut s.core, &col, "seg", 0, 0, true).unwrap(), SyncOutcome::Synced);
+    for f in 0..20 {
+        s.step(&col, "seg", f, false).unwrap();
+        let st = c.step(&mut s.core, &col, "seg", f, false).unwrap();
+        assert!(st.tick_failed.is_none());
+        assert_eq!(c.check(&mut s.core, f).unwrap(), Verdict::Match, "frame {f}");
+    }
+    drop(c);
+
+    // A mismatch and a failed tick, with the core's reasons, on the same frame as in process.
+    for (name, tick) in [("dj-mismatch", false), ("dj-tick", true)] {
+        s.enter_replay(&col, "seg").unwrap();
+        let mut c = RemoteComparison::open(&col, name, &core, Some(&rom)).unwrap();
+        assert_eq!(c.sync(&mut s.core, &col, "seg", 0, 0, true).unwrap(), SyncOutcome::Synced);
+        let mut first_bad = None;
+        for f in 0..20 {
+            s.step(&col, "seg", f, false).unwrap();
+            let st = c.step(&mut s.core, &col, "seg", f, false).unwrap();
+            if let Some(why) = st.tick_failed {
+                assert!(tick && why.contains("told to fail the tick"), "{why}");
+                first_bad = Some(f);
+                break;
+            }
+            if let Verdict::Mismatch(why) = c.check(&mut s.core, f).unwrap() {
+                assert!(!tick && why.contains("RAM 0x02"), "{why}");
+                first_bad = Some(f);
+                break;
+            }
+        }
+        assert_eq!(first_bad, Some(9), "{name}");
+    }
+
+    // A declined sync, and a load error, come back as before.
+    let mut c = RemoteComparison::open(&col, "dj-fail", &core, Some(&rom)).unwrap();
+    assert!(matches!(c.sync(&mut s.core, &col, "seg", 20, 20, false).unwrap(), SyncOutcome::Failed(r) if r.contains("told to fail at frame 20")));
+    let e = RemoteComparison::open(&col, "nodj", &core, Some(&rom)).err().expect("loading without dj_sync must fail");
+    assert!(format!("{e:#}").contains("dj_sync"), "{e:#}");
+
+    // A core that crashes on frame 9, one that hangs there, and one that crashes in
+    // dj_check_parity: each ends its worker with a message saying where, and dj goes on.
+    std::env::set_var("DJ_WORKER_TIMEOUT_SCALE", "0.2"); // 2 s instead of 10
+    for (name, expect) in [("dj-crash", "crashed"), ("dj-hang", "didn't finish"), ("dj-crash-check", "crashed")] {
+        s.enter_replay(&col, "seg").unwrap();
+        let mut c = RemoteComparison::open(&col, name, &core, Some(&rom)).unwrap();
+        assert_eq!(c.sync(&mut s.core, &col, "seg", 0, 0, true).unwrap(), SyncOutcome::Synced);
+        let started = std::time::Instant::now();
+        let mut err = None;
+        for f in 0..20 {
+            s.step(&col, "seg", f, false).unwrap();
+            if let Err(e) = c.step(&mut s.core, &col, "seg", f, false).and_then(|_| c.check(&mut s.core, f)) {
+                err = Some((f, format!("{e:#}")));
+                break;
+            }
+        }
+        let (f, e) = err.unwrap_or_else(|| panic!("{name} ran to the end"));
+        assert_eq!(f, 9, "{name}: {e}");
+        assert!(e.contains(expect) && e.contains("Restart comparison core"), "{name}: {e}");
+        let place = if name == "dj-crash-check" { "dj_check_parity" } else { "running frame 9" };
+        assert!(e.contains(place), "{name}: {e}");
+        assert!(c.dead().is_some());
+        assert!(started.elapsed() < std::time::Duration::from_secs(8), "{name}: {:?}", started.elapsed());
+        // Once stopped, it says so; the baseline plays on.
+        let again = format!("{:#}", c.sync(&mut s.core, &col, "seg", 0, 0, true).unwrap_err());
+        assert!(again.contains("has stopped"), "{again}");
+        s.step(&col, "seg", 10, false).unwrap();
+    }
+    drop(s);
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// A copy of a core loaded before the original: on macOS, a library whose install name is its
+/// absolute path (as `cc -o /abs/path` builds the test core) is handed back for the original,
+/// so the two slots would share one instance. dj refuses that before calling into it.
+#[test]
+fn a_shared_library_instance_is_refused() {
+    let _slots = SLOTS.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("compare-shared-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let Some(core) = build(&tmp, "testcore_shared.so", &[]) else {
+        eprintln!("skipped: no C compiler");
+        return;
+    };
+    let copy = tmp.join("copy-testcore_shared.so");
+    std::fs::copy(&core, &copy).unwrap();
+    let opts = Default::default();
+    let first = decomp_dj::libretro::Core::load_in(decomp_dj::libretro::COMPARISON, &copy, &tmp, &opts).unwrap();
+    let second = decomp_dj::libretro::Core::load_in(decomp_dj::libretro::BASELINE, &core, &tmp, &opts);
+    if cfg!(target_os = "macos") {
+        let e = format!("{:#}", second.err().expect("the original must be refused"));
+        assert!(e.contains("same loaded library"), "{e}");
+    } else if let Err(e) = second {
+        // Other systems keep the two apart; refusing is only right if they didn't.
+        assert!(format!("{e:#}").contains("same loaded library"), "{e:#}");
+    }
+    drop(first);
     let _ = std::fs::remove_dir_all(&tmp);
 }

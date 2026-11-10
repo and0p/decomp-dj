@@ -34,9 +34,15 @@ sha256 = "…"                       # optional pin
 - **Which decoder decodes a CPU:** a `[[decoders]]` plugin first, so a plugin can stand in
   for a built-in decoder; then the built-in one; then one the project's core exports.
 - **Loading:** a `[[decoders]]` entry that's missing, fails to load, exports no decoders, is
-  for another API version or doesn't match its `sha256` stops the project from opening, with
-  a message naming the entry. A core's decoders are loaded only when a CPU nothing else
-  decodes is asked for.
+  for another API version, doesn't match its `sha256`, or crashes or hangs while its tables
+  are read stops the project from opening, with a message naming the entry. A core's
+  decoders are read only when a CPU nothing else decodes is asked for.
+- **Plugins never run inside dj.** dj reads a plugin's tables, and decodes with it, in a
+  worker: a separate `dj` (or `dj-gui`) process. A plugin that crashes or hangs while
+  decoding costs that report its functions, not dj: the report says so in a note
+  ("the 65816 decoder (…) crashed (signal 11, SIGSEGV) decoding `ResetVector`") and counts
+  the region in opcode bytes. A worker that takes longer than 10 s (plus 2 s per MB of code
+  and 1 s per 1,000 functions) is stopped. The built-in decoders run in dj.
 - **Layering:** `.local/local.toml`'s `[[decoders]]` replace config.toml's, unless every
   entry has a `name`, in which case they merge by name ([config.md](config.md#layering)).
 - **Reports say which decoder ran:** `dj summary` and `dj report` print a note such as
@@ -86,6 +92,8 @@ made-up instruction set.
 
 - **Pure and thread-safe.** The same bytes, address and mode always give the same answer.
   No state between calls: dj may call from several threads at once, and caches results.
+- **Quick to load.** dj loads the library in a new worker process for each report it
+  decodes, so start-up code should do little.
 - **Zeroed output.** dj zeroes `struct dj_instruction` before each call; set only what
   applies. `length` 0 means the bytes aren't an instruction (or don't fit in `available`).
 - **What each field means:**
@@ -150,6 +158,13 @@ A core can export `dj_decoders` itself, for the instruction sets it runs, so a n
 needs no separate file. dj reads it from the core library named in `.local/local.toml`
 without starting the core. Keep the decoder's source apart from the core's patch, so that
 another core for the same CPU can compile the same decoder.
+
+## Workers
+
+A worker is dj's own program started again with a hidden first argument (`__dj-worker
+decode`); nothing extra is installed. Two environment variables are for testing:
+`DJ_WORKER_EXE` starts another program as the worker (dj's tests point it at `dj`), and
+`DJ_WORKER_TIMEOUT_SCALE` multiplies the time limits. Why and how: .agents/ISOLATION_PLAN.md.
 
 ## Checking a decoder
 

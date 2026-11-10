@@ -7,7 +7,7 @@
 use anyhow::{anyhow, Result};
 use eframe::egui::{self, Color32, RichText};
 use decomp_dj::collection::{Collection, LocalConfig, Status};
-use decomp_dj::compare::{Comparison, SyncOutcome, Verdict};
+use decomp_dj::compare::{RemoteComparison, SyncOutcome, Verdict};
 use decomp_dj::format::{Command, InputKey};
 use decomp_dj::hydrate::Hydrator;
 use decomp_dj::player::{trunk_start_frame, PlayOptions, Recorder, Session};
@@ -30,6 +30,8 @@ const AGENT_OWNED: Color32 = Color32::from_rgb(160, 205, 255);
 const CHANGED: Color32 = Color32::from_rgb(235, 120, 90);
 
 fn main() -> eframe::Result {
+    // Started as a worker for code dj doesn't trust (.agents/ISOLATION_PLAN.md)?
+    decomp_dj::isolate::run_if_worker();
     let start = std::env::args().nth(1).map(PathBuf::from);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 860.0]).with_min_inner_size([800.0, 560.0]).with_title("decomp-dj"),
@@ -279,7 +281,8 @@ struct App {
     /// File > Keyboard mapping…
     mapping: Option<record::MappingDialog>,
     /// The comparison core (docs/gui.md#comparison-cores), if one is selected and loaded.
-    compare: Option<Comparison>,
+    /// The comparison core, in its own worker process (.agents/ISOLATION_PLAN.md).
+    compare: Option<RemoteComparison>,
     /// Where the comparison core is in step with the baseline: the segment and the next
     /// frame it runs. None: out of sync.
     compare_at: Option<(String, u64)>,
@@ -1465,7 +1468,7 @@ impl App {
         let mut passed = false;
         if self.compare_run && self.compare_at.as_ref().is_some_and(|(i, f)| *i == id && *f == k) {
             if let Some(c) = &mut self.compare {
-                match c.step(&s.core, col, &id, k, capture) {
+                match c.step(&mut s.core, col, &id, k, capture) {
                     Ok(st) => {
                         if let Some(f) = st.frame {
                             let img = egui::ColorImage::from_rgb([f.width as usize, f.height as usize], &f.rgb);
@@ -2086,7 +2089,7 @@ impl App {
         let local = col.settings().unwrap_or_default();
         let rom = local.rom.as_ref().map(|r| abs_path(&col.root, r));
         let core = local.core.as_ref().map(|c| abs_path(&col.root, c)).unwrap_or_default();
-        match Comparison::open(col, &name, &core, rom.as_deref()) {
+        match RemoteComparison::open(col, &name, &core, rom.as_deref()) {
             Ok(c) => {
                 self.compare = Some(c);
                 self.compare_need_sync = true;
@@ -5515,6 +5518,12 @@ impl App {
             .response
             .on_disabled_hover_text(if names.is_empty() { "The project has no [[compare]] entries" } else { "Busy: wait for the clean or seek to finish" });
         });
+        // A comparison core that crashed or hung is loaded again, in a new worker.
+        if let Some(why) = self.compare.as_ref().and_then(|c| c.dead()).map(String::from) {
+            if ui.button("Restart comparison core").on_hover_text(format!("It stopped: {why}")).clicked() {
+                pick = Some(cur.clone());
+            }
+        }
         if let Some(p) = pick {
             self.select_compare(p);
         }

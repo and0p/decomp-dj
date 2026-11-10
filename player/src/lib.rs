@@ -12,6 +12,7 @@ pub mod decode;
 pub mod format;
 pub mod gl;
 pub mod hydrate;
+pub mod isolate;
 pub mod libretro;
 pub mod parity;
 pub mod player;

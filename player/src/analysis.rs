@@ -5,7 +5,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[allow(dead_code)]
 pub struct Function {
     pub name: String,
@@ -24,14 +24,14 @@ pub struct Function {
     pub mode: u32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[allow(dead_code)]
 pub struct Instruction {
     pub offset: u64,
     pub len: u8,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Block {
     /// Region offset of the first instruction.
     pub offset: u64,
@@ -40,7 +40,7 @@ pub struct Block {
     pub cpu_addr: Option<u64>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AnalyzedFunction {
     pub func: Function,
     pub instructions: Vec<Instruction>,
@@ -54,11 +54,36 @@ pub struct AnalyzedFunction {
 
 /// A direct call or jump: the instruction's region offset, the CPU address it goes to, and
 /// how the instruction set spells it ("JSR", "JAL", ...).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct CallSite {
     pub at: u64,
     pub target: u64,
     pub kind: &'static str,
+}
+
+/// Read back from a worker: the kind ("JSR", "BL") is kept once for good.
+impl<'de> serde::Deserialize<'de> for CallSite {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        use std::sync::{Mutex, OnceLock};
+        #[derive(serde::Deserialize)]
+        struct Owned {
+            at: u64,
+            target: u64,
+            kind: String,
+        }
+        static KINDS: OnceLock<Mutex<std::collections::HashSet<&'static str>>> = OnceLock::new();
+        let o = Owned::deserialize(d)?;
+        let mut set = KINDS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+        let kind = match set.get(o.kind.as_str()) {
+            Some(k) => *k,
+            None => {
+                let k: &'static str = Box::leak(o.kind.into_boxed_str());
+                set.insert(k);
+                k
+            }
+        };
+        Ok(CallSite { at: o.at, target: o.target, kind })
+    }
 }
 
 // ---- symbol maps -------------------------------------------------------------

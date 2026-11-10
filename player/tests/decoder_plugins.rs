@@ -33,14 +33,23 @@ fn reference_plugin() -> PathBuf {
     dll(&target.join("release"), "dj_reference_decoders")
 }
 
-/// Builds tests/testdecoder/toy.c with `cc`; None where there's no C compiler.
-fn toy_plugin(name: &str) -> Option<PathBuf> {
+/// Builds tests/testdecoder/toy.c with `cc` (and `defines`); None where there's no C compiler.
+fn toy_plugin_with(name: &str, defines: &[&str]) -> Option<PathBuf> {
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("toy-decoder");
     std::fs::create_dir_all(&dir).ok()?;
     let lib = dll(&dir, name);
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/testdecoder/toy.c");
-    let ok = Command::new("cc").args(["-shared", "-fPIC", "-O1", "-o"]).arg(&lib).arg(&src).status().ok()?.success();
+    let ok = Command::new("cc").args(["-shared", "-fPIC", "-O1"]).args(defines).arg("-o").arg(&lib).arg(&src).status().ok()?.success();
     ok.then_some(lib)
+}
+
+fn toy_plugin(name: &str) -> Option<PathBuf> {
+    toy_plugin_with(name, &[])
+}
+
+/// Plugins run in workers: point them at the `dj` program (the test binary isn't one).
+fn use_dj_workers() {
+    std::env::set_var("DJ_WORKER_EXE", env!("CARGO_BIN_EXE_dj"));
 }
 
 struct Rng(u64);
@@ -143,6 +152,7 @@ fn project(name: &str, extra: &str, local: &str) -> PathBuf {
 
 #[test]
 fn projects_load_decoders_from_config_and_from_their_core() {
+    use_dj_workers();
     let Some(lib) = toy_plugin("toy_for_projects") else {
         eprintln!("skipping: no C compiler");
         return;
@@ -168,4 +178,61 @@ fn projects_load_decoders_from_config_and_from_their_core() {
     let col = decomp_dj::collection::Collection::open(&dir).unwrap();
     assert_eq!(col.decoders.get("toy8").map(|d| d.cpu()), Some("toy8"));
     assert!(col.decoders.get("z80").is_none());
+}
+
+/// The toy plugin as a project's `[[decoders]]`, and a function `name` holding `code`.
+fn toy_project(name: &str, lib: &Path) -> decomp_dj::collection::Collection {
+    use_dj_workers();
+    let dir = project(name, &format!("[[decoders]]\npath = \"{}\"\n", lib.to_str().unwrap().replace('\\', "/")), "");
+    decomp_dj::collection::Collection::open(&dir).unwrap()
+}
+
+fn toy_function(name: &str, size: u64) -> Vec<(Function, Option<u64>)> {
+    vec![
+        (Function { name: "fine".into(), region: "ROM".into(), offset: 0, size: 4, cpu_addr: Some(0x1000), file_offset: None, mode: 0 }, Some(0)),
+        (Function { name: name.into(), region: "ROM".into(), offset: 4, size, cpu_addr: Some(0x1004), file_offset: None, mode: 0 }, Some(4)),
+    ]
+}
+
+#[test]
+fn a_plugin_that_crashes_costs_the_decoding_not_dj() {
+    let Some(lib) = toy_plugin("toy_crash") else {
+        eprintln!("skipping: no C compiler");
+        return;
+    };
+    let col = toy_project("plugin-crash", &lib);
+    let dec = col.decoders.get("toy8").unwrap();
+    // Through the worker, the toy decodes as it does in process.
+    let (ok, invalid) = dec.analyze(&toy_function("also_fine", 4), &[0, 0, 0, 0x40, 0x00, 0xEE, 0, 0x40], &[]).unwrap();
+    assert_eq!((ok.len(), invalid), (2, 1));
+    // 0xCC crashes it: dj is still here, and says where.
+    let err = dec.analyze(&toy_function("boom", 4), &[0, 0, 0, 0x40, 0x00, 0xCC, 0, 0x40], &[]).unwrap_err();
+    assert!(err.contains("crashed") && err.contains("decoding `boom`"), "{err}");
+}
+
+#[test]
+fn a_plugin_that_hangs_is_stopped() {
+    let Some(lib) = toy_plugin("toy_hang") else {
+        eprintln!("skipping: no C compiler");
+        return;
+    };
+    let col = toy_project("plugin-hang", &lib);
+    let dec = col.decoders.get("toy8").unwrap();
+    std::env::set_var("DJ_WORKER_TIMEOUT_SCALE", "0.1"); // 1 s instead of 10
+    let started = std::time::Instant::now();
+    let err = dec.analyze(&toy_function("spin", 4), &[0, 0, 0, 0x40, 0xDD, 0, 0, 0x40], &[]).unwrap_err();
+    assert!(err.contains("didn't finish") && err.contains("decoding `spin`"), "{err}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(8), "{:?}", started.elapsed());
+}
+
+#[test]
+fn a_plugin_that_crashes_while_its_tables_are_read_names_the_entry() {
+    use_dj_workers();
+    let Some(lib) = toy_plugin_with("toy_crash_in_tables", &["-DTOY_CRASH_IN_TABLES"]) else {
+        eprintln!("skipping: no C compiler");
+        return;
+    };
+    let dir = project("plugin-crash-tables", &format!("[[decoders]]\npath = \"{}\"\n", lib.to_str().unwrap().replace('\\', "/")), "");
+    let err = format!("{:#}", decomp_dj::collection::Collection::open(&dir).err().unwrap());
+    assert!(err.contains("[[decoders]]") && err.contains("crashed") && err.contains("while its decoders were read"), "{err}");
 }

@@ -128,6 +128,13 @@ transport.
   at (where its run started). Playing or stepping on syncs it again first, as after a jump;
   after a failed sync, playback carries on without the comparison until the next jump or
   **Sync now**.
+- **The comparison core runs in its own process**, so one that crashes or hangs can't take
+  the GUI (or your unsaved edits) with it. A crash, or a call that hasn't come back after
+  10 s (loading: 60 s), stops it like any failure, with what happened over its picture
+  ("crashed (signal 11, SIGSEGV) while checking parity (dj_check_parity)"), and the baseline
+  plays on. **Compare > Restart comparison core** loads it again. To debug a comparison core
+  under a debugger, raise the time limits with the `DJ_WORKER_TIMEOUT_SCALE` environment
+  variable (say `100`), and attach to the `dj-gui __dj-worker compare` process.
 
 ### Parity
 

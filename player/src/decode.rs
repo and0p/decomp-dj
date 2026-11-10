@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -159,14 +160,199 @@ impl Decoder for PluginDecoder {
     }
 }
 
+/// A plugin decoder as the parent knows it: what a worker's `describe` read from its table.
+/// Its code only ever runs in a worker (.agents/ISOLATION_PLAN.md).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RemoteDecoder {
+    pub library: PathBuf,
+    pub cpu: String,
+    pub id: String,
+    pub max_len: usize,
+    pub fixed_len: Option<u8>,
+    /// `alignment(mode)` for modes 0-15 (1 beyond).
+    pub alignment: Vec<u8>,
+    /// `mode_from_flags` for every flag byte.
+    pub modes: Vec<Option<u32>>,
+}
+
+/// How long a worker may take: reading a plugin's tables, and decoding.
+const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+impl RemoteDecoder {
+    /// Every decoder a library exports, read in a worker. Ok(empty) when it exports none.
+    pub fn describe(library: &Path, what: &str) -> Result<Vec<RemoteDecoder>> {
+        let args = serde_json::json!({ "library": library, "what": what });
+        match crate::isolate::call("decode", "describe", args, &[], crate::isolate::timeout(DESCRIBE_TIMEOUT)) {
+            Ok(v) => Ok(serde_json::from_value(v)?),
+            Err(Ok(f)) if f.reported => Err(anyhow!("{}", f.what)),
+            Err(Ok(f)) => Err(anyhow!("the {what} {} {} while its decoders were read (dj_decoders, or the library's start-up code)", library.display(), f.what)),
+            Err(Err(e)) => Err(e),
+        }
+    }
+
+    fn mode_from_flags(&self, flags: u8) -> Option<u32> {
+        self.modes.get(flags as usize).copied().flatten()
+    }
+
+    /// Decodes `funcs` (each with where its bytes start in `code`, None: not decoded) in a
+    /// worker. Ok((functions, answers out of range)); Err(a sentence) when the worker
+    /// crashed, hung or failed.
+    pub fn analyze(&self, funcs: &[(Function, Option<u64>)], code: &[u8], data: &[(u64, u64)]) -> std::result::Result<(Vec<AnalyzedFunction>, usize), String> {
+        let deadline = crate::isolate::timeout(Duration::from_secs(10) + Duration::from_secs(2) * (code.len() / (1 << 20)) as u32 + Duration::from_secs(1) * (funcs.len() / 1000) as u32);
+        let args = serde_json::json!({ "library": self.library, "cpu": self.cpu, "functions": funcs, "data": data });
+        match crate::isolate::call("decode", "analyze", args, &[code], deadline) {
+            Ok(v) => {
+                let funcs: Vec<AnalyzedFunction> = serde_json::from_value(v["functions"].clone()).map_err(|e| format!("reading the worker's answer: {e}"))?;
+                Ok((funcs, v["invalid"].as_u64().unwrap_or(0) as usize))
+            }
+            Err(Ok(f)) => {
+                let name = |at: &serde_json::Value| at.as_u64().and_then(|i| funcs.get(i as usize)).map(|(f, _)| format!("decoding `{}`", f.name));
+                Err(crate::isolate::failure_text(&f, name))
+            }
+            Err(Err(e)) => Err(format!("{e:#}")),
+        }
+    }
+
+    /// The bytes of every instruction that ran, from the lengths the plugin decodes, in a
+    /// worker.
+    pub fn executed_bytes(&self, code: &[u8], flags: &[u8]) -> Result<Vec<bool>> {
+        let deadline = crate::isolate::timeout(Duration::from_secs(10) + Duration::from_secs(2) * (code.len() / (1 << 20)) as u32);
+        let args = serde_json::json!({ "library": self.library, "cpu": self.cpu });
+        let v = crate::isolate::call("decode", "executed", args, &[code, flags], deadline).map_err(crate::isolate::flatten)?;
+        let runs: Vec<(usize, usize)> = serde_json::from_value(v)?;
+        let mut out = vec![false; flags.len().min(code.len())];
+        let n = out.len();
+        for (a, b) in runs {
+            out[a.min(n)..b.min(n)].fill(true);
+        }
+        Ok(out)
+    }
+}
+
+/// The decode worker (`__dj-worker decode`): the only place plugin code runs.
+pub fn worker_request(cmd: &str, req: crate::isolate::Request, progress: &mut crate::isolate::Progress) -> Result<serde_json::Value> {
+    use serde_json::json;
+    let library = PathBuf::from(req.args["library"].as_str().unwrap_or_default());
+    let what = req.args["what"].as_str().unwrap_or("decoder plugin").to_string();
+    let decoders = PluginDecoder::load(&library, &what)?;
+    let find = || -> Result<&PluginDecoder> {
+        let cpu = req.args["cpu"].as_str().unwrap_or_default();
+        decoders.iter().find(|d| d.cpu == cpu).ok_or_else(|| anyhow!("{} has no {cpu} decoder", library.display()))
+    };
+    match cmd {
+        "describe" => Ok(serde_json::to_value(
+            decoders
+                .iter()
+                .map(|d| RemoteDecoder {
+                    library: library.clone(),
+                    cpu: d.cpu.to_string(),
+                    id: d.id.clone(),
+                    max_len: d.max_len,
+                    fixed_len: d.fixed_len(),
+                    alignment: (0..16).map(|m| d.alignment(m)).collect(),
+                    modes: (0..=255u8).map(|f| d.mode_from_flags(f)).collect(),
+                })
+                .collect::<Vec<_>>(),
+        )?),
+        "analyze" => {
+            let dec = find()?;
+            let funcs: Vec<(Function, Option<u64>)> = serde_json::from_value(req.args["functions"].clone())?;
+            let data: Vec<(u64, u64)> = serde_json::from_value(req.args["data"].clone())?;
+            let code = req.bulk.first().map(Vec::as_slice).unwrap_or_default();
+            let mut out = vec![];
+            for (i, (f, base)) in funcs.iter().enumerate() {
+                progress.at(json!(i));
+                out.extend(analyze(dec, std::slice::from_ref(f), code, &data, |_| *base));
+            }
+            Ok(json!({ "functions": out, "invalid": dec.invalid_answers() }))
+        }
+        "executed" => {
+            let dec = find()?;
+            let (code, flags) = (req.bulk.first().map(Vec::as_slice).unwrap_or_default(), req.bulk.get(1).map(Vec::as_slice).unwrap_or_default());
+            let exec = crate::analysis::executed_bytes_by_length(Some(dec), code, flags);
+            let mut runs = vec![];
+            let mut start = None;
+            for (i, e) in exec.iter().chain([&false]).enumerate() {
+                match (*e, start) {
+                    (true, None) => start = Some(i),
+                    (false, Some(s)) => {
+                        runs.push((s, i));
+                        start = None;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(serde_json::to_value(runs)?)
+        }
+        other => Err(anyhow!("unknown decode request {other}")),
+    }
+}
+
+/// A project's decoder for one instruction set: built in (runs in dj), or a plugin (runs in
+/// a worker).
+#[derive(Clone, Copy)]
+pub enum DecoderRef<'a> {
+    BuiltIn(&'static dyn Decoder),
+    Plugin(&'a RemoteDecoder),
+}
+
+impl<'a> DecoderRef<'a> {
+    pub fn cpu(&self) -> &'a str {
+        match *self {
+            DecoderRef::BuiltIn(d) => d.cpu(),
+            DecoderRef::Plugin(p) => &p.cpu,
+        }
+    }
+
+    /// "built-in 6502", or the plugin's path and sha256.
+    pub fn id(&self) -> String {
+        match self {
+            DecoderRef::BuiltIn(d) => d.id(),
+            DecoderRef::Plugin(p) => p.id.clone(),
+        }
+    }
+
+    pub fn mode_from_flags(&self, flags: u8) -> Option<u32> {
+        match self {
+            DecoderRef::BuiltIn(d) => d.mode_from_flags(flags),
+            DecoderRef::Plugin(p) => p.mode_from_flags(flags),
+        }
+    }
+
+    /// The built-in decoder, when this is one.
+    pub fn built_in(&self) -> Option<&'static dyn Decoder> {
+        match self {
+            DecoderRef::BuiltIn(d) => Some(*d),
+            DecoderRef::Plugin(_) => None,
+        }
+    }
+
+    /// Splits functions into instructions and blocks (see [`analyze`]): in dj for a built-in
+    /// decoder, in a worker for a plugin. Ok((functions, a plugin's answers out of range));
+    /// Err(a sentence) when a plugin's worker crashed, hung or failed.
+    pub fn analyze(&self, funcs: &[(Function, Option<u64>)], code: &[u8], data: &[(u64, u64)]) -> std::result::Result<(Vec<AnalyzedFunction>, usize), String> {
+        match self {
+            DecoderRef::BuiltIn(d) => {
+                let mut out = vec![];
+                for (f, base) in funcs {
+                    out.extend(analyze(*d, std::slice::from_ref(f), code, data, |_| *base));
+                }
+                Ok((out, 0))
+            }
+            DecoderRef::Plugin(p) => p.analyze(funcs, code, data),
+        }
+    }
+}
+
 /// The decoders a project uses, by instruction set: its `[[decoders]]` plugins first, then
-/// the built-in ones, then any the project's core exports (docs/decoders.md).
+/// the built-in ones, then any the project's core exports (docs/decoders.md). Plugins are
+/// read and run in workers, never in dj's own process.
 pub struct Decoders {
-    plugins: Vec<PluginDecoder>,
-    /// The core library, whose decoders are loaded the first time a CPU nothing else
-    /// decodes is asked for.
+    plugins: Vec<RemoteDecoder>,
+    /// The core library, whose decoders are read the first time a CPU nothing else decodes
+    /// is asked for.
     core: Option<PathBuf>,
-    from_core: OnceLock<Vec<PluginDecoder>>,
+    from_core: OnceLock<Vec<RemoteDecoder>>,
 }
 
 impl Decoders {
@@ -175,7 +361,8 @@ impl Decoders {
         Decoders { plugins: vec![], core: None, from_core: OnceLock::new() }
     }
 
-    /// The project's: its `[[decoders]]`, loaded now (an error names the entry), and its core.
+    /// The project's: its `[[decoders]]`, read now in a worker (an error names the entry),
+    /// and its core.
     pub fn load(col: &crate::collection::Collection) -> Result<Decoders> {
         let mut plugins = vec![];
         for d in &col.config.decoders {
@@ -189,7 +376,7 @@ impl Decoders {
                     bail!("[[decoders]] {}: {} has sha256 {sha}, but the entry is pinned to {}", d.path.display(), path.display(), d.sha256);
                 }
             }
-            let found = PluginDecoder::load(&path, "decoder plugin")?;
+            let found = RemoteDecoder::describe(&path, "decoder plugin").with_context(|| format!("[[decoders]] {}", d.path.display()))?;
             if found.is_empty() {
                 bail!("[[decoders]] {}: {} exports no decoders (no dj_decoders function)", d.path.display(), path.display());
             }
@@ -200,20 +387,16 @@ impl Decoders {
     }
 
     /// The decoder for an instruction set, by the name connectors report.
-    pub fn get(&self, cpu: &str) -> Option<&dyn Decoder> {
+    pub fn get(&self, cpu: &str) -> Option<DecoderRef<'_>> {
         if let Some(p) = self.plugins.iter().find(|d| d.cpu == cpu) {
-            return Some(p);
+            return Some(DecoderRef::Plugin(p));
         }
         if let Some(b) = decoder_for(cpu) {
-            return Some(b);
+            return Some(DecoderRef::BuiltIn(b));
         }
-        let from_core = self.from_core.get_or_init(|| self.core.as_deref().and_then(|p| PluginDecoder::load(p, "core").ok()).unwrap_or_default());
-        from_core.iter().find(|d| d.cpu == cpu).map(|d| d as &dyn Decoder)
-    }
-
-    /// Answers out of range from the plugin decoding `cpu`, if a plugin does.
-    pub fn invalid_answers(&self, cpu: &str) -> usize {
-        self.plugins.iter().chain(self.from_core.get().into_iter().flatten()).filter(|d| d.cpu == cpu).map(|d| d.invalid_answers()).sum()
+        // A core that crashes or hangs while its decoders are read just offers none.
+        let from_core = self.from_core.get_or_init(|| self.core.as_deref().and_then(|p| RemoteDecoder::describe(p, "core").ok()).unwrap_or_default());
+        from_core.iter().find(|d| d.cpu == cpu).map(DecoderRef::Plugin)
     }
 }
 

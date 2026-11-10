@@ -260,6 +260,8 @@ enum CacheCmd {
 }
 
 fn main() {
+    // Started as a worker for code dj doesn't trust (.agents/ISOLATION_PLAN.md)?
+    decomp_dj::isolate::run_if_worker();
     if let Err(e) = real_main() {
         eprintln!("error: {e:#}");
         std::process::exit(2);
@@ -268,6 +270,13 @@ fn main() {
 
 fn real_main() -> Result<()> {
     let cli = Cli::parse();
+    // Batch commands play in a child dj, so a core that crashes or hangs costs a segment,
+    // not the command (.agents/ISOLATION_PLAN.md).
+    if let Cmd::Run { dir, .. } | Cmd::Clean { dir, .. } | Cmd::Hydrate { dir, .. } = &cli.cmd {
+        if let Some(code) = decomp_dj::isolate::supervise(dir)? {
+            std::process::exit(code);
+        }
+    }
     match cli.cmd {
         Cmd::Init { dir, name, rom, core, core_build, options, symbols } => init(&dir, &name, &rom, &core, core_build, &options, symbols.as_deref()),
         Cmd::New { dir, parent, title, frames } => new_replay(&dir, parent, &title, frames),

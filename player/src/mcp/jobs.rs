@@ -64,6 +64,10 @@ struct JobState {
     drafts: Vec<Value>,
     best_distance: Option<i64>,
     goal_draft: Option<String>,
+    /// Parity jobs: what each segment (or re-run failure) came to, as it finished.
+    parity_rows: Vec<Value>,
+    /// Parity jobs: the totals `dj parity` reported at the end.
+    parity_done: Option<Value>,
 }
 
 struct Cfg {
@@ -121,6 +125,36 @@ pub fn defs() -> Vec<ToolDef> {
             schema: json!({"type": "object", "properties": {"job": {"type": "string"}}, "required": []}),
             allow: Allow::Draft,
         },
+        ToolDef {
+            name: "parity_check",
+            description: "A background job: checks segments against a comparison core frame by frame (dj parity), each from its own start, stopping a segment at its first failure. Segments already checked with this build are skipped unless all=true; segments that aren't clean are left out. Results go to the local database (parity_summary, parity_failures, and dj-gui). Returns a job id; poll job_status.",
+            schema: json!({"type": "object", "properties": {
+                "segment": {"type": "string", "description": "Only this segment (default: all of them)"},
+                "children": {"type": "boolean", "description": "With segment: also every segment below it"},
+                "compare": {"type": "string", "description": "The [[compare]] entry (needed when there are several)"},
+                "all": {"type": "boolean", "description": "Check again segments already checked with this build"},
+            }, "required": []}),
+            allow: Allow::Draft,
+        },
+        ToolDef {
+            name: "parity_rerun",
+            description: "A background job: plays failures again the way they were found (synced where they were, to their frame) with the comparison core's build now. ids from parity_failures, or none for every failure from an older build. An older build's failure that passes now is cleared. Returns a job id; poll job_status.",
+            schema: json!({"type": "object", "properties": {
+                "ids": {"type": "array", "items": {"type": "integer"}},
+                "compare": {"type": "string"},
+            }, "required": []}),
+            allow: Allow::Draft,
+        },
+        ToolDef {
+            name: "parity_explain",
+            description: "Why a parity failure failed: plays it again (synced where it was found, to its frame) with the original traced over its last frames, and returns what differed (dj_parity_diffs from the comparison core, or system RAM ranges) with, for each value that has an address, the original's last instruction that wrote it: function, CPU address, instruction, frame. That function is where to look in the decomp. Also the functions the failing frame ran, and whether it still fails. Waits for the replay (seconds, up to a few minutes for long segments).",
+            schema: json!({"type": "object", "properties": {
+                "id": {"type": "integer", "description": "The failure, from parity_failures"},
+                "compare": {"type": "string"},
+                "frames_back": {"type": "integer", "description": "Frames before the failing one to trace too (default 10): raise it when a value was set earlier"},
+            }, "required": ["id"]}),
+            allow: Allow::Draft,
+        },
         ToolDef { name: "job_stop", description: "Stop a job; its drafts stay.", schema: json!({"type": "object", "properties": {"job": {"type": "string"}}, "required": ["job"]}), allow: Allow::Draft },
     ]
 }
@@ -129,6 +163,8 @@ impl Server {
     pub fn jobs_dispatch(&mut self, name: &str, a: &Args) -> Result<Option<Reply>> {
         Ok(Some(match name {
             "fuzz" | "seek_goal" => Reply::Json(self.start_job(name, a)?),
+            "parity_check" | "parity_rerun" => Reply::Json(self.start_parity_job(name, a)?),
+            "parity_explain" => Reply::Json(self.parity_explain(a)?),
             "job_status" => {
                 let jobs: Vec<Arc<Job>> = match a.opt_str("job")? {
                     Some(j) => vec![self.jobs.map.get(&j).cloned().ok_or_else(|| anyhow!("no job {j}"))?],
@@ -228,6 +264,179 @@ impl Server {
     }
 }
 
+impl Server {
+    /// A parity job: `dj parity` in a child process (so a crashing core is handled as on the
+    /// command line), reporting each segment as a JSON line (`--events`).
+    fn start_parity_job(&mut self, name: &str, a: &Args) -> Result<Value> {
+        let col = decomp_dj::collection::Collection::open(&self.dir)?;
+        let compare = decomp_dj::parity::compare_name(&col, a.opt_str("compare")?.as_deref())?;
+        let mut args: Vec<String> = vec!["parity".into(), self.dir.display().to_string(), "--compare".into(), compare.clone(), "--events".into()];
+        if name == "parity_check" {
+            if let Some(seg) = a.opt_str("segment")? {
+                args.push(col.resolve(&seg)?.to_string());
+                if a.bool_or("children", false)? {
+                    args.push("--children".into());
+                }
+            }
+            if a.bool_or("all", false)? {
+                args.push("--all".into());
+            }
+        } else {
+            let ids: Vec<u64> = a.u64s("ids")?;
+            args.push("--rerun".into());
+            args.extend(ids.iter().map(|i| i.to_string()));
+        }
+        let exe = decomp_dj::isolate::worker_exe()?;
+        self.jobs.next += 1;
+        let id = format!("j{}", self.jobs.next);
+        let kind: &'static str = if name == "parity_check" { "parity_check" } else { "parity_rerun" };
+        let job = Arc::new(Job { id: id.clone(), kind, stop: AtomicBool::new(false), frames: AtomicU64::new(0), attempts: AtomicU64::new(0), started: Instant::now(), st: Mutex::new(JobState { status: "starting".into(), ..Default::default() }) });
+        self.jobs.map.insert(id.clone(), job.clone());
+        let h = std::thread::spawn(move || {
+            let outcome = run_parity_job(&exe, &args, &job);
+            let mut st = job.st.lock().unwrap();
+            st.status = match outcome {
+                _ if job.stop.load(Ordering::Relaxed) => "stopped".into(),
+                Ok(0) => "finished: nothing failed".into(),
+                Ok(1) => "finished: frames failed (parity_failures lists them)".into(),
+                Ok(code) => {
+                    st.error.get_or_insert_with(|| format!("dj parity ended with status {code}"));
+                    "failed".into()
+                }
+                Err(e) => {
+                    st.error = Some(format!("{e:#}"));
+                    "failed".into()
+                }
+            };
+            st.seconds = Some(job.started.elapsed().as_secs());
+        });
+        self.jobs.handles.push(h);
+        Ok(json!({"job": id, "compare": compare, "note": "running in the background; poll job_status"}))
+    }
+}
+
+/// The longest `parity_explain` waits for its replay.
+const EXPLAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+impl Server {
+    /// `parity_explain`: runs `dj parity --explain ID --json` as a child (both cores isolated,
+    /// as in the jobs) and waits for its answer.
+    fn parity_explain(&mut self, a: &Args) -> Result<Value> {
+        use std::io::Read;
+        use std::process::{Command, Stdio};
+        let col = decomp_dj::collection::Collection::open(&self.dir)?;
+        let compare = decomp_dj::parity::compare_name(&col, a.opt_str("compare")?.as_deref())?;
+        let id = a.u64("id")?;
+        let mut args: Vec<String> = vec!["parity".into(), self.dir.display().to_string(), "--compare".into(), compare, "--explain".into(), id.to_string(), "--json".into()];
+        if let Some(n) = a.opt_u64("frames_back")? {
+            args.push("--frames-back".into());
+            args.push(n.to_string());
+        }
+        let exe = decomp_dj::isolate::worker_exe()?;
+        let mut child = Command::new(exe).args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+        let (mut out, mut err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
+        let outs = std::thread::spawn(move || {
+            let mut s = String::new();
+            let _ = out.read_to_string(&mut s);
+            s
+        });
+        let errs = std::thread::spawn(move || {
+            let mut s = String::new();
+            let _ = err.read_to_string(&mut s);
+            s
+        });
+        let started = Instant::now();
+        let code = loop {
+            if let Some(st) = child.try_wait()? {
+                break st.code().unwrap_or(-1);
+            }
+            if started.elapsed() > EXPLAIN_TIMEOUT {
+                let _ = child.kill();
+                let _ = child.wait();
+                bail!("the replay took longer than {} s", EXPLAIN_TIMEOUT.as_secs());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        let (out, err) = (outs.join().unwrap_or_default(), errs.join().unwrap_or_default());
+        match serde_json::from_str::<Value>(&out) {
+            Ok(v) if code == 0 || code == 1 => Ok(v),
+            _ => bail!("dj parity --explain ended with status {code}: {}", err.trim().lines().last().unwrap_or("no message")),
+        }
+    }
+}
+
+/// Runs `dj` with `args`, taking its event lines into the job; stops it when the job is
+/// stopped. Returns its exit status.
+fn run_parity_job(exe: &std::path::Path, args: &[String], job: &Job) -> Result<i32> {
+    use std::io::{BufRead, BufReader, Read};
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(exe).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    job.st.lock().unwrap().status = "running".into();
+    let out = child.stdout.take().unwrap();
+    let mut err = child.stderr.take().unwrap();
+    let errs = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = err.read_to_string(&mut s);
+        s
+    });
+    let reader = {
+        // Lines are read on their own thread so the job can be stopped while waiting.
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            for line in BufReader::new(out).lines().map_while(|l| l.ok()) {
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        rx
+    };
+    let status = loop {
+        while let Ok(line) = reader.try_recv() {
+            let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+            let mut st = job.st.lock().unwrap();
+            match v["event"].as_str() {
+                Some("segment") | Some("rerun") => {
+                    job.frames.fetch_add(v["row"]["frames"].as_u64().unwrap_or(0), Ordering::Relaxed);
+                    job.attempts.fetch_add(1, Ordering::Relaxed);
+                    st.parity_rows.push(v["row"].clone());
+                }
+                Some("done") => st.parity_done = Some(v),
+                _ => {}
+            }
+        }
+        if job.stop.load(Ordering::Relaxed) {
+            let _ = child.kill();
+        }
+        if let Some(s) = child.try_wait()? {
+            break s;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    // The last lines, after it ended.
+    std::thread::sleep(Duration::from_millis(50));
+    while let Ok(line) = reader.try_recv() {
+        if let Ok(v) = serde_json::from_str::<Value>(&line) {
+            let mut st = job.st.lock().unwrap();
+            match v["event"].as_str() {
+                Some("segment") | Some("rerun") => st.parity_rows.push(v["row"].clone()),
+                Some("done") => st.parity_done = Some(v),
+                _ => {}
+            }
+        }
+    }
+    let code = status.code().unwrap_or(2);
+    if code >= 2 {
+        let text = errs.join().unwrap_or_default();
+        let tail: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        let tail = tail[tail.len().saturating_sub(5)..].join("\n");
+        if !tail.is_empty() {
+            job.st.lock().unwrap().error = Some(tail);
+        }
+    }
+    Ok(code)
+}
+
 /// What a job that has ended reports. A status a worker set (a goal reached, `max_drafts`)
 /// stands. Otherwise: with no worker left it failed; with some left it ran on them, and says so.
 fn final_status(current: &str, failed: usize, workers: usize) -> String {
@@ -248,6 +457,15 @@ fn final_status(current: &str, failed: usize, workers: usize) -> String {
 
 fn status(j: &Job) -> Value {
     let st = j.st.lock().unwrap();
+    if j.kind.starts_with("parity") {
+        // Failed segments first, then the rest; the totals once it's done.
+        let failed: Vec<&Value> = st.parity_rows.iter().filter(|r| matches!(r["verdict"].as_str(), Some("FAILED" | "failed" | "earlier"))).collect();
+        return json!({
+            "job": j.id, "kind": j.kind, "status": st.status, "error": st.error,
+            "seconds": st.seconds.unwrap_or_else(|| j.started.elapsed().as_secs()), "frames": j.frames.load(Ordering::Relaxed),
+            "done": st.parity_rows.len(), "failed": failed, "results": st.parity_rows, "totals": st.parity_done,
+        });
+    }
     let mut drafts = st.drafts.clone();
     drafts.sort_by(|a, b| b["new_instructions"].as_u64().cmp(&a["new_instructions"].as_u64()));
     json!({

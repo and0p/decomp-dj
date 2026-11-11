@@ -73,3 +73,4 @@ jobs:
             Portable builds: unzip and run `dj` (the command line) or `dj-gui` (`decomp-dj.app` on macOS). Nothing to install; cores aren't included (see `connectors/README.md` to build one).
             macOS: the app isn't signed with a Developer ID; after unzipping, run `xattr -dr com.apple.quarantine decomp-dj-*` once, or right-click the app and choose Open.
             Check a download against `SHA256SUMS`.
+            decomp-dj is GPL-3.0-or-later (`LICENSE.txt` in each ZIP); the source for this release is the `${{ github.ref_name }}` tag of this repository.

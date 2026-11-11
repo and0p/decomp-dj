@@ -192,9 +192,118 @@ int dj_run(char *reason, size_t reason_len);
 `dj_check_parity` decides what a match is, which matters for a port whose memory isn't laid
 out like the original's: compare watched values, a RAM map, or the picture. A core without
 it is checked by comparing both cores' system RAM (`retro_get_memory_data`) byte for byte;
-when the sizes differ, frames aren't judged. `dj_run` lets a port stop with a message (a
+when the sizes differ, frames aren't judged.
+
+**What differed.** A reason string says one thing. A port that knows more can list every
+difference it found, in the original game's terms, through one more optional function:
+
+```c
+struct dj_parity_diff {
+    const char    *label;    // optional plain-text name: "Player 2 x coordinate"
+    const char    *region;   // the original's region: "RAM", "SRAM" (NULL: no one place)
+    uint64_t       address;  // offset in that region
+    const char    *symbol;   // optional: a data symbol of the original's, instead of an address
+    const uint8_t *expected; // the original's bytes (may be NULL)
+    const uint8_t *actual;   // the port's bytes (may be NULL)
+    size_t         len;
+};
+
+// Called after dj_check_parity said mismatch: fill up to `cap` differences and return how
+// many there are in all. Pointers need to stay valid until the next dj_check_parity call.
+size_t dj_parity_diffs(struct dj_parity_diff *out, size_t cap);
+```
+
+dj keeps the first 100 with the failure and counts the rest. They show in dj-gui's failure
+message, in `dj parity`'s output and in the MCP tools. A difference with a region and an
+address can be traced: `dj parity --explain` ([cli.md](cli.md#parity)) finds the original's
+last instruction that wrote it, which is the function to fix. A label alone (a value the
+port keeps in no one place, like a checksum) is shown but can't be traced. The region names
+are the baseline connector's (`"RAM"` for Mesen's internal RAM), and `symbol` isn't
+resolved to an address yet. Without `dj_parity_diffs`, the RAM compare lists one difference
+per run of differing bytes; a core with `dj_check_parity` and no `dj_parity_diffs` gives
+none. The test core in `player/tests/testcore/` has one. `dj_run` lets a port stop with a message (a
 crash it caught, an unimplemented function it hit) instead of running on. A mismatch, an
 error or a failed `dj_run` stops playback at that frame ([gui.md](gui.md#comparison-cores)).
+
+### Checking parity in CI
+
+`dj parity` ([cli.md](cli.md#parity)) checks every clean segment against the comparison
+core and exits 1 when a frame fails, so a decomp's CI can run it after building its core.
+dj doesn't build the decomp: the job builds it, names it in a `[[compare]]` entry, and
+runs `dj parity`. A sketch for GitHub Actions, for an NES decomp checked against Mesen:
+
+```yaml
+name: parity
+on: [push, pull_request]
+
+jobs:
+  parity:
+    runs-on: ubuntu-22.04
+    env:
+      DJ: decomp-dj-0.1.0-linux-x86_64
+    steps:
+      - uses: actions/checkout@v5
+
+      # dj, from a release ZIP. Its connectors/ folder builds the baseline core.
+      - name: Get dj and the baseline core
+        run: |
+          curl -sSLO https://github.com/and0p/decomp-dj/releases/download/v0.1.0/$DJ.zip
+          unzip -q $DJ.zip
+          bash $DJ/connectors/mesen/build.sh "$PWD/cores"
+
+      # Your decomp, built as a libretro core with dj_sync (and dj_check_parity,
+      # dj_parity_diffs if it has them).
+      - name: Build the decomp's core
+        run: make libretro && cp build/mygame_libretro.so cores/
+
+      # The original ROM. Never commit one you may not share: a secret (base64), a
+      # self-hosted runner, or a free game's ROM built from its source.
+      - name: Get the ROM
+        run: echo "${{ secrets.ROM_BASE64 }}" | base64 -d > game.nes
+
+      # Paths for this machine. A [[compare]] entry in config.toml can be shared, with
+      # its path given here (entries are merged by name).
+      - name: Point dj at them
+        run: |
+          mkdir -p .local
+          cat > .local/local.toml <<'TOML'
+          rom = "game.nes"
+          core = "cores/mesen_libretro"
+          [[compare]]
+          name = "decomp"
+          path = "cores/mygame_libretro"
+          TOML
+
+      - name: Check parity
+        run: $DJ/dj parity . --compare decomp
+
+      # What failed and what differed, for reading in the run's artifacts.
+      - name: Report
+        if: failure()
+        run: |
+          $DJ/dj parity . --compare decomp --report --json > parity-report.json
+          for id in $(jq -r '.failures[] | select(.current_build) | .id' parity-report.json); do
+            $DJ/dj parity . --compare decomp --explain "$id" --json > "explain-$id.json" || true
+          done
+      - uses: actions/upload-artifact@v5
+        if: failure()
+        with:
+          name: parity
+          path: "*.json"
+```
+
+- **A fresh database each run** checks every segment. That's the point in CI: the build is
+  new anyway, and results are kept per build (the library's sha256). Caching `.local/`
+  between runs (`actions/cache`) saves replaying parents, nothing more.
+- **Segments must be clean** (their end hashes recorded in the segment files): dirty ones
+  are left out and listed. Clean them locally (`dj clean`) and commit.
+- **Exit status:** 0 when every frame passed, 1 when one failed, 2 on an error (the job
+  fails either way). A crash or hang in the decomp's core is a failure at that frame, not an
+  error: it runs in a process of its own.
+- **`--explain`** needs the trace hook in the baseline's connector, which Mesen's has; it
+  replays each failure, so leave it out for long segments or many failures.
+- Comparing two builds of the same emulator needs no decomp: `sync = "state"` in the
+  `[[compare]]` entry ([config.md](config.md#compare-optional-repeatable)).
 
 ## Writing one for another core
 

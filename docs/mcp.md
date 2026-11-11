@@ -83,6 +83,8 @@ there is more.
 | `function(addr)` | Every block of one function: covered or not, the first segment and frame that runs it, where control goes next; its callers (direct calls, and jumps from other functions: JSR and JMP on the 6502, JAL and J on MIPS) and whether they run; the segments that enter it |
 | `frontier(addr?)` | Covered branches and calls that lead into uncovered code, with the segments and frames that run that branch. For an address in uncovered code, the ways into its block; for a function never entered, its covered callers; with none, the largest across the ROM |
 | `segments(filter?)` | The tree: id, title, parent, frames, status, poked, children |
+| `parity_summary(compare?, limit?)` | Parity with a comparison core ([below](#parity)): instructions that ran, as parity, failed, failed with an older build or not checked; the functions with the most failed or unchecked code; the failures kept, newest first |
+| `parity_failures(compare?, addr?, old?)` | The failures kept, newest first: segment and frame, where the comparison core was synced, the reason, and whether it failed with the build there is now. `addr` keeps those whose failing frame ran that code (a function's start: any of it); `old=true` only older builds', `old=false` only this build's |
 | `gui_view()` | What the person is looking at in `dj-gui`, when they share it ([below](#the-gui)) |
 
 ### Without a symbol map
@@ -209,6 +211,9 @@ Jobs search in the background, across several workers, and leave their results a
 | --- | --- |
 | `fuzz(from, frame?, max_frames, seconds=120, workers, chunk=120, buttons?, max_drafts=20, seed?)` | Random joypad input from a segment or frame. A chunk that runs code nothing had run is kept and saved as a draft titled by what it reached (`fuzz: +25 in practiceDoClick (20), doStateNewLevel (3)`); other chunks are undone and tried again. A worker that keeps failing sometimes keeps a chunk anyway to get somewhere new, and starts over when its draft grows too long |
 | `seek_goal(from, condition, frame?, max_frames, ...)` | The same search, climbing toward the condition: a chunk is kept when it brings a comparison closer, or reaches new code when closeness can't be measured. The input that gets there becomes a draft titled `goal: ...` |
+| `parity_check(segment?, children?, compare?, all?)` | Checks segments against a comparison core, as `dj parity` does ([below](#parity)) |
+| `parity_rerun(ids?, compare?)` | Plays failures again with the comparison core's build now: these ids, or every failure from an older build |
+| `parity_explain(id, compare?, frames_back?)` | Plays one failure again with the original traced; returns what differed and, for each value with an address, the original's last instruction that wrote it (function, CPU address, instruction, frame). Waits for the replay rather than being a job |
 | `job_status(job?)` | Frames played, attempts, seconds it has run (they stop counting when it ends), new instructions, drafts made (most new code first), the closest a goal got, `error` and `workers_failed`, and the status: running, goal reached, finished, stopped, failed |
 | `job_stop(job)` | Stops it; its drafts stay |
 
@@ -226,6 +231,33 @@ stays the status even if a worker died along the way. With no worker left, the j
 
 START and SELECT are pressed rarely, since they pause and leave menus;
 pass `buttons` to choose others. A `seed` makes a run repeatable on one worker.
+
+## Parity
+
+With a comparison core (a `[[compare]]` entry: the decomp built as a libretro core, see
+[connectors.md](connectors.md#comparison-cores)), an agent can see where the decomp matches
+the original game frame by frame, and check more of it. The results are the ones `dj parity`
+and dj-gui's Check parity keep ([cli.md](cli.md#parity), [gui.md](gui.md#parity)).
+
+- **Reading** (`--allow query`): `parity_summary` and `parity_failures` (above). `function`
+  adds each block's `parity` per comparison core with results (`parity`, `untested`,
+  `failed_older_build` or `failed`: the worst of its instructions that ran), and `gaps` adds
+  each function's counts. `compare` can be left out when the project has one comparison
+  core. A core whose library isn't on this machine is left out of `function` and `gaps`, since
+  its build can't be known.
+- **Checking** (`--allow draft`): `parity_check` and `parity_rerun` are jobs. Each runs
+  `dj parity` as a child process, so a comparison core that crashes or hangs is handled as on
+  the command line. `job_status` gives frames checked, the segments (or failures) done so
+  far with how each went (failed ones listed first), and the totals at the end. Its status
+  ends as `finished: nothing failed`, `finished: frames failed`, `stopped` or `failed` (with
+  `error`). `job_stop` stops it.
+- **Explaining** (`--allow draft`): `parity_failures` lists the first 10 things that differed
+  for each failure (`diffs`, with `diffs_total`), labelled when the comparison core names them.
+  `parity_explain` runs `dj parity --explain` ([cli.md](cli.md#parity)) and returns its JSON:
+  `outcome` (`failed`, `earlier` or `passed`), `diffs` each with a `writer` or a `note` saying
+  why there is none, `ran` (the functions the frame ran) and a `hint`. A writer the original
+  has is the function to match in the decomp; a `note` that it wasn't written in the frames
+  traced means trying a larger `frames_back`.
 
 ## The GUI
 

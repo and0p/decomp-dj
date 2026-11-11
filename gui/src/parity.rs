@@ -23,6 +23,8 @@ const NOT_RUN: Color32 = Color32::from_gray(58);
 
 /// How often the passed flags are written to the database while frames pass.
 const SAVE_SECS: f64 = 3.0;
+/// How often to look for results another process wrote (`dj parity`, a second dj-gui).
+const POLL_SECS: f64 = 1.0;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum St {
@@ -39,14 +41,19 @@ pub type Counts = [usize; 4];
 pub struct Parity {
     pub core: String,
     pub build: String,
-    /// Flags of every frame that passed with this build, OR'd.
+    /// Flags of every frame that passed with this build, OR'd: the database's and ours.
     pub passed: Vec<u8>,
+    /// What passed here since the last save: added to the database's on save (merged, not
+    /// written over, since another process may be adding passes too).
+    fresh: Vec<u8>,
+    /// The database's `data_version` when last read: it changes when another connection
+    /// commits, so other processes' results are picked up.
+    data_version: Option<i64>,
+    polled_at: f64,
     /// All builds', oldest first.
     pub failures: Vec<Failure>,
     failed_now: Vec<u8>,
     failed_old: Vec<u8>,
-    /// `passed` has grown since it was written.
-    unsaved: bool,
     saved_at: f64,
     /// Changed since the cells were counted.
     pub changed: bool,
@@ -55,19 +62,10 @@ pub struct Parity {
     pub error: Option<String>,
 }
 
-fn or_into(to: &mut Vec<u8>, from: &[u8]) -> bool {
-    if to.len() < from.len() {
-        to.resize(from.len(), 0);
-    }
-    let mut grew = false;
-    for (a, b) in to.iter_mut().zip(from) {
-        let b = *b & FLAG_OPCODE;
-        if *a | b != *a {
-            *a |= b;
-            grew = true;
-        }
-    }
-    grew
+use store::or_opcodes as or_into;
+
+fn data_version(cache: &Cache) -> Option<i64> {
+    cache.conn().query_row("PRAGMA data_version", [], |r| r.get(0)).ok()
 }
 
 fn has(v: &[u8], off: usize) -> bool {
@@ -80,26 +78,53 @@ impl Parity {
             core: core.to_string(),
             build: build.to_string(),
             passed: vec![],
+            fresh: vec![],
+            data_version: None,
+            polled_at: 0.0,
             failures: vec![],
             failed_now: vec![],
             failed_old: vec![],
-            unsaved: false,
             saved_at: 0.0,
             changed: true,
             next_mem_id: -1,
             error: None,
         };
-        if let Some(c) = cache.map(|c| c.conn()) {
-            match store::passed(c, core, build).and_then(|ps| Ok((ps, store::failures(c, core)?))) {
-                Ok((ps, fs)) => {
-                    p.passed = ps;
-                    p.failures = fs;
+        p.reload(cache);
+        p
+    }
+
+    /// Reads the results from the database again, keeping what is only here: passes not
+    /// saved yet, and failures kept in memory.
+    fn reload(&mut self, cache: Option<&Cache>) {
+        if let Some(cache) = cache {
+            self.data_version = data_version(cache);
+            let c = cache.conn();
+            match store::passed(c, &self.core, &self.build).and_then(|ps| Ok((ps, store::failures(c, &self.core)?))) {
+                Ok((mut ps, mut fs)) => {
+                    or_into(&mut ps, &self.fresh);
+                    self.passed = ps;
+                    fs.extend(self.failures.iter().filter(|f| f.id < 0).cloned());
+                    self.failures = fs;
                 }
-                Err(e) => p.error = Some(format!("Couldn't read parity results: {e:#}")),
+                Err(e) => self.error = Some(format!("Couldn't read parity results: {e:#}")),
             }
         }
-        p.refail();
-        p
+        self.refail();
+    }
+
+    /// Picks up results another process wrote, at most every POLL_SECS. True if it did.
+    pub fn poll(&mut self, cache: Option<&Cache>, now: f64) -> bool {
+        let Some(c) = cache else { return false };
+        if now - self.polled_at < POLL_SECS {
+            return false;
+        }
+        self.polled_at = now;
+        let v = data_version(c);
+        if v.is_none() || v == self.data_version {
+            return false;
+        }
+        self.reload(cache);
+        true
     }
 
     fn refail(&mut self) {
@@ -135,7 +160,7 @@ impl Parity {
     /// A frame passed: what it ran.
     pub fn add_pass(&mut self, flags: &[u8]) {
         if or_into(&mut self.passed, flags) {
-            self.unsaved = true;
+            or_into(&mut self.fresh, flags);
             self.changed = true;
         }
     }
@@ -171,16 +196,22 @@ impl Parity {
         self.refail();
     }
 
-    /// Writes the passed flags, at most every SAVE_SECS unless `force`.
+    /// Adds the passes found here since the last save to the database's, at most every
+    /// SAVE_SECS unless `force`; what other processes added comes back with them.
     pub fn save(&mut self, cache: Option<&Cache>, now: f64, force: bool) {
-        if !self.unsaved || (!force && now - self.saved_at < SAVE_SECS) {
+        if self.fresh.is_empty() || (!force && now - self.saved_at < SAVE_SECS) {
             return;
         }
         let Some(c) = cache else { return };
         self.saved_at = now;
-        self.unsaved = false;
-        if let Err(e) = store::set_passed(c.conn(), &self.core, &self.build, &self.passed) {
-            self.error = Some(format!("Couldn't keep parity results in the local database: {e:#}"));
+        match store::add_passed(c.conn(), &self.core, &self.build, &self.fresh) {
+            Ok(all) => {
+                self.fresh.clear();
+                if or_into(&mut self.passed, &all) {
+                    self.changed = true;
+                }
+            }
+            Err(e) => self.error = Some(format!("Couldn't keep parity results in the local database: {e:#}")),
         }
     }
 }
@@ -374,7 +405,7 @@ impl App {
             }
             self.compare_failed = false;
             self.compare_problem = None;
-            self.compare_at = None;
+            self.checker.lose_step();
             self.compare_need_sync = true;
             self.base_next = None;
             self.reshow = true;
@@ -472,7 +503,10 @@ impl App {
                             let when = if old { "an older build" } else { "this build" };
                             if ui
                                 .link(RichText::new(format!("{title}, frame {}", f.frame)).small())
-                                .on_hover_text(format!("{}\n\nFailed with {when}, synced at {synced}. Click to show the frame.", f.reason))
+                                .on_hover_text({
+                                    let differed = if f.diffs.is_empty() { String::new() } else { format!("\n\nWhat differed:\n{}", f.diffs.lines(8).iter().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n")) };
+                                    format!("{}{differed}\n\nFailed with {when}, synced at {synced}. Click to show the frame.", f.reason)
+                                })
                                 .clicked()
                             {
                                 go = Some((f.segment.clone(), f.frame));
@@ -522,7 +556,7 @@ mod tests {
     use super::*;
 
     fn fail(id: i64, build: &str, flags: Vec<u8>) -> Failure {
-        Failure { id, core: "c".into(), build: build.into(), synced: ("s".into(), 0), segment: "s".into(), frame: 1, reason: String::new(), created: 0, flags }
+        Failure { id, core: "c".into(), build: build.into(), synced: ("s".into(), 0), segment: "s".into(), frame: 1, reason: String::new(), created: 0, flags, diffs: Default::default() }
     }
 
     #[test]

@@ -629,6 +629,18 @@ CREATE TABLE IF NOT EXISTS parity_passed(core TEXT NOT NULL, build TEXT NOT NULL
 CREATE TABLE IF NOT EXISTS parity_failures(
     id INTEGER PRIMARY KEY, core TEXT NOT NULL, build TEXT NOT NULL, synced_segment TEXT NOT NULL, synced_frame INTEGER NOT NULL,
     segment TEXT NOT NULL, frame INTEGER NOT NULL, reason TEXT NOT NULL, created INTEGER NOT NULL, region TEXT NOT NULL, flags BLOB NOT NULL);
+-- What differed on a failing frame (dj_parity_diffs, or system RAM compared byte for byte), in
+-- the order given: up to 100 per failure. total: how many there were in all (on every row).
+CREATE TABLE IF NOT EXISTS parity_diffs(
+    failure INTEGER NOT NULL, idx INTEGER NOT NULL, label TEXT, region TEXT, address INTEGER, symbol TEXT,
+    len INTEGER NOT NULL, expected BLOB NOT NULL, actual BLOB NOT NULL, total INTEGER NOT NULL,
+    PRIMARY KEY(failure, idx));
+-- Segments checked with a comparison core build (`dj parity`), by content: so a run can skip
+-- what it has already checked. failed_at: the frame the check stopped at, if one failed.
+CREATE TABLE IF NOT EXISTS parity_runs(
+    core TEXT NOT NULL, build TEXT NOT NULL, content TEXT NOT NULL, segment_id TEXT NOT NULL, frames INTEGER NOT NULL,
+    passed INTEGER NOT NULL, skipped INTEGER NOT NULL, unchecked INTEGER NOT NULL, failed_at INTEGER, created INTEGER NOT NULL,
+    PRIMARY KEY(core, build, content));
 -- Stable views for agents and `dj sql` (docs/database.md#views). Their columns are a promise:
 -- add columns at the end, and drop and recreate a view only together with a note in the docs.
 CREATE VIEW IF NOT EXISTS v_first_hits AS

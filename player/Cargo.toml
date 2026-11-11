@@ -2,7 +2,7 @@
 name = "decomp-dj"
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "GPL-3.0-or-later"
 description = "Plays trees of libretro input segments, checks state hashes, and records ROM code coverage"
 
 [lib]

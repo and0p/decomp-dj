@@ -68,7 +68,7 @@ if [ "$os" = linux ]; then
 fi
 
 cp -R docs "$out/"
-cp LICENSE "$out/LICENSE.txt"
+cp LICENSE.txt "$out/LICENSE.txt"
 cp README.md "$out/README.md"
 
 # The ZIP, keeping executable bits and the app bundle's links where the tool can.

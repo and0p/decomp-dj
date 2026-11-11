@@ -1,4 +1,5 @@
 mod mcp;
+mod parity_cmd;
 mod queries;
 use decomp_dj::{cache, coverage, libretro};
 
@@ -164,6 +165,55 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+    /// Check segments against a comparison core ([[compare]]) frame by frame, as Check parity
+    /// does in dj-gui, each from its own start, stopping a segment at its first failure.
+    /// Segments already checked with this build are skipped (unless --all). Exits 1 when a
+    /// frame fails. With --report, --rerun or --clear, works with the results kept instead
+    Parity {
+        dir: PathBuf,
+        #[command(flatten)]
+        local: Local,
+        /// Only this segment (id or unique prefix)
+        segment: Option<String>,
+        /// With a segment: also every segment below it
+        #[arg(long)]
+        children: bool,
+        /// The [[compare]] entry to check against (needed when there are several)
+        #[arg(long, value_name = "NAME")]
+        compare: Option<String>,
+        /// Check segments again even if they were checked with this build
+        #[arg(long)]
+        all: bool,
+        /// Also check segments that aren't clean
+        #[arg(long)]
+        dirty: bool,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+        /// Report the results kept (per function, and the failures) without running a core
+        #[arg(long, conflicts_with_all = ["rerun", "clear"])]
+        report: bool,
+        /// Play failures again with the build there is now: these ids, or every failure from
+        /// an older build. One that passes is cleared
+        #[arg(long, value_name = "ID", num_args = 0.., conflicts_with = "clear")]
+        rerun: Option<Vec<i64>>,
+        /// Forget these failures
+        #[arg(long, value_name = "ID", num_args = 1..)]
+        clear: Vec<i64>,
+        /// With --report: functions to list
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// One JSON line per segment as it finishes (for the MCP server's parity jobs)
+        #[arg(long, hide = true)]
+        events: bool,
+        /// Play this failure again and say what differed, and which instruction of the
+        /// original wrote each value (needs a trace hook in the baseline's connector)
+        #[arg(long, value_name = "ID", conflicts_with_all = ["rerun", "clear", "report"])]
+        explain: Option<i64>,
+        /// With --explain: also trace this many frames before the failing one
+        #[arg(long, default_value_t = 10, value_name = "N")]
+        frames_back: u64,
+    },
     /// Play, top down, the segments that aren't clean or whose content isn't in the local
     /// database, and write the hashes they reach into their files (as Clean all segments does
     /// in dj-gui, which leaves them unsaved instead). A changed ending is listed, not written,
@@ -316,9 +366,14 @@ fn real_main() -> Result<()> {
     let cli = Cli::parse();
     // Batch commands play in a child dj, so a core that crashes or hangs costs a segment,
     // not the command (.agents/ISOLATION_PLAN.md).
-    if let Cmd::Run { dir, .. } | Cmd::Clean { dir, .. } | Cmd::Hydrate { dir, .. } = &cli.cmd {
-        if let Some(code) = decomp_dj::isolate::supervise(dir)? {
-            std::process::exit(code);
+    let parity_plays = matches!(&cli.cmd, Cmd::Parity { report: false, clear, .. } if clear.is_empty());
+    // `dj parity` plays only when it checks or re-runs (its reports and clears run no core).
+    let plays = !matches!(&cli.cmd, Cmd::Parity { .. }) || parity_plays;
+    if let Cmd::Run { dir, .. } | Cmd::Clean { dir, .. } | Cmd::Hydrate { dir, .. } | Cmd::Parity { dir, .. } = &cli.cmd {
+        if plays {
+            if let Some(code) = decomp_dj::isolate::supervise(dir)? {
+                std::process::exit(code);
+            }
         }
     }
     // A project a newer dj wrote, or settings this dj doesn't know: said once, here (in the
@@ -342,6 +397,13 @@ fn real_main() -> Result<()> {
         Cmd::Annotations { dir, local } => annotations(&dir, &local),
         Cmd::Hydrate { dir, local, segment, children, force } => hydrate(&dir, &local, segment, children, force),
         Cmd::Clean { dir, local, segment, accept, all } => clean(&dir, &local, segment, accept, all),
+        Cmd::Parity { dir, local, segment, children, compare, all, dirty, json, report, rerun, clear, limit, events, explain, frames_back } => {
+            let code = parity_cmd::parity(&dir, &local, parity_cmd::Args { segment, children, compare, all, dirty, json, events, report, rerun, clear, limit, explain, frames_back })?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
         Cmd::Xref { dir, what, query } => queries::xref(&dir, &what, &query),
         Cmd::Summary { dir, query } => queries::summary(&dir, &query),
         Cmd::Gaps { dir, sort, only, query } => queries::gaps(&dir, sort, only, &query),
@@ -364,7 +426,7 @@ fn cmd_dir(cmd: &Cmd) -> Option<&Path> {
     Some(match cmd {
         Cmd::Init { .. } => return None,
         Cmd::ImportTas { dir, .. } | Cmd::ExportTas { dir, .. } => dir,
-        Cmd::New { dir, .. } | Cmd::Status { dir } | Cmd::Play { dir, .. } | Cmd::Run { dir, .. } | Cmd::Report { dir, .. } | Cmd::Annotations { dir, .. } | Cmd::Hydrate { dir, .. } | Cmd::Clean { dir, .. } => dir,
+        Cmd::New { dir, .. } | Cmd::Status { dir } | Cmd::Play { dir, .. } | Cmd::Run { dir, .. } | Cmd::Report { dir, .. } | Cmd::Annotations { dir, .. } | Cmd::Hydrate { dir, .. } | Cmd::Clean { dir, .. } | Cmd::Parity { dir, .. } => dir,
         Cmd::Xref { dir, .. } | Cmd::Summary { dir, .. } | Cmd::Gaps { dir, .. } | Cmd::Function { dir, .. } | Cmd::Frontier { dir, .. } | Cmd::CheckConnector { dir, .. } => dir,
         Cmd::Snapshot { dir, .. } | Cmd::Sql { dir, .. } | Cmd::Worker { dir } | Cmd::Mcp { dir, .. } | Cmd::Repin { dir, .. } | Cmd::Upgrade { dir } => dir,
         Cmd::Cache { cmd: CacheCmd::Stats { dir } } | Cmd::Cache { cmd: CacheCmd::Gc { dir, .. } } => dir,

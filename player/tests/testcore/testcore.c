@@ -135,18 +135,44 @@ int dj_sync(const struct dj_baseline *b, uint64_t frame, uint32_t flags, char *r
     return 0;
 }
 
+struct dj_parity_diff {
+    const char *label; const char *region; uint64_t address; const char *symbol;
+    const uint8_t *expected; const uint8_t *actual; size_t len;
+};
+
+/* The differences the last dj_check_parity found: one per differing byte, then one with a
+ * label alone (a value kept in no one place), to test diffs without an address. */
+static struct dj_parity_diff diffs[64];
+static size_t ndiffs;
+static uint8_t base_copy[64];
+static const char *labels[] = {"frame counter", "buttons held", "mixed state"};
+
 /* Parity: the first 63 bytes of RAM match the baseline's (ram[63] counts boots). */
 int dj_check_parity(const struct dj_baseline *b, uint64_t frame, char *reason, size_t len) {
     void *(*mem)(unsigned) = (void *(*)(unsigned))b->get_proc(b->ctx, "retro_get_memory_data");
+    ndiffs = 0;
     if (!mem) { snprintf(reason, len, "no baseline RAM"); return 2; }
     const uint8_t *base = mem(RETRO_MEMORY_SYSTEM_RAM);
+    memcpy(base_copy, base, sizeof base_copy);
     if (ram[0] == 10 && strcmp(break_setting(), "crash-check") == 0) *(volatile int *)0 = 1;
     for (unsigned i = 0; i < 63; i++)
         if (base[i] != ram[i]) {
-            snprintf(reason, len, "RAM 0x%02X is 0x%02X here, 0x%02X in the baseline (frame %llu)", i, ram[i], base[i], (unsigned long long)frame);
-            return 1;
+            struct dj_parity_diff d = {i < 3 ? labels[i] : NULL, "RAM", i, NULL, base_copy + i, ram + i, 1};
+            diffs[ndiffs++] = d;
         }
+    if (ndiffs) {
+        struct dj_parity_diff d = {"checksum of the state", NULL, 0, NULL, NULL, NULL, 0};
+        diffs[ndiffs++] = d;
+        unsigned i = (unsigned)diffs[0].address;
+        snprintf(reason, len, "RAM 0x%02X is 0x%02X here, 0x%02X in the baseline (frame %llu)", i, ram[i], base[i], (unsigned long long)frame);
+        return 1;
+    }
     return 0;
+}
+
+size_t dj_parity_diffs(struct dj_parity_diff *out, size_t cap) {
+    for (size_t i = 0; i < ndiffs && i < cap; i++) out[i] = diffs[i];
+    return ndiffs;
 }
 
 /* The core option `testcore_break` makes the frame where ram[0] becomes 10 go wrong:

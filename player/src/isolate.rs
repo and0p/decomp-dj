@@ -122,7 +122,7 @@ impl std::fmt::Display for WorkerFailure {
 }
 
 /// The program workers run as.
-fn worker_exe() -> Result<PathBuf> {
+pub fn worker_exe() -> Result<PathBuf> {
     match std::env::var_os("DJ_WORKER_EXE") {
         Some(p) => Ok(PathBuf::from(p)),
         None => std::env::current_exe().context("finding dj's own program to start a worker"),

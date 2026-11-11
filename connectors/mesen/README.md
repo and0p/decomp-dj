@@ -7,8 +7,8 @@ so it reports which code ran, for decomp-dj.
 - **Build:** `connectors/mesen/build.sh` clones that commit, applies
   `dj-mesen.patch`, and builds `mesen_libretro.{so,dylib,dll}` into `build/cores/`.
 - **License:** Mesen is GPL-3.0, so this patch and the core built from it are
-  GPL-3.0 too. The decomp-dj player is a separate program that loads the
-  core at run time, like any libretro frontend, and stays MIT.
+  GPL-3.0 too, the same licence as decomp-dj. The player loads the core at run time, like
+  any libretro frontend.
 
 ## Why Mesen
 

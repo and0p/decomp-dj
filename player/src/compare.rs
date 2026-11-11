@@ -81,6 +81,153 @@ const DJ_PARITY_SKIP: i32 = 2;
 const DJ_RUN_OK: i32 = 0;
 
 type CheckFn = unsafe extern "C" fn(*const DjBaseline, u64, *mut c_char, usize) -> i32;
+type DiffsFn = unsafe extern "C" fn(*mut DjParityDiff, usize) -> usize;
+
+/// `struct dj_parity_diff` (docs/connectors.md#parity): one difference, in the original's terms.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct DjParityDiff {
+    label: *const c_char,
+    region: *const c_char,
+    address: u64,
+    symbol: *const c_char,
+    expected: *const u8,
+    actual: *const u8,
+    len: usize,
+}
+
+/// The most differences kept for one failure; the rest are counted.
+pub const DIFF_CAP: usize = 100;
+/// The most bytes kept of each side of a difference.
+pub const DIFF_BYTES: usize = 64;
+
+/// One thing that differed on a failing frame (docs/connectors.md#parity).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct Diff {
+    /// What the value means: "Player 2 x coordinate".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The original's memory region: "RAM", "SRAM". None: the value has no one place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// Offset in `region`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<u64>,
+    /// A data symbol in the original's symbol map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    /// The value's size in bytes (the bytes below are cut to [`DIFF_BYTES`]).
+    pub len: u64,
+    /// The original's (the baseline's) bytes.
+    pub expected: Vec<u8>,
+    /// The comparison core's bytes.
+    pub actual: Vec<u8>,
+}
+
+/// What differed on a failing frame: up to [`DIFF_CAP`] differences, and how many in all.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct Diffs {
+    pub list: Vec<Diff>,
+    pub total: u64,
+}
+
+impl Diff {
+    /// Where it is: "RAM 0x0002", a symbol, or None for a value with no one place.
+    pub fn place(&self) -> Option<String> {
+        match (&self.symbol, &self.region, self.address) {
+            (Some(s), _, _) => Some(s.clone()),
+            (None, Some(r), Some(a)) => Some(format!("{r} 0x{a:04X}")),
+            (None, Some(r), None) => Some(r.clone()),
+            _ => None,
+        }
+    }
+
+    /// One line: `mixed state (RAM 0x0002): 47 here, 12 in the original`.
+    pub fn describe(&self) -> String {
+        let hex = |b: &[u8]| {
+            let mut t: String = b.iter().map(|x| format!("{x:02X}")).collect::<Vec<_>>().join(" ");
+            if (b.len() as u64) < self.len {
+                t.push_str(" …");
+            }
+            t
+        };
+        let what = match (&self.label, self.place()) {
+            (Some(l), Some(p)) => format!("{l} ({p})"),
+            (Some(l), None) => l.clone(),
+            (None, Some(p)) => p,
+            (None, None) => "(no name)".into(),
+        };
+        if self.expected.is_empty() && self.actual.is_empty() {
+            what
+        } else {
+            format!("{what}: {} here, {} in the original", hex(&self.actual), hex(&self.expected))
+        }
+    }
+}
+
+impl Diffs {
+    pub fn is_empty(&self) -> bool {
+        self.total == 0
+    }
+
+    /// Up to `n` lines describing them, and a line counting the rest.
+    pub fn lines(&self, n: usize) -> Vec<String> {
+        let mut v: Vec<String> = self.list.iter().take(n).map(Diff::describe).collect();
+        let rest = self.total.saturating_sub(v.len() as u64);
+        if rest > 0 {
+            v.push(format!("and {rest} more"));
+        }
+        v
+    }
+
+    /// The differences between two copies of a region, one per run of differing bytes.
+    pub fn of_bytes(region: &str, expected: &[u8], actual: &[u8]) -> Diffs {
+        let mut d = Diffs::default();
+        let mut i = 0;
+        let n = expected.len().min(actual.len());
+        while i < n {
+            if expected[i] == actual[i] {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < n && expected[i] != actual[i] {
+                i += 1;
+            }
+            d.total += 1;
+            if d.list.len() < DIFF_CAP {
+                let end = i.min(start + DIFF_BYTES);
+                d.list.push(Diff { region: Some(region.to_string()), address: Some(start as u64), len: (i - start) as u64, expected: expected[start..end].to_vec(), actual: actual[start..end].to_vec(), ..Default::default() });
+            }
+        }
+        d
+    }
+}
+
+fn c_text(p: *const c_char) -> Option<String> {
+    if p.is_null() {
+        return None;
+    }
+    let s = unsafe { CStr::from_ptr(p) }.to_string_lossy().trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+/// Reads the differences from a core's `dj_parity_diffs`.
+fn read_diffs(f: DiffsFn) -> Diffs {
+    let empty = DjParityDiff { label: std::ptr::null(), region: std::ptr::null(), address: 0, symbol: std::ptr::null(), expected: std::ptr::null(), actual: std::ptr::null(), len: 0 };
+    let mut buf = vec![empty; DIFF_CAP];
+    let total = unsafe { f(buf.as_mut_ptr(), buf.len()) };
+    let bytes = |p: *const u8, len: usize| if p.is_null() { vec![] } else { unsafe { std::slice::from_raw_parts(p, len.min(DIFF_BYTES)) }.to_vec() };
+    let list = buf[..total.min(DIFF_CAP)]
+        .iter()
+        .map(|d| {
+            let region = c_text(d.region);
+            let symbol = c_text(d.symbol);
+            Diff { label: c_text(d.label), address: (region.is_some() && symbol.is_none()).then_some(d.address), region, symbol, len: d.len as u64, expected: bytes(d.expected, d.len), actual: bytes(d.actual, d.len) }
+        })
+        .collect();
+    Diffs { list, total: total as u64 }
+}
 type RunFn = unsafe extern "C" fn(*mut c_char, usize) -> i32;
 type SyncFn = unsafe extern "C" fn(*const DjBaseline, u64, u32, *mut c_char, usize) -> i32;
 type WriteFn = unsafe extern "C" fn(*const DjBaseline, *const c_char, u64, *const u8, usize, *mut c_char, usize) -> i32;
@@ -125,8 +272,9 @@ pub struct Stepped {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Verdict {
     Match,
-    /// The cores disagree after this frame, with the reason.
-    Mismatch(String),
+    /// The cores disagree after this frame, with the reason and what differed (empty when
+    /// the core doesn't say).
+    Mismatch(String, Diffs),
     /// Not checked: the core can't judge this frame (a loading screen, say), with the reason.
     Skip(String),
 }
@@ -139,6 +287,7 @@ pub struct Comparison {
     sync_fn: Option<SyncFn>,
     write_fn: Option<WriteFn>,
     check_fn: Option<CheckFn>,
+    diffs_fn: Option<DiffsFn>,
     run_fn: Option<RunFn>,
     /// The sha256 of the core library as loaded: the build parity results belong to.
     pub build: String,
@@ -185,6 +334,8 @@ impl Comparison {
             let check_ptr = core.proc("dj_check_parity");
             let run_ptr = core.proc("dj_run");
             let check_fn: Option<CheckFn> = (!check_ptr.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, CheckFn>(check_ptr) });
+            let diffs_ptr = core.proc("dj_parity_diffs");
+            let diffs_fn: Option<DiffsFn> = (!diffs_ptr.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, DiffsFn>(diffs_ptr) });
             let run_fn: Option<RunFn> = (!run_ptr.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, RunFn>(run_ptr) });
             match spec.mode {
                 SyncMode::DjSync if sync_fn.is_none() => bail!("the core has no dj_sync, which [[compare]] \"{name}\" asks for (sync = \"dj_sync\", the default). For the same emulator as the baseline, sync = \"state\" syncs by save state instead"),
@@ -193,7 +344,7 @@ impl Comparison {
                 }
                 _ => {}
             }
-            Ok(Comparison { name: name.to_string(), core, mode: spec.mode, sync_fn, write_fn, check_fn, run_fn, build: spec.build.clone(), copy: None })
+            Ok(Comparison { name: name.to_string(), core, mode: spec.mode, sync_fn, write_fn, check_fn, diffs_fn, run_fn, build: spec.build.clone(), copy: None })
         })();
         match loaded {
             Ok(mut c) => {
@@ -327,7 +478,7 @@ impl Comparison {
             let r = unsafe { f(&h, power_on_frame, buf.as_mut_ptr() as *mut c_char, buf.len()) };
             return match r {
                 DJ_PARITY_MATCH => Ok(Verdict::Match),
-                DJ_PARITY_MISMATCH => Ok(Verdict::Mismatch(reason(&buf).unwrap_or_else(|| "the core reports a mismatch".into()))),
+                DJ_PARITY_MISMATCH => Ok(Verdict::Mismatch(reason(&buf).unwrap_or_else(|| "the core reports a mismatch".into()), self.diffs_fn.map(read_diffs).unwrap_or_default())),
                 DJ_PARITY_SKIP => Ok(Verdict::Skip(reason(&buf).unwrap_or_else(|| "not checked here".into()))),
                 _ => bail!("dj_check_parity failed: {}", reason(&buf).unwrap_or_else(|| format!("error {r}"))),
             };
@@ -337,7 +488,11 @@ impl Comparison {
         Ok(match (base, mine) {
             (Some(a), Some(b)) if a.len() == b.len() => match a.iter().zip(b.iter()).position(|(x, y)| x != y) {
                 None => Verdict::Match,
-                Some(i) => Verdict::Mismatch(format!("system RAM differs at 0x{i:X}: 0x{:02X} here, 0x{:02X} in the baseline", b[i], a[i])),
+                Some(i) => {
+                    let d = Diffs::of_bytes("RAM", &a, b);
+                    let more = if d.total > 1 { format!(" ({} ranges differ)", d.total) } else { String::new() };
+                    Verdict::Mismatch(format!("system RAM differs at 0x{i:X}: 0x{:02X} here, 0x{:02X} in the baseline{more}", b[i], a[i]), d)
+                }
             },
             (Some(a), Some(b)) => Verdict::Skip(format!("system RAM sizes differ ({} bytes here, {} in the baseline) and the core has no dj_check_parity", b.len(), a.len())),
             _ => Verdict::Skip("no system RAM to compare, and the core has no dj_check_parity".into()),
@@ -520,7 +675,7 @@ impl Drop for CompareWorker {
 fn verdict_json(v: &Verdict) -> serde_json::Value {
     match v {
         Verdict::Match => serde_json::json!({ "match": true }),
-        Verdict::Mismatch(w) => serde_json::json!({ "mismatch": w }),
+        Verdict::Mismatch(w, d) => serde_json::json!({ "mismatch": w, "diffs": d }),
         Verdict::Skip(w) => serde_json::json!({ "skip": w }),
     }
 }
@@ -707,7 +862,7 @@ impl RemoteComparison {
         let what = if self.has_check { "while checking parity (dj_check_parity)" } else { "while comparing RAM" };
         let (v, _) = self.call("check", serde_json::json!({ "power_on_frame": power_on_frame }), &[&state], what)?;
         Ok(if let Some(w) = v["mismatch"].as_str() {
-            Verdict::Mismatch(w.to_string())
+            Verdict::Mismatch(w.to_string(), serde_json::from_value(v["diffs"].clone()).unwrap_or_default())
         } else if let Some(w) = v["skip"].as_str() {
             Verdict::Skip(w.to_string())
         } else {
@@ -735,6 +890,15 @@ fn sanitize(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn byte_diffs_are_runs() {
+        let d = Diffs::of_bytes("RAM", &[1, 2, 3, 4, 5, 6], &[1, 9, 9, 4, 5, 0]);
+        assert_eq!(d.total, 2);
+        assert_eq!((d.list[0].address, d.list[0].len, d.list[0].expected.clone(), d.list[0].actual.clone()), (Some(1), 2, vec![2, 3], vec![9, 9]));
+        assert_eq!((d.list[1].address, d.list[1].len), (Some(5), 1));
+        assert!(Diffs::of_bytes("RAM", &[1], &[1]).is_empty());
+    }
 
     #[test]
     fn parses_compare_entries() {

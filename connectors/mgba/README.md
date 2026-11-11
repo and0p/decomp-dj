@@ -10,9 +10,10 @@ reports which code ran, for decomp-dj.
   turned off, so the core is the same whatever the machine has installed. Needs git, CMake,
   make and a C compiler.
 - **License:** mGBA is MPL-2.0. The new files (`dj_connector.c`, `dj_connector.h`) are
-  decomp-dj's own and MIT; the few lines the patch changes in mGBA's files are under the
-  MPL-2.0, as is the core built from it. The player loads the core at run time, like any
-  libretro frontend, and stays MIT.
+  decomp-dj's own and MIT (so they sit in an MPL-2.0 core without trouble); the few lines
+  the patch changes in mGBA's files are under the MPL-2.0, as is the core built from it.
+  The player (GPL-3.0) is a separate program that loads the core at run time, like any
+  libretro frontend.
 - **Game Boy games** load as usual but report no regions: only the GBA's CPU is hooked.
 
 ## What the patch does

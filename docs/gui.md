@@ -148,7 +148,14 @@ kept in the local database, separately for each `[[compare]]` entry
   build and starts with no passes.
 - A frame that **failed** (a parity failure or a failed tick) is kept with how to reproduce
   it: the build, the segment and frame the comparison core was synced at, the failing
-  segment and frame, the reason, and the code that frame ran. Failed syncs aren't kept.
+  segment and frame, the reason, what differed (when the check says:
+  [connectors.md](connectors.md#parity)), and the code that frame ran. Failed syncs aren't
+  kept. The failure's message and its hover in the list show what differed;
+  `dj parity --explain` traces who wrote it ([cli.md](cli.md#parity)).
+
+Passes are added to what the database already has, never written over, so two dj-gui
+windows on one project both keep theirs. Results another program writes appear within
+about a second.
 
 The Functions tab's **Parity with "core"** section counts the instructions with parity,
 failed and not checked, and lists the failures, newest first. Click one to show its frame.
@@ -170,6 +177,10 @@ the coverage colours:
 Any frame that fails marks everything it ran, so code every frame runs (the NMI handler,
 the main loop) turns red with any failure. The selected function shows its parity counts
 and links to the first failing frame that ran it.
+
+`dj parity` checks the same way from the command line ([cli.md](cli.md#parity)), as do
+agents' `parity_check` jobs ([mcp.md](mcp.md#parity)), and their results show here too. A
+decomp's CI can run it after each build ([connectors.md](connectors.md#checking-parity-in-ci)).
 
 ## Menus
 

@@ -1008,3 +1008,256 @@ mod tests {
 fn cpu_text(a: u64) -> String {
     if a > 0xFFFF { format!("${a:08X}") } else { format!("${a:04X}") }
 }
+
+// ---- parity with comparison cores (docs/cli.md#parity, docs/mcp.md#parity) ----
+
+/// A block (`REGION:0xOFFSET`) and its parity per comparison core (None: it never ran).
+pub type BlockParity = (String, Vec<(String, Option<crate::parity::State>)>);
+
+/// Instructions that ran, by parity.
+#[derive(Serialize, Default, Clone, Copy, Debug, PartialEq)]
+pub struct ParityCounts {
+    pub failed: usize,
+    pub failed_older_build: usize,
+    pub parity: usize,
+    pub untested: usize,
+}
+
+impl ParityCounts {
+    fn add(&mut self, s: crate::parity::State) {
+        use crate::parity::State::*;
+        match s {
+            Failed => self.failed += 1,
+            FailedOlderBuild => self.failed_older_build += 1,
+            Parity => self.parity += 1,
+            Untested => self.untested += 1,
+        }
+    }
+
+    /// Everything that ran has parity.
+    pub fn complete(&self) -> bool {
+        self.failed + self.failed_older_build + self.untested == 0
+    }
+}
+
+#[derive(Serialize)]
+pub struct ParityFunction {
+    pub name: String,
+    pub at: String,
+    #[serde(flatten)]
+    pub counts: ParityCounts,
+}
+
+/// A failure kept for a comparison core.
+#[derive(Serialize, Clone)]
+pub struct FailureRow {
+    pub id: i64,
+    pub segment: String,
+    pub short: String,
+    pub title: String,
+    pub frame: u64,
+    /// Where the comparison core was synced: the run to reproduce starts there.
+    pub synced_segment: String,
+    pub synced_frame: u64,
+    pub reason: String,
+    pub build: String,
+    /// It failed with the build there is now (else an older one).
+    pub current_build: bool,
+    /// Unix seconds.
+    pub created: i64,
+    /// What differed (the first [`FAILURE_DIFFS`]; `parity_explain` gives them all).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub diffs: Vec<DiffRow>,
+    /// How many things differed in all.
+    pub diffs_total: u64,
+}
+
+/// Differences listed with each failure.
+pub const FAILURE_DIFFS: usize = 10;
+
+/// One thing that differed on a failing frame, for reading.
+#[derive(Serialize, Clone, Debug)]
+pub struct DiffRow {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    pub len: u64,
+    /// The original's bytes, in hex (cut to 64 bytes).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub expected: String,
+    /// The comparison core's bytes.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub actual: String,
+    /// All of it in a line.
+    pub text: String,
+}
+
+impl DiffRow {
+    pub fn of(d: &crate::compare::Diff) -> DiffRow {
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02X}")).collect::<String>();
+        DiffRow {
+            label: d.label.clone(),
+            region: d.region.clone(),
+            address: d.address.map(|a| format!("{a:#06x}")),
+            symbol: d.symbol.clone(),
+            len: d.len,
+            expected: hex(&d.expected),
+            actual: hex(&d.actual),
+            text: d.describe(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct ParityReport {
+    pub compare: String,
+    pub build: String,
+    pub symbols: bool,
+    /// Why there are no counts (nothing recorded yet, no coverage connector), if there aren't.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coverage_problem: Option<String>,
+    /// What the counts count: "instructions", or "opcode bytes" without a symbol map.
+    pub unit: &'static str,
+    pub counts: ParityCounts,
+    pub functions_run: usize,
+    pub functions_with_parity: usize,
+    /// Functions that ran, most failed (then most unchecked) first.
+    pub functions: Vec<ParityFunction>,
+    /// Newest first.
+    pub failures: Vec<FailureRow>,
+}
+
+impl Project {
+    /// Comparison core `name`'s results, against its library as it is now.
+    pub fn parity_results(&self, name: &str) -> Result<crate::parity::Results> {
+        let build = crate::parity::current_build(&self.col, name)?;
+        crate::parity::Results::load(&self.conn, name, &build)
+    }
+
+    fn failure_row(&self, r: &crate::parity::Results, f: &crate::parity::Failure) -> FailureRow {
+        FailureRow {
+            id: f.id,
+            segment: f.segment.clone(),
+            short: self.short(&f.segment),
+            title: if self.col.replays.contains_key(&f.segment) { self.title(&f.segment) } else { "(segment gone)".into() },
+            frame: f.frame,
+            synced_segment: f.synced.0.clone(),
+            synced_frame: f.synced.1,
+            reason: f.reason.clone(),
+            build: f.build.clone(),
+            current_build: r.is_current(f),
+            created: f.created,
+            diffs: f.diffs.list.iter().take(FAILURE_DIFFS).map(DiffRow::of).collect(),
+            diffs_total: f.diffs.total,
+        }
+    }
+
+    /// Parity with comparison core `name`: counts overall and per function, and the failures.
+    pub fn parity_report(&mut self, name: &str, limit: usize) -> Result<ParityReport> {
+        let r = self.parity_results(name)?;
+        let mut counts = ParityCounts::default();
+        let mut funcs: Vec<ParityFunction> = vec![];
+        let (symbols, coverage_problem) = match self.report() {
+            Ok(rep) if rep.symbols => {
+                for f in rep.detail.analyzed.iter().filter(|f| f.func.region == crate::parity::REGION) {
+                    let mut c = ParityCounts::default();
+                    for ins in &f.instructions {
+                        if let Some(st) = r.state(ins.offset, &rep.detail.prg) {
+                            c.add(st);
+                            counts.add(st);
+                        }
+                    }
+                    if c != ParityCounts::default() {
+                        funcs.push(ParityFunction { name: f.func.name.clone(), at: format!("{}:{:#x}", f.func.region, f.func.offset), counts: c });
+                    }
+                }
+                (true, None)
+            }
+            Ok(rep) => {
+                // No symbol map: opcode bytes.
+                let len = [&r.passed, &rep.detail.prg].iter().map(|v| v.len()).chain(r.failures.iter().map(|f| f.flags.len())).max().unwrap_or(0);
+                for o in 0..len as u64 {
+                    if let Some(st) = r.state(o, &rep.detail.prg) {
+                        counts.add(st);
+                    }
+                }
+                (false, None)
+            }
+            Err(e) => (false, Some(format!("{e:#}"))),
+        };
+        funcs.sort_by_key(|f| std::cmp::Reverse((f.counts.failed, f.counts.failed_older_build, f.counts.untested)));
+        let functions_run = funcs.len();
+        let functions_with_parity = funcs.iter().filter(|f| f.counts.complete()).count();
+        funcs.truncate(limit);
+        let failures = r.failures.iter().rev().map(|f| self.failure_row(&r, f)).collect();
+        Ok(ParityReport {
+            compare: name.to_string(),
+            build: r.build.clone(),
+            symbols,
+            coverage_problem,
+            unit: if symbols { "instructions" } else { "opcode bytes" },
+            counts,
+            functions_run,
+            functions_with_parity,
+            functions: funcs,
+            failures,
+        })
+    }
+
+    /// Failures kept for `name`, newest first: only those whose failing frame ran `addr` (an
+    /// address, or a function: any of its instructions), and with `old`, only those from an
+    /// older build (true) or this one (false).
+    pub fn parity_failures(&mut self, name: &str, addr: Option<&str>, old: Option<bool>) -> Result<Vec<FailureRow>> {
+        let r = self.parity_results(name)?;
+        let offsets: Option<Vec<u64>> = match addr {
+            None => None,
+            Some(w) => {
+                let a = self.resolve(w)?;
+                if a.region != crate::parity::REGION {
+                    bail!("parity is kept for {} code; {} is in {}", crate::parity::REGION, a.text, a.region);
+                }
+                // A function's start means the whole function.
+                let whole = self.report().ok().and_then(|rep| rep.detail.analyzed.iter().find(|f| f.func.region == a.region && f.func.offset == a.offset).map(|f| f.instructions.iter().map(|i| i.offset).collect()));
+                Some(whole.unwrap_or_else(|| vec![a.offset]))
+            }
+        };
+        Ok(r.failures
+            .iter()
+            .rev()
+            .filter(|f| old.is_none_or(|o| o != r.is_current(f)))
+            .filter(|f| offsets.as_ref().is_none_or(|os| os.iter().any(|o| crate::parity::Results::failure_ran(f, *o))))
+            .map(|f| self.failure_row(&r, f))
+            .collect())
+    }
+
+    /// The comparison cores with results here: (name, results). Cores whose library isn't on
+    /// this machine are left out (their build can't be known).
+    pub fn parity_cores(&self) -> Vec<(String, crate::parity::Results)> {
+        self.col.config.compare.iter().filter_map(|c| self.parity_results(&c.name).ok().filter(|r| !r.is_empty()).map(|r| (c.name.clone(), r))).collect()
+    }
+
+    /// Each block of the function at `what`, with its parity per comparison core with results:
+    /// the worst state of its instructions that ran (None: none ran).
+    pub fn block_parity(&mut self, what: &str) -> Result<Vec<BlockParity>> {
+        let cores = self.parity_cores();
+        if cores.is_empty() {
+            return Ok(vec![]);
+        }
+        let a = self.resolve(what)?;
+        let rep = self.report()?;
+        let Some(f) = rep.detail.analyzed.iter().find(|f| a.region == f.func.region && a.offset >= f.func.offset && a.offset < f.func.offset + f.func.size.max(1)) else { return Ok(vec![]) };
+        Ok(f.blocks
+            .iter()
+            .map(|b| {
+                let per = cores.iter().map(|(n, r)| (n.clone(), b.instructions.iter().filter_map(|o| r.state(*o, &rep.detail.prg)).max())).collect();
+                (format!("{}:{:#x}", f.func.region, b.offset), per)
+            })
+            .collect())
+    }
+}
+

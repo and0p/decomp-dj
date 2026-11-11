@@ -15,6 +15,7 @@ everything a session plays is written to its draft, a segment that lives in .loc
 save_draft writes a draft to segments/, but needs allow = \"save\" (--allow save, or [mcp] allow in .local/local.toml); without it the tool isn't offered, and the person saves drafts in dj-gui. \
 With no symbol map ([[symbols]] in config.toml), gaps lists uncovered PRG byte ranges (data included), and function and frontier say they need one: dj doesn't find functions itself. \
 Calls that run until a condition always take max_frames; reaching it is a normal result. \
+With a comparison core ([[compare]] in config.toml: a decomp built as a libretro core), parity_summary and parity_failures say where it matches the original frame by frame, function and block parity show in function and gaps, the parity_check and parity_rerun jobs check segments, and parity_explain says what differed on a failing frame and which function of the original wrote it. \
 Segment text is the .segment body format: `<frame> P1 JOYPAD A 1` presses A, `... A 0` releases it (see docs/segments.md).";
 
 /// What an agent may change, from `--allow` or `[mcp] allow` in .local/local.toml.
@@ -217,14 +218,55 @@ impl Server {
                 let only: GapFilter = a.opt_str("only")?.unwrap_or_else(|| "all".into()).parse()?;
                 let p = self.project()?;
                 if p.has_symbols()? {
-                    serde_json::to_value(p.gaps(sort, only, limit, cursor)?)?
+                    let mut v = serde_json::to_value(p.gaps(sort, only, limit, cursor)?)?;
+                    // Parity counts per function, per comparison core with results.
+                    let cores: Vec<String> = p.parity_cores().into_iter().map(|(n, _)| n).collect();
+                    let mut per: std::collections::HashMap<String, serde_json::Map<String, Value>> = Default::default();
+                    for n in &cores {
+                        if let Ok(r) = p.parity_report(n, usize::MAX) {
+                            for f in r.functions {
+                                per.entry(f.name.clone()).or_default().insert(n.clone(), serde_json::to_value(f.counts)?);
+                            }
+                        }
+                    }
+                    if !cores.is_empty() {
+                        if let Some(items) = v["items"].as_array_mut() {
+                            for g in items {
+                                let name = g["function"].as_str().unwrap_or("").to_string();
+                                g["parity"] = per.remove(&name).map(Value::Object).unwrap_or(json!({}));
+                            }
+                        }
+                    }
+                    v
                 } else {
                     serde_json::to_value(p.uncovered_ranges(sort, limit, cursor)?)?
                 }
             }
             "function" => {
                 let addr = a.str("addr")?;
-                serde_json::to_value(self.project()?.function(&addr, limit)?)?
+                let p = self.project()?;
+                let mut v = serde_json::to_value(p.function(&addr, limit)?)?;
+                // Each block's parity, per comparison core with results.
+                let per = p.block_parity(&addr).unwrap_or_default();
+                if let Some(blocks) = v["blocks"].as_array_mut() {
+                    for (b, (_, cores)) in blocks.iter_mut().zip(&per) {
+                        b["parity"] = cores.iter().map(|(n, st)| (n.clone(), json!(st))).collect::<serde_json::Map<_, _>>().into();
+                    }
+                }
+                v
+            }
+            "parity_summary" => {
+                let p = self.project()?;
+                let name = decomp_dj::parity::compare_name(&p.col, a.opt_str("compare")?.as_deref())?;
+                serde_json::to_value(p.parity_report(&name, limit)?)?
+            }
+            "parity_failures" => {
+                let p = self.project()?;
+                let name = decomp_dj::parity::compare_name(&p.col, a.opt_str("compare")?.as_deref())?;
+                let old = a.opt_bool("old")?;
+                let rows = p.parity_failures(&name, a.opt_str("addr")?.as_deref(), old)?;
+                let total = rows.len();
+                json!({"compare": name, "total": total, "failures": rows.into_iter().skip(cursor).take(limit).collect::<Vec<_>>(), "next_cursor": (cursor + limit < total).then_some(cursor + limit)})
             }
             "frontier" => {
                 let addr = a.opt_str("addr")?;
@@ -336,6 +378,13 @@ impl Args {
     }
     pub fn str(&self, k: &str) -> Result<String> {
         self.opt_str(k)?.ok_or_else(|| anyhow!("missing argument {k}"))
+    }
+    pub fn opt_bool(&self, k: &str) -> Result<Option<bool>> {
+        match self.get(k) {
+            None => Ok(None),
+            Some(Value::Bool(b)) => Ok(Some(*b)),
+            Some(_) => bail!("{k} must be true or false"),
+        }
     }
     pub fn opt_str(&self, k: &str) -> Result<Option<String>> {
         match self.get(k) {
@@ -449,6 +498,18 @@ pub fn tool_defs() -> Vec<ToolDef> {
             name: "frontier",
             description: "Where to start exploring toward uncovered code: covered branches (or calls) that lead into it, with the segments and frames that run that branch. Give an address in uncovered code or a function, or nothing for the largest frontiers in the ROM. Needs a symbol map.",
             schema: props(merge(json!({"addr": addr.clone()}), page()), &[]),
+            allow: Query,
+        },
+        ToolDef {
+            name: "parity_summary",
+            description: "Parity with a comparison core (a decomp checked frame by frame against the original): instructions that ran, counted as parity, failed (with this build of the comparison core), failed with an older build, or not checked; the functions with the most failed or unchecked code; and the failures kept, newest first, with their ids. Runs no core. compare names the [[compare]] entry (needed when there are several).",
+            schema: props(json!({"compare": {"type": "string"}, "limit": {"type": "integer", "description": "Functions to list (default 10)"}}), &[]),
+            allow: Query,
+        },
+        ToolDef {
+            name: "parity_failures",
+            description: "Frames where a comparison core disagreed with the original, newest first: segment and frame, where the comparison core was synced (to reproduce it), the reason, what differed (the first 10 values, labelled when the comparison core names them), and whether it failed with the build there is now. addr keeps those whose failing frame ran that code (a function start means any of the function). old=true: only older builds' failures; old=false: only this build's.",
+            schema: props(merge(json!({"compare": {"type": "string"}, "addr": addr.clone(), "old": {"type": "boolean"}}), page()), &[]),
             allow: Query,
         },
         ToolDef {

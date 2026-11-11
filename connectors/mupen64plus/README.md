@@ -13,8 +13,9 @@ code, ticks and the trace hook are still to come
   system's zlib and libpng (`SYSTEM_ZLIB=1 SYSTEM_LIBPNG=1`): the bundled copies take macOS
   for classic Mac OS. On macOS the Makefile builds no dynarec.
 - **License:** Mupen64Plus-Next is GPL-2.0, so this patch and the core built from it are
-  GPL-2.0 too. The decomp-dj player is a separate program that loads the core at run time,
-  like any libretro frontend, and stays MIT.
+  GPL-2.0 too. The decomp-dj player (GPL-3.0) is a separate program that loads the core at
+  run time, like any libretro frontend; the two aren't combined into one work, so the
+  licences don't need to match.
 
 ## What the patch does
 

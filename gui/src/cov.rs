@@ -516,19 +516,6 @@ impl CovState {
     }
 }
 
-/// The connector's flags for the code region (PRG on the NES) since they were last cleared,
-/// clearing them (None: the core has no such coverage, or nothing ran).
-pub(crate) fn take_prg_flags(core: &mut decomp_dj::libretro::Core) -> Option<Vec<u8>> {
-    let i = core.code_region_index()?;
-    let flags = core.coverage_slice(i)?;
-    if !flags.iter().any(|b| *b != 0) {
-        return None;
-    }
-    let v = flags.to_vec();
-    core.coverage_clear();
-    Some(v)
-}
-
 impl App {
     /// Why what the selected segment `id` runs doesn't count yet, for the "+N new" line:
     /// unsaved, dirty, or saved and clean but with no full pass of its current content in
@@ -577,7 +564,7 @@ impl App {
         // cleared every screen refresh, so they say what ran since the last one (the glow),
         // and are OR'd into `live.prg` for everything since the segment started. Clearing is
         // safe for the pass being recorded: it gathers the flags after every frame.
-        if let Some(flags) = take_prg_flags(&mut s.core) {
+        if let Some(flags) = decomp_dj::parity::take_code_flags(&mut s.core) {
             self.cov.absorb(&flags, now);
         }
         self.cov.live.flash.retain(|_, t| now - *t < FLASH_SECS);
@@ -588,6 +575,8 @@ impl App {
                 self.cov.count_parity(p);
             }
             p.save(s.cache.as_ref(), now, false);
+            // Results `dj parity` (or another dj-gui) wrote: counted at the next refresh.
+            p.poll(s.cache.as_ref(), now);
         }
     }
 

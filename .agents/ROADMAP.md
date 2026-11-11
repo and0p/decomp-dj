@@ -343,7 +343,7 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
     then attach.
   - A Windows job object, so workers end if `dj mcp` is killed.
   - Trace hooks for connectors other than Mesen, and disassembly for CPUs other than the 6502.
-  - Parity per function and per segment, once comparison cores exist (`dj parity <segment> --against <core>`, and an MCP tool).
+  - Parity per function and per segment: done (`parity_summary`, `parity_failures`, parity in `function` and `gaps`; see "Comparison and parity").
   - **An MCP console in the GUI.** A panel (MCP > Show console, or clicking the MCP state in
     the status bar) with a running log: errors and warnings, servers starting and stopping,
     sessions opened and closed, drafts written, saved or discarded, jobs starting, finding
@@ -368,8 +368,7 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   Re-run old failures. Where it differs from the design below: passes are one set of PRG
   flags per core and build (not per frame or keyed by segment content), failures name the
   segment by id, a Re-run that passes clears an old failure without asking, failed syncs
-  aren't kept, and parity is counted per instruction (not per block). Still to do: counts
-  per block ("passed on X frames") and the CLI and MCP (`dj parity`).
+  aren't kept, and parity is counted per instruction (not per block).
   - **A frame is the test.** After each frame both cores ran from a synced state, the
     comparison core's connector gives a verdict through an optional
     `int dj_check_parity(baseline, frame, char *reason, size_t)`: MATCH, MISMATCH or SKIP,
@@ -414,8 +413,25 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
     large). A new build keeps the old failures, which turn orange once the frame passes.
     Counts per block ("passed on X frames, failed on Y") and a link to the first failing
     frame, like the Functions tab's "Runs in".
-  - **Shown** on the coverage map and the function list (purple, orange, red), and later
-    from `dj parity` and an MCP tool.
+  - **Shown** on the coverage map and the function list (purple, orange, red), by
+    `dj parity --report` and by the MCP parity tools.
+- **Shipped: parity without the GUI (phase 3)**, as planned in [PARITY_PLAN.md](PARITY_PLAN.md):
+  - The per-frame check is library code (`parity::Checker`), and passes merge in the
+    database, so dj-gui, `dj` and agents can write results at once.
+  - `dj parity` checks, reports, re-runs, clears and explains from the command line, for a
+    decomp's CI ([cli.md](../docs/cli.md#parity), with a CI example in
+    [connectors.md](../docs/connectors.md#checking-parity-in-ci)).
+  - The MCP server has `parity_summary`, `parity_failures`, `parity_explain` and the
+    `parity_check` and `parity_rerun` jobs, and parity in `function` and `gaps`
+    ([mcp.md](../docs/mcp.md#parity)).
+  - What differed is kept with each failure (`dj_parity_diffs`, or the RAM compare), and
+    `--explain` traces the original's last write of each difference.
+- **Still to do for parity:** counts per block ("passed on X frames"); `dj parity --jobs`
+  (a child process per job); `--from-power-on`; data symbols, so diffs can be given by
+  symbol and the RAM compare's diffs get names; for diffs that can't be traced, "suspects
+  by frame" and comparing call traces (PARITY_PLAN.md, "What differed"); a
+  `compare=` option on MCP sessions. To try on the Thwaite decomp once it has
+  `dj_parity_diffs`.
 - **Revisit: frames that don't apply.** Many NES games aren't fully set up for the first
   frames after power-on, and a decomp may not want parity there. For now those frames are
   left to `dj_check_parity`'s SKIP, and the code only they run shows as "not checked". To

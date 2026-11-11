@@ -4,6 +4,11 @@
 //! Layout: menu bar on top, segment tree on the left, emulator preview in the
 //! middle, piano roll along the bottom, status line at the very bottom.
 
+// Windows: a windowed program, so no console window opens beside the GUI. Release builds
+// only: a debug build keeps its console, for what dj-gui prints to stderr. (The workers dj-gui
+// starts are dj-gui too, so they open no console either; their pipes work the same.)
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use anyhow::{anyhow, Result};
 use eframe::egui::{self, Color32, RichText};
 use decomp_dj::collection::{Collection, LocalConfig, Status};
@@ -49,6 +54,8 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             cc.egui_ctx.set_theme(egui::Theme::Dark);
+            // No shading at the top and bottom of scrolled lists (the tree, the console).
+            cc.egui_ctx.all_styles_mut(|s| s.spacing.scroll.fade.strength = 0.0);
             CTX.with(|c| *c.borrow_mut() = Some(cc.egui_ctx.clone()));
             let mut app = App::default();
             if let Some(p) = start {
@@ -240,6 +247,13 @@ struct App {
     clip: Option<Clip>,
     /// Text to put on the system clipboard at the end of this frame.
     ctx_copy: Option<String>,
+    /// View > Debug console: the log panel below the coverage map (off when the app starts).
+    show_console: bool,
+    console_filter: String,
+    /// Which levels the console shows: info, warnings, errors.
+    console_levels: [bool; 3],
+    /// How many lines the console had when it was last drawn.
+    console_seen: u64,
     frame_dialog: Option<FrameDialog>,
     /// Hydration in progress (it has the core to itself until it ends).
     hydrating: Option<Hydrating>,
@@ -522,6 +536,10 @@ impl Default for App {
             redo: vec![],
             clip: None,
             ctx_copy: None,
+            show_console: false,
+            console_filter: String::new(),
+            console_levels: [true; 3],
+            console_seen: 0,
             frame_dialog: None,
             hydrating: None,
             gui_mark: None,
@@ -870,11 +888,60 @@ fn paint_skip(ui: &egui::Ui, r: &egui::Response, forward: bool, dot: bool) {
 
 impl App {
     fn info(&mut self, text: impl Into<String>) {
-        self.message = Some((text.into(), false));
+        let text = text.into();
+        decomp_dj::console::push(decomp_dj::console::Level::Info, "dj-gui", &text);
+        self.message = Some((text, false));
     }
 
     fn error(&mut self, e: impl std::fmt::Display) {
-        self.message = Some((format!("{e:#}"), true));
+        let text = format!("{e:#}");
+        decomp_dj::console::push(decomp_dj::console::Level::Error, "dj-gui", &text);
+        self.message = Some((text, true));
+    }
+
+    /// The console panel: the log of what dj, the cores, the workers and the GUI have said
+    /// (`decomp_dj::console`), newest at the bottom.
+    fn console_panel(&mut self, ui: &mut egui::Ui) {
+        use decomp_dj::console::{self, Level};
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Debug console").strong());
+            ui.add(egui::TextEdit::singleline(&mut self.console_filter).hint_text("Filter").desired_width(80.0));
+            for (i, (name, tip)) in [("Info", "Notes and messages"), ("Warn", "Warnings"), ("Error", "Errors")].iter().enumerate() {
+                ui.toggle_value(&mut self.console_levels[i], RichText::new(*name).small()).on_hover_text(format!("Show {}", tip.to_lowercase()));
+            }
+            if ui.small_button("Copy").on_hover_text("Copy the lines shown, for a bug report").clicked() {
+                self.ctx_copy = Some(self.console_lines().iter().map(|l| format!("{:.1} {} {}", l.at, l.source, l.text)).collect::<Vec<_>>().join("\n"));
+            }
+            if ui.small_button("Clear").clicked() {
+                console::clear();
+            }
+        });
+        let lines = self.console_lines();
+        self.console_seen = console::count();
+        // The tree's text size and colour, in monospace so the columns line up.
+        let size = ui.style().text_styles.get(&egui::TextStyle::Body).map_or(13.0, |f| f.size);
+        let row = ui.fonts_mut(|f| f.row_height(&egui::FontId::monospace(size))) + ui.spacing().item_spacing.y;
+        egui::ScrollArea::both().id_salt("console_lines").auto_shrink([false, false]).max_height(ui.available_height()).stick_to_bottom(true).show_rows(ui, row, lines.len(), |ui, range| {
+            for l in &lines[range] {
+                let colour = match l.level {
+                    Level::Error => Color32::from_rgb(235, 100, 90),
+                    Level::Warn => Color32::from_rgb(225, 185, 80),
+                    Level::Info => ui.visuals().text_color(),
+                };
+                ui.label(RichText::new(format!("{:>7.1} {:<7} {}", l.at, l.source, l.text)).family(egui::FontFamily::Monospace).size(size).color(colour)).on_hover_text(&l.text);
+            }
+        });
+    }
+
+    /// The console's lines that pass its level toggles and filter.
+    fn console_lines(&self) -> Vec<decomp_dj::console::Line> {
+        use decomp_dj::console::Level;
+        let filter = self.console_filter.to_lowercase();
+        decomp_dj::console::lines()
+            .into_iter()
+            .filter(|l| self.console_levels[match l.level { Level::Info => 0, Level::Warn => 1, Level::Error => 2 }])
+            .filter(|l| filter.is_empty() || l.text.to_lowercase().contains(&filter) || l.source.to_lowercase().contains(&filter))
+            .collect()
     }
 
     // ---- collection and core ----
@@ -4077,6 +4144,10 @@ impl App {
                 ui.checkbox(&mut self.roll.follow, "Follow playhead").keep_open();
                 ui.checkbox(&mut self.return_to_edit, "Return to the edit").keep_open().on_hover_text("Any edit pauses playback and shows the earliest frame edited since you last played or moved the playhead. Off: the frame you were on is redrawn.");
                 ui.checkbox(&mut self.roll.all_buttons, "Show every joypad button").keep_open();
+                ui.separator();
+                ui.checkbox(&mut self.show_console, "Debug console")
+                    .keep_open()
+                    .on_hover_text("A log, below the coverage map, of what dj says while it runs: warnings and notes, the cores' own log messages, what comparison cores and decoder plugins print, and the status bar's messages");
             }));
             bar.push(ui.menu_button("Project", |ui| {
                 let db_on = self.session.as_ref().is_some_and(|s| s.cache.is_some());
@@ -4647,7 +4718,26 @@ impl App {
             // Below the last segment: a + for a new root segment, and the rest of the panel
             // takes a right-click for the same (not while focused on a branch or filtering).
             if hoist.is_none() && !filtering {
-                if ui.add(egui::Button::new(RichText::new("+ New root segment").small().weak()).frame(false)).on_hover_text(NEW_ROOT_TIP).clicked() {
+                // Laid out like a root segment's row, where the new one will appear: a + where
+                // the status dot goes, then the title in the tree's text size.
+                let clicked = ui
+                    .horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.add_space(14.0);
+                        let (rect, plus) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::click());
+                        let label = ui.selectable_label(false, RichText::new("New root segment").weak());
+                        let hovered = plus.hovered() || label.hovered();
+                        let c = if hovered { ui.visuals().strong_text_color() } else { ui.visuals().weak_text_color() };
+                        let (m, r) = (rect.center(), 4.0);
+                        let stroke = egui::Stroke::new(1.5, c);
+                        ui.painter().line_segment([egui::pos2(m.x - r, m.y), egui::pos2(m.x + r, m.y)], stroke);
+                        ui.painter().line_segment([egui::pos2(m.x, m.y - r), egui::pos2(m.x, m.y + r)], stroke);
+                        let plus = plus.on_hover_text(NEW_ROOT_TIP);
+                        let label = label.on_hover_text(NEW_ROOT_TIP);
+                        plus.clicked() || label.clicked()
+                    })
+                    .inner;
+                if clicked {
                     context = Some((String::new(), "root"));
                 }
                 let rest = ui.available_rect_before_wrap();
@@ -5992,6 +6082,14 @@ impl eframe::App for App {
             self.poll_agents();
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(600));
+        // Lines logged by other threads (workers, cores) show without waiting for input.
+        if self.show_console {
+            if decomp_dj::console::count() != self.console_seen {
+                ctx.request_repaint();
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(250));
+            }
+        }
         self.work();
         self.coverage_update(ctx.input(|i| i.time));
         self.update_sticky_tip();
@@ -6014,6 +6112,12 @@ impl eframe::App for App {
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         egui::Panel::bottom("status").exact_size(24.0).show(ui, |ui| self.status_bar(ui));
         egui::Panel::left("tree").resizable(true).default_size(300.0).size_range(180.0..=600.0).show(ui, |ui| {
+            // View > Debug console: the log, at the very bottom of the sidebar (below the map).
+            if self.show_console {
+                // The list fills the panel itself; asking for the space left on top of that would
+                // make the panel a little taller every frame.
+                egui::Panel::bottom("console").resizable(true).default_size(160.0).size_range(60.0..=700.0).show(ui, |ui| self.console_panel(ui));
+            }
             // The coverage map stays at the bottom of the sidebar, whatever the tab.
             if self.col.is_some() && self.session.is_some() {
                 if self.map_view == cov::MapView::Hidden {

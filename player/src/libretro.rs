@@ -262,13 +262,23 @@ fn parse_option_values(v: &str) -> (String, Vec<String>) {
 
 /// `retro_log_printf_t`, without the variadic part: stable Rust can't define a C variadic
 /// function, but the fixed arguments arrive the same way (registers on arm64 and x86-64), so
-/// this reads the level and the format string and ignores the rest. Warnings and errors go
-/// to stderr with the format unexpanded. Some cores call the log callback without checking
+/// this reads the level and the format string and ignores the rest. Info, warnings and errors
+/// go to the console log, warnings and errors also to stderr, with the format unexpanded. Some cores call the log callback without checking
 /// it (mupen64plus-libretro-nx does in `update_variables`), so offering one also keeps them
 /// from crashing.
 unsafe extern "C" fn core_log(level: u32, fmt: *const c_char) {
-    if level >= 2 && !fmt.is_null() {
-        let text = CStr::from_ptr(fmt).to_string_lossy();
+    if fmt.is_null() || level == 0 {
+        return; // debug messages: too many
+    }
+    let text = CStr::from_ptr(fmt).to_string_lossy();
+    // Info and up go to the console (View > Debug console in dj-gui); warnings and errors to stderr too.
+    let lvl = match level {
+        1 => crate::console::Level::Info,
+        2 => crate::console::Level::Warn,
+        _ => crate::console::Level::Error,
+    };
+    crate::console::push(lvl, "core", &text);
+    if level >= 2 {
         eprint!("core {}: {}", if level >= 3 { "error" } else { "warning" }, text);
         if !text.ends_with('\n') {
             eprintln!();
@@ -758,7 +768,7 @@ impl Core {
             })
             .unwrap_or_default();
             if !unknown.is_empty() {
-                eprintln!("warning: core does not declare these options: {}", unknown.join(", "));
+                crate::console::warn("dj", &format!("core does not declare these options: {}", unknown.join(", ")));
             }
 
             let connector = with_host(slot, |h| h.proc_iface).flatten().and_then(|gpa| {
@@ -768,7 +778,7 @@ impl Core {
                 };
                 let version: unsafe extern "C" fn() -> u32 = std::mem::transmute(get("dj_api_version")?);
                 if version() != DJ_API_VERSION {
-                    eprintln!("warning: this core's coverage connector speaks API version {}, but dj needs version {DJ_API_VERSION}: rebuild the core (connectors/README.md). Playing without coverage.", version());
+                    crate::console::warn("dj", &format!("this core's coverage connector speaks API version {}, but dj needs version {DJ_API_VERSION}: rebuild the core (connectors/README.md). Playing without coverage.", version()));
                     return None;
                 }
                 // Optional: core options the connector needs and forces while dj drives the
@@ -782,7 +792,7 @@ impl Core {
                         with_host(slot, |h| {
                             for (k, v) in text.lines().filter_map(|l| l.split_once('=')) {
                                 if h.option_overrides.get(k).is_some_and(|old| old != v) {
-                                    eprintln!("note: the coverage connector needs {k} = {v}; using that instead of {}", h.option_overrides[k]);
+                                    crate::console::note("dj", &format!("the coverage connector needs {k} = {v}; using that instead of {}", h.option_overrides[k]));
                                 }
                                 h.option_overrides.insert(k.to_string(), v.to_string());
                             }
@@ -868,7 +878,7 @@ impl Core {
             h.hw.as_mut().and_then(|hw| hw.ctx.as_mut()).map(|c| c.enter(g.max_width, g.max_height))
         });
         if let Some(Some(Err(e))) = r {
-            eprintln!("warning: {e:#}");
+            crate::console::warn("dj", &format!("{e:#}"));
         }
     }
 

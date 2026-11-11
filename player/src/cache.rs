@@ -242,11 +242,14 @@ impl Cache {
             for o in others {
                 let Ok(o) = serde_json::from_str::<BTreeMap<String, String>>(&o) else { continue };
                 if o.get("core") == info_map.get("core") && o.get("core_version") != info_map.get("core_version") {
-                    eprintln!(
-                        "warning: this local database was also filled with {} version {}; this core is version {}. Games almost never play differently, and the state hashes will catch it if one does.",
+                    crate::console::warn(
+                        "dj",
+                        &format!(
+                        "this local database was also filled with {} version {}; this core is version {}. Games almost never play differently, and the state hashes will catch it if one does.",
                         o.get("core").map(String::as_str).unwrap_or("?"),
                         o.get("core_version").map(String::as_str).unwrap_or("?"),
                         info_map.get("core_version").map(String::as_str).unwrap_or("?")
+                        ),
                     );
                     break;
                 }

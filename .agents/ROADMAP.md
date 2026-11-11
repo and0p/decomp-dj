@@ -81,13 +81,13 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   map panel instead of being clipped or scrolled. Not confirmed.
 
 ## GUI
-- **A console in the app.** A panel (View > Console, or clicking the status bar's message)
-  with a scrolling, filterable log of everything that's now only a passing status message
-  or stderr: errors and warnings, info messages, jobs (cleans, hydrates, seeks), comparison
-  syncs and their failures, and the core's own log (libretro's `GET_LOG_INTERFACE`, which
-  the frontend could route here per core slot). Copy and clear buttons; also written to
-  `.local/gui.log` for bug reports. The MCP console (under "Project and CLI") could be
-  one tab of it.
+- **Shipped 2026-11-10: a debug console in the app** ([gui.md](../docs/gui.md#debug-console)): View >
+  Debug console, a log below the coverage map of library warnings and notes, the cores' log
+  (`GET_LOG_INTERFACE`), workers' stderr and the status bar's messages, with a filter, level
+  toggles, Copy and Clear (`decomp_dj::console`). Still to do: jobs (cleans, hydrates, seeks)
+  and comparison syncs as their own lines; writing it to `.local/gui.log` for bug reports;
+  the MCP console (under "Project and CLI") as one tab of it; the cores' log with its format
+  strings filled in (needs a C shim, since Rust can't take C variadics).
 - **A-B loop.** Loop a chosen stretch of frames, like VLC's A-B repeat: set A and B at the
   playhead (buttons in the transport and keys, or drag a range on the frame ruler), and
   playback jumps back to A on reaching B until the loop is cleared. Shown as a band on the
@@ -105,7 +105,7 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
 - **A file watcher instead of polling.** The GUI learns about drafts, sessions and the
   shared view by fingerprinting `.local/` about once a second, so following an agent shows
   one step in several (a 60-frame `step` takes about 100 ms at 500 to 700 fps) and new
-  drafts arrive late. Watch `segments/`, `.local/drafts/` and `.local/mcp/` with the
+  drafts arrive late. Watch `segments/`, `blobs/`, `.local/drafts/` and `.local/mcp/` with the
   `notify` crate (inotify, FSEvents, ReadDirectoryChangesW) and react within milliseconds,
   keeping the fingerprint poll as a slow fallback for file systems that don't notify
   (network mounts). Since every writer writes to a temporary file and renames, a change event always finds a whole file.
@@ -113,6 +113,17 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   half-written reads, which are the file-system part of the draft problems. Ownership
   (agent-owned segments) isn't, and stays as it is. Sockets
   ([below](#project-and-cli)) are then only needed for attach.
+- **Pick a start blob from the project when making a root segment.** New root segment (and
+  the properties dialog's Snapshot and Save file rows) should offer the blobs already in
+  `blobs/` as a dropdown filtered by typing, besides choosing a file from disk: `.srm` files
+  for the save file, `.state` for the snapshot. Each entry shows its name (see "Named blobs"
+  [below](#project-and-cli); until then the short hash), size, and which segments use it.
+  Today the GUI never lists `blobs/`: it only reads a blob a segment names, and nothing is
+  kept in memory. So keep a list of the blobs (name, kind, size, hash, the segments using
+  it), built when the project opens without reading every file (the hash is the name today;
+  with named blobs it would come from the index), and kept current by the file watcher above
+  (`blobs/` added to what it watches) or the fingerprint poll until then, so a file copied in
+  by hand or by an agent shows up without a reload.
 - **Recording follow-ups** (recording itself is in docs/gui.md#recording).
   - **Gamepads.** Device discovery, hot-plugging, analog dead zones and per-OS differences
     make them a larger job than the keyboard.
@@ -256,6 +267,16 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   chosen core for each, with the reasons.
   Planning notes for a second core (bsnes-mercury) and where decoding should live:
   [CONNECTOR_PLAN.md](CONNECTOR_PLAN.md).
+- **Named blobs.** Look into letting a blob have a name people choose (`sram = "world-3-save"`,
+  `blobs/world-3-save.srm`) instead of only its content hash. Today the hash is enforced, not a
+  convention: `Collection::read_blob` refuses a blob whose content doesn't hash to its name,
+  `write_blob` names it by hash, and segments, the database key and [segments.md](../docs/segments.md#blobs)
+  assume a hash. What a name would need: something else to catch a changed or swapped file
+  (a `blob-hash` header field beside the name, or a `blobs/index.toml` of name to hash), so
+  replays still fail loudly; the cache key using the content hash, not the name; rules for
+  names (no path separators, no clash with the hash form); a rename that updates every
+  segment naming the blob; and the GUI's properties dialog asking for a name when a file is
+  picked. Many segments sharing one blob (a blank save) should keep working.
 - **Shipped 2026-11-10: versioning projects** ([config.md](../docs/config.md#top-level),
   [segments.md](../docs/segments.md#older-projects)). `format` gates (a newer one is refused,
   naming what to do), `dj` records the newest dj that wrote the project (an older dj warns, as

@@ -19,6 +19,7 @@ pub mod player;
 pub mod query;
 pub mod tas;
 pub mod condition;
+pub mod console;
 pub mod crash;
 pub mod recovery;
 pub mod trace;

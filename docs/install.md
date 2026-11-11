@@ -18,6 +18,8 @@ Each release has a ZIP for Linux (x86_64), macOS (Apple silicon) and Windows (x8
   After unzipping, run `xattr -dr com.apple.quarantine decomp-dj-*` once in the folder you
   unzipped into, or right-click `decomp-dj.app` and choose Open.
 - **Windows:** SmartScreen may warn about an unrecognised app: More info > Run anyway.
+  `dj-gui.exe` opens no console window; what it would print there doesn't show (a debug
+  build from source, `cargo run` without `--release`, keeps its console for that).
 - `scripts/package.sh --build` builds the same folder and ZIP from source, into `dist/`.
 
 ## Building from source

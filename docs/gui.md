@@ -177,11 +177,24 @@ and links to the first failing frame that ran it.
 | --- | --- |
 | File | Open project…, Save (Ctrl/Cmd+S): writes every unsaved segment and moves drafts into `segments/`; when that would leave segments dirty it offers **Clean, then save** or **Save anyway**. Clean, then save saves at once only if the clean changed no ending; otherwise it stops with the changed endings marked **!** and offers **Save**, **Save anyway** or **Review first**, so nothing unreviewed is saved without asking. Save selected segment (writes only that segment's file), Revert selected segment (drops only its unsaved changes and puts back its file; undo brings them back), Reload all from disk (every segment, dropping all unsaved edits), Options… (not yet: GUI preferences), Keyboard mapping… ([below](#recording)), Quit. With unsaved edits, Open, Reload all and Quit (also the window's close button) ask first: **Save and …**, **Discard and …** or **Cancel**. Drafts nobody edited here don't count: they stay in `.local/drafts/`. |
 | Edit | Undo, Redo, Cut, Copy, Paste at play cursor ([editing.md](editing.md#undo-cut-copy-and-paste)), Select all (Ctrl/Cmd+A: every press in the piano roll), Drag to draw inputs (off to begin with; [editing.md](editing.md#piano-roll)); then the segment edits and Add event at playhead (E) ([editing.md](editing.md#segment-editing)) |
-| View | Zoom in, Zoom out, Follow playhead, Return to the edit ([editing.md](editing.md#return-to-the-edit)), Show every joypad button |
+| View | Zoom in, Zoom out, Follow playhead, Return to the edit ([editing.md](editing.md#return-to-the-edit)), Show every joypad button, Debug console ([below](#debug-console)) |
 | Project | Clean all segments, Replay everything, Use the local database ([database.md](database.md#in-the-gui)), Set ROM…, Set core…, Project settings… (not yet) |
 | Emulation | Play/pause, step, go to start or end, Snapshot memory |
 | Compare | Comparison core, Run, Sync now, Check parity, Re-run old failures or Stop re-running ([above](#comparison-cores)) |
 | MCP | Enable MCP (off by default), Show agent drafts, follow an agent session, Stop following, Share my view with agents ([mcp.md](mcp.md#the-gui)) |
+
+## Debug console
+
+**View > Debug console** (off when the app starts) opens a log at the bottom of the sidebar, below
+the coverage map: what dj says while it runs. It holds the warnings and notes dj prints (a
+core option the core doesn't declare, a core build other than the project's), the cores' own
+log messages (libretro's log interface: info, warnings and errors, their format strings not
+filled in), what comparison cores and decoder plugins print in their worker processes, and
+the status bar's messages. Lines show the seconds since the app started and where they came
+from (`dj`, `core`, `compare`, `decode`, `dj-gui`). Filter by text, show or hide Info, Warn
+and Error, **Copy** the lines shown (for a bug report) or **Clear** them. Drag its top edge to
+resize. It keeps the last 5,000 lines, in memory only. Everything in it also goes to
+stderr, as before (on Windows a release dj-gui has no console, so this is where it shows).
 
 ## If dj-gui crashes or hangs
 

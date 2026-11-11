@@ -89,6 +89,20 @@ fn serve(handler: fn(&str, Request, &mut Progress) -> Result<Value>) -> i32 {
     0
 }
 
+/// Passes what a worker prints on stderr on to dj's stderr, and into the console log under
+/// the worker's kind (a comparison core's log, a decoder plugin's messages).
+fn forward_stderr(child: &mut std::process::Child, kind: &str) {
+    let Some(err) = child.stderr.take() else { return };
+    let kind = kind.to_string();
+    std::thread::spawn(move || {
+        for line in BufReader::new(err).lines() {
+            let Ok(line) = line else { break };
+            eprintln!("{line}");
+            crate::console::push_printed(&kind, &line);
+        }
+    });
+}
+
 /// Why a worker gave no answer.
 #[derive(Debug)]
 pub struct WorkerFailure {
@@ -131,10 +145,11 @@ pub fn call(kind: &str, cmd: &str, args: Value, bulk: &[&[u8]], deadline: Durati
         .arg(kind)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("starting a {kind} worker ({})", exe.display()))
         .map_err(Err)?;
+    forward_stderr(&mut child, kind);
     let mut stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
     // Write on a thread: a worker that dies early mustn't leave dj blocked on a full pipe.
@@ -303,9 +318,10 @@ impl Worker {
             .arg(kind)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .spawn()
             .with_context(|| format!("starting a {kind} worker ({})", exe.display()))?;
+        forward_stderr(&mut child, kind);
         let stdin = child.stdin.take();
         let mut stdout = BufReader::new(child.stdout.take().unwrap());
         let (tx, replies) = mpsc::channel();

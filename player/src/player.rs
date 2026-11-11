@@ -152,7 +152,7 @@ impl Session {
                 let (region, off) = parse_region_offset(exec)?;
                 match core.coverage_region_index(&region) {
                     Some(i) => core.set_tick_exec(Some(i), off),
-                    None => eprintln!("warning: tick region {region} is not reported by this core's connector; ticks are off"),
+                    None => crate::console::warn("dj", &format!("tick region {region} is not reported by this core's connector; ticks are off")),
                 }
             }
         }
@@ -195,6 +195,9 @@ impl Session {
         } else {
             None
         };
+        if let Some(note) = &build_note {
+            crate::console::push(crate::console::Level::Warn, "dj", note);
+        }
         Ok(Session { core, boot_state, boot_sram, setup_id, rom_path: rom.to_path_buf(), cache, core_version, build: reported, build_note })
     }
 
@@ -265,7 +268,7 @@ impl Session {
             let data = col.read_blob(sram, "sram")?;
             let mem = self.core.memory(crate::libretro::MEMORY_SAVE_RAM).ok_or_else(|| anyhow!("core exposes no save RAM"))?;
             if data.len() != mem.len() {
-                eprintln!("warning: SRAM blob is {} bytes but the core's save RAM is {}", data.len(), mem.len());
+                crate::console::warn("dj", &format!("SRAM blob is {} bytes but the core's save RAM is {}", data.len(), mem.len()));
             }
             let n = data.len().min(mem.len());
             mem[..n].copy_from_slice(&data[..n]);

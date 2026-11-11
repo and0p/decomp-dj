@@ -21,13 +21,13 @@ jobs:
       matrix:
         include:
           - { name: linux-x86_64, os: ubuntu-22.04 }
-          - { name: macos-arm64, os: macos-14 }
+          - { name: macos-arm64, os: macos-15 }
           - { name: windows-x86_64, os: windows-2022 }
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -38,9 +38,9 @@ jobs:
           [ "v$version" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} but player/Cargo.toml says $version"; exit 1; }
 
       - name: Build and package
-        run: scripts/package.sh --build
+        run: bash scripts/package.sh --build
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: decomp-dj-${{ matrix.name }}
           path: dist/*.zip
@@ -54,7 +54,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           path: dist
           merge-multiple: true

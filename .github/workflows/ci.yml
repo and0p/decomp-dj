@@ -28,13 +28,13 @@ jobs:
       matrix:
         include:
           - { name: linux-x86_64, os: ubuntu-22.04, experimental: false }
-          - { name: macos-arm64, os: macos-14, experimental: false }
+          - { name: macos-arm64, os: macos-15, experimental: false }
           - { name: windows-x86_64, os: windows-2022, experimental: true }
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -69,9 +69,9 @@ jobs:
           (cd gui && cargo clippy --release --locked -- -D warnings)
 
       - name: Package
-        run: scripts/package.sh
+        run: bash scripts/package.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: decomp-dj-${{ matrix.name }}
           path: dist/*.zip
@@ -85,9 +85,9 @@ jobs:
       matrix:
         include:
           - { name: linux-x86_64, os: ubuntu-22.04 }
-          - { name: macos-arm64, os: macos-14 }
+          - { name: macos-arm64, os: macos-15 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -100,7 +100,7 @@ jobs:
 
       # The Mesen core and the Thwaite ROM are built from pinned sources, so they're cached
       # by the scripts and patch that pin them.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         id: mesen
         with:
           path: build/cores
@@ -108,15 +108,15 @@ jobs:
 
       - name: Build the Mesen core
         if: steps.mesen.outputs.cache-hit != 'true'
-        run: connectors/mesen/build.sh
+        run: bash connectors/mesen/build.sh
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         id: thwaite
         with:
           path: examples/thwaite/build
           key: thwaite-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('examples/thwaite/build-rom.sh') }}
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         if: steps.thwaite.outputs.cache-hit != 'true'
         with:
           python-version: "3.12"
@@ -125,7 +125,7 @@ jobs:
         if: steps.thwaite.outputs.cache-hit != 'true'
         run: |
           python -m pip install pillow
-          cd examples/thwaite && ./build-rom.sh
+          cd examples/thwaite && bash build-rom.sh
 
       - name: Replay every segment from power-on
         # Checks every recorded hash; fails if any segment plays differently here.

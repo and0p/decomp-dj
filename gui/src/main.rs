@@ -868,14 +868,6 @@ fn paint_skip(ui: &egui::Ui, r: &egui::Response, forward: bool, dot: bool) {
     }
 }
 
-fn abs_path(root: &Path, p: &Path) -> PathBuf {
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        root.join(p)
-    }
-}
-
 impl App {
     fn info(&mut self, text: impl Into<String>) {
         self.message = Some((text.into(), false));
@@ -960,7 +952,8 @@ impl App {
             }
         };
         let (rom, core) = match (&local.rom, &local.core) {
-            (Some(r), Some(c)) => (abs_path(&col.root, r), abs_path(&col.root, c)),
+            // Already resolved against the project folder by `settings`.
+            (Some(r), Some(c)) => (r.clone(), c.clone()),
             (None, _) => {
                 self.core_error = Some("No ROM set for this project on this machine. Use Emulation > Set ROM…".into());
                 return;
@@ -2183,8 +2176,8 @@ impl App {
         self.unload_compare();
         let (Some(name), Some(col)) = (name, &self.col) else { return };
         let local = col.settings().unwrap_or_default();
-        let rom = local.rom.as_ref().map(|r| abs_path(&col.root, r));
-        let core = local.core.as_ref().map(|c| abs_path(&col.root, c)).unwrap_or_default();
+        let rom = local.rom.clone();
+        let core = local.core.clone().unwrap_or_default();
         match RemoteComparison::open(col, &name, &core, rom.as_deref()) {
             Ok(c) => {
                 self.compare = Some(c);

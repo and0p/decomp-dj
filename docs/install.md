@@ -25,7 +25,7 @@ Each release has a ZIP for Linux (x86_64), macOS (Apple silicon) and Windows (x8
 decomp-dj has three parts: the CLI, the GUI and a patched core that reports coverage.
 
 ```sh
-cd player && cargo build --release        # Rust 1.75+; the binary is player/target/release/dj
+cd player && cargo build --release        # Rust 1.79+; the binary is player/target/release/dj
 cd gui && cargo build --release           # Rust 1.95+ (egui 0.37); the binary is gui/target/release/dj-gui
 connectors/mesen/build.sh                 # git, make, a C++11 compiler; output in build/cores/
 ```

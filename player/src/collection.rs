@@ -318,6 +318,10 @@ impl Status {
 
 impl Collection {
     pub fn open(root: &Path) -> Result<Collection> {
+        // An absolute root, so every path made from it (settings, segments, the database) is
+        // the same whatever the working directory, and joining one again can't double it.
+        // (`absolute`, not `canonicalize`: no symlinks resolved, no `\\?\` prefix on Windows.)
+        let root = &std::path::absolute(root).with_context(|| format!("the project folder {}", root.display()))?;
         // The local folder used to be `.emucov`; move it to `.local` the first time.
         let (old, new) = (root.join(".emucov"), root.join(".local"));
         if old.is_dir() && !new.exists() {
@@ -898,7 +902,9 @@ mod layering_tests {
         let (dir, col) = project(CONFIG, None);
         let s = col.settings().unwrap();
         assert_eq!(s.rom, Some(dir.join("roms/g.nes")));
-        assert_eq!(s.core, Some(PathBuf::from("/cores/mesen.so")));
+        // A path without a drive (Windows) is relative to the project folder's drive: `join`
+        // gives what dj resolves it to on every system.
+        assert_eq!(s.core, Some(dir.join("/cores/mesen.so")));
         assert_eq!(s.database, Some(false));
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -911,8 +917,8 @@ mod layering_tests {
         assert_eq!(col.config.core.name, "mesen");
         assert_eq!(col.config.core.options.get("x").map(String::as_str), Some("y"));
         let s = col.settings().unwrap();
-        assert_eq!(s.rom, Some(PathBuf::from("/mine/g.nes")));
-        assert_eq!(s.core, Some(PathBuf::from("/mine/core.so")));
+        assert_eq!(s.rom, Some(dir.join("/mine/g.nes")));
+        assert_eq!(s.core, Some(dir.join("/mine/core.so")));
         // Writing a machine setting keeps the overrides in local.toml.
         let mut l = col.load_local().unwrap();
         assert_eq!(l.core, Some(PathBuf::from("/mine/core.so")));
@@ -923,7 +929,7 @@ mod layering_tests {
         assert_eq!(again.config.name, "mine");
         assert_eq!(again.config.core.options.get("x").map(String::as_str), Some("y"));
         let s = again.settings().unwrap();
-        assert_eq!(s.core, Some(PathBuf::from("/other.so")));
+        assert_eq!(s.core, Some(dir.join("/other.so")));
         assert_eq!(s.database, Some(true));
         let _ = std::fs::remove_dir_all(dir);
     }

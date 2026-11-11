@@ -22,7 +22,8 @@ fn project(dir: &Path, core: &Path, nodj: &Path) -> Collection {
     std::fs::create_dir_all(dir.join(".local")).unwrap();
     std::fs::write(dir.join("rom.bin"), b"rom").unwrap();
     std::fs::write(dir.join("segments/seg.segment"), SEGMENT).unwrap();
-    let c = core.display();
+    // Forward slashes: a Windows path's backslashes would be escapes in a TOML string.
+    let c = core.display().to_string().replace('\\', "/");
     std::fs::write(
         dir.join("config.toml"),
         format!(
@@ -36,7 +37,7 @@ fn project(dir: &Path, core: &Path, nodj: &Path) -> Collection {
              [[compare]]\nname = \"dj-hang\"\npath = \"{c}\"\n[compare.options]\ntestcore_break = \"hang\"\n\
              [[compare]]\nname = \"dj-crash-check\"\npath = \"{c}\"\n[compare.options]\ntestcore_break = \"crash-check\"\n\
              [[compare]]\nname = \"nodj\"\npath = \"{}\"\n",
-            nodj.display()
+            nodj.display().to_string().replace('\\', "/")
         ),
     )
     .unwrap();

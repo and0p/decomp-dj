@@ -48,7 +48,7 @@ fn a_segment_that_crashes_or_hangs_the_core_is_left_out() {
     std::fs::write(dir.join("rom.bin"), b"rom").unwrap();
     std::fs::write(
         dir.join("config.toml"),
-        format!("format = 1\nname = \"t\"\n[rom]\nsha256 = \"\"\npath = \"rom.bin\"\n[core]\nname = \"testcore\"\nbuild = \"1\"\npath = \"{}\"\n[hash]\nalgorithm = \"blake3\"\nregions = [\"RAM\"]\n", core.display()),
+        format!("format = 1\nname = \"t\"\n[rom]\nsha256 = \"\"\npath = \"rom.bin\"\n[core]\nname = \"testcore\"\nbuild = \"1\"\npath = \"{}\"\n[hash]\nalgorithm = \"blake3\"\nregions = [\"RAM\"]\n", core.display().to_string().replace('\\', "/")),
     )
     .unwrap();
     segment(&dir, ROOT, "none", "boot", 10, "");
@@ -92,7 +92,7 @@ fn upgrade_and_repin() {
     };
     let dir = tmp.join("project");
     std::fs::write(dir.join("rom.bin"), b"rom").unwrap();
-    let config = |build: &str| format!("format = 1\nname = \"t\"\n[rom]\nsha256 = \"\"\npath = \"rom.bin\"\n[core]\nname = \"testcore\"\nbuild = \"{build}\"\npath = \"{}\"\n[hash]\nalgorithm = \"blake3\"\nregions = [\"RAM\"]\n", core.display());
+    let config = |build: &str| format!("format = 1\nname = \"t\"\n[rom]\nsha256 = \"\"\npath = \"rom.bin\"\n[core]\nname = \"testcore\"\nbuild = \"{build}\"\npath = \"{}\"\n[hash]\nalgorithm = \"blake3\"\nregions = [\"RAM\"]\n", core.display().to_string().replace('\\', "/"));
     std::fs::write(dir.join("config.toml"), config("testcore 1")).unwrap();
     std::fs::write(dir.join(format!("segments/{ROOT}.segment")), format!("dj-replay 1\nid: {ROOT}\nparent: none\ntitle: boot\nframes: 10\n---\n2 P1 JOYPAD B 1\n")).unwrap();
     let (code, out, err) = dj(&dir, &["clean"]);

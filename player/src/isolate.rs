@@ -209,6 +209,18 @@ fn describe_exit(status: Option<std::process::ExitStatus>) -> String {
         }
     }
     match status.code() {
+        // Windows: an unhandled exception ends a process with its NTSTATUS code.
+        Some(c) if (c as u32) >= 0xC000_0000 => {
+            let name = match c as u32 {
+                0xC000_0005 => ", access violation",
+                0xC000_001D => ", illegal instruction",
+                0xC000_0094 => ", integer division by zero",
+                0xC000_00FD => ", stack overflow",
+                0xC000_0409 => ", abort",
+                _ => "",
+            };
+            format!("crashed (exception {:#010X}{name})", c as u32)
+        }
         Some(c) => format!("ended without answering (exit code {c:#x})"),
         None => "ended without answering".into(),
     }

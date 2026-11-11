@@ -305,6 +305,9 @@ mod platform {
 
     type Obj = *mut c_void;
     const PFA_ACCELERATED: i32 = 73;
+    const PFA_RENDERER_ID: i32 = 70;
+    /// kCGLRendererGenericFloatID: Apple's software renderer.
+    const RENDERER_SOFTWARE: i32 = 0x0002_0400;
     const PFA_ALLOW_OFFLINE_RENDERERS: i32 = 96;
     const PFA_OPENGL_PROFILE: i32 = 99;
     const PFA_COLOR_SIZE: i32 = 8;
@@ -364,8 +367,18 @@ mod platform {
         pub fn new(req: &Request) -> Result<Platform> {
             let c = cgl()?;
             let profiles: &[i32] = if req.core_profile { &[PROFILE_GL4_CORE, PROFILE_GL3_CORE] } else { &[PROFILE_LEGACY] };
-            for &profile in profiles {
-                let mut attrs = vec![PFA_OPENGL_PROFILE, profile, PFA_ACCELERATED, PFA_ALLOW_OFFLINE_RENDERERS, PFA_COLOR_SIZE, 24];
+            // A GPU first; else Apple's software renderer (up to OpenGL 4.1 core), as in a
+            // virtual machine with none (CI runners). Hashes come from memory, not pictures,
+            // so the renderer can't change them. DJ_GL_SOFTWARE=1 asks for software only.
+            let software_only = std::env::var_os("DJ_GL_SOFTWARE").is_some();
+            let tries = profiles.iter().flat_map(|p| [(*p, true), (*p, false)]).filter(|(_, accel)| !(software_only && *accel));
+            for (profile, accelerated) in tries {
+                let mut attrs = vec![PFA_OPENGL_PROFILE, profile, PFA_ALLOW_OFFLINE_RENDERERS, PFA_COLOR_SIZE, 24];
+                if accelerated {
+                    attrs.push(PFA_ACCELERATED);
+                } else if software_only {
+                    attrs.extend([PFA_RENDERER_ID, RENDERER_SOFTWARE]);
+                }
                 if req.depth {
                     attrs.extend([PFA_DEPTH_SIZE, 24]);
                 }

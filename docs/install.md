@@ -65,7 +65,7 @@ from memory regions, never from the picture, so GPUs and drivers don't change th
 
 | Platform | Context | Limits |
 | --- | --- | --- |
-| macOS | CGL (OpenGL.framework) | Core profiles up to OpenGL 4.1; the compatibility profile is OpenGL 2.1 |
+| macOS | CGL (OpenGL.framework) | Core profiles up to OpenGL 4.1; the compatibility profile is OpenGL 2.1. Without a GPU (a virtual machine) Apple's software renderer is used; `DJ_GL_SOFTWARE=1` asks for it anyway |
 | Linux | EGL, without a window (Mesa's surfaceless platform or a GPU device) | Needs `libEGL.so.1`; a machine with no GPU can use Mesa's software renderer |
 | Windows | none yet | |
 

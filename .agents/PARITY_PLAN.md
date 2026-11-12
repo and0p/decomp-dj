@@ -299,9 +299,7 @@ then `dj parity`.
      sketch: dj from a release ZIP, Mesen from `connectors/`, the decomp's core, the ROM from
      a secret, `dj parity`, and the report and explanations as artifacts on failure).
    - `database.md`: `parity_runs` and `parity_diffs`.
-   - README: the regression-testing bullet (side by side, frame by frame, in the GUI or CI)
-     and the agents' bullet (the frame, what differed, and the original's instruction that
-     wrote it).
+   - README: left to Andrew.
    - ROADMAP: "Shipped: parity without the GUI (phase 3)" and "Still to do for parity".
 
 Steps 1 and 2 are worth doing even if the rest waits: they fix the GUI-overwrites-passes

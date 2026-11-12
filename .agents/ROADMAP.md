@@ -18,6 +18,7 @@ Priorities: **high** blocks the release, **medium** should be in it, **low** can
 | medium | Decoder interface (step 1: one trait and one sweep; step 2: loadable decoders) | [DECODER_PLAN.md](DECODER_PLAN.md) | done (plugins 2026-11-10) |
 | high | Cores and plugins can't crash or hang dj: workers for decoder plugins, comparison cores, batch commands, then the GUI's core | [ISOLATION_PLAN.md](ISOLATION_PLAN.md) | done for plugins, comparison cores and batch commands; the GUI's core protected in process (edits kept, crash note); moving it to a worker designed, not built (decided 2026-11-10: not now, maybe before the release) |
 | medium | Root segments that start from a snapshot, finished ([below](#root-segments-from-a-snapshot)) | | partly built |
+| high | Parity at check points, not frame ends: the version 2 comparison handle (frame and tick facts, the baseline's memory instead of its save state, CPU state), then check points in Mesen, dj and the tools | [CHECKPOINT_PARITY_PLAN.md](CHECKPOINT_PARITY_PLAN.md) | planned 2026-11-11; changes the comparison core API, so before the release |
 
 ### Root segments from a snapshot
 
@@ -426,6 +427,21 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
     ([mcp.md](../docs/mcp.md#parity)).
   - What differed is kept with each failure (`dj_parity_diffs`, or the RAM compare), and
     `--explain` traces the original's last write of each difference.
+- **Planned before the release: parity at check points**
+  ([CHECKPOINT_PARITY_PLAN.md](CHECKPOINT_PARITY_PLAN.md)): the baseline pauses where a
+  step of the original's logic ends, so lag frames and variable logic rates (N64,
+  PlayStation) line up, and `dj_sync` knows which loop the original is in. Part 1 first: a
+  version 2 `dj_baseline` with frame facts (fixes the tick count reading 0 through the
+  worker's copy), the baseline's memory handed over instead of its save state, and
+  `dj_get_cpu_state`.
+- **After the release: sub-frame inputs.** Segment lines that change inputs part-way
+  through a frame, at a check point, a tick or a CPU cycle, for games that read the
+  controller more than once a frame, and for TAS work (sub-frame input exists in some TAS
+  formats). Needs inputs keyed below the frame in the segment format (playback.md reserves
+  "keying input by tick"), the player applying them mid-frame (on top of
+  `dj_run_to_checkpoint`), and the GUI's piano roll showing them. Check points
+  ([CHECKPOINT_PARITY_PLAN.md](CHECKPOINT_PARITY_PLAN.md)) don't need it: they keep inputs
+  per frame.
 - **Still to do for parity:** counts per block ("passed on X frames"); `dj parity --jobs`
   (a child process per job); `--from-power-on`; data symbols, so diffs can be given by
   symbol and the RAM compare's diffs get names; for diffs that can't be traced, "suspects
@@ -515,7 +531,9 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   parity. It could also fill in a short reason or the first mismatch it found, for the
   report. A core without the function falls back to the default check (RAM while
   stepping, below). Open: how much of the baseline to hand over each frame without
-  slowing stepping down, and whether the check runs every frame or only at ticks.
+  slowing stepping down, and whether the check runs every frame or only at ticks (planned
+  in [CHECKPOINT_PARITY_PLAN.md](CHECKPOINT_PARITY_PLAN.md): at named check points
+  mid-frame, with frame ends as the fallback).
 - **Open question: how parity is checked.** Nothing is decided yet. The options are:
   - **RAM while stepping.** Run both cores frame by frame and compare RAM (or the
     watched regions) after each frame. It's cheap, and it works with any core. A

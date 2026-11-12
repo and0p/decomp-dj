@@ -1,8 +1,10 @@
 # Plan: a C reimplementation of Thwaite as a comparison core
 
 Status: draft, 2026-11-11. Not started. Decided 2026-11-11: the C is written from the
-GPL source (a reimplementation, not clean room); no connector API changes for now (no
-`dj_cpu_state`); generated data is committed as C tables; no sound.
+GPL source (a reimplementation, not clean room); generated data is committed as C tables;
+no sound. This plan changes nothing in dj's connector API itself. It builds on the changes
+[CHECKPOINT_PARITY_PLAN.md](CHECKPOINT_PARITY_PLAN.md) makes (the version 2 `dj_baseline`
+handle, `dj_get_cpu_state`, check points), and works without them until they land.
 
 ## Goal
 
@@ -28,8 +30,8 @@ What it is:
 - **GPL-3.0**, like Thwaite (and the repo, once relicensed).
 
 Not goals: sound (the core outputs silence), cycle accuracy, the PAL/Dendy speed paths (it
-runs as NTSC), replacing the art, a standalone (non-libretro) build, changes to dj's
-connector API.
+runs as NTSC), replacing the art, a standalone (non-libretro) build. Changes to dj's
+connector API belong to [CHECKPOINT_PARITY_PLAN.md](CHECKPOINT_PARITY_PLAN.md).
 
 ## Layout
 
@@ -42,7 +44,8 @@ examples/thwaite/decomp/
     gen_assets.py         tilesets/*.png -> CHR; palettes, nametables, level/sine tables, texts
     gen_rammap.py         thwaite.dbg -> RAM symbols (name, address, size) and the
                           return addresses of each JSR into a wait loop (for sync)
-  src/data/               their output, committed: chr.c, tables.c, texts.c, rammap_syms.c
+  src/
+    data/                 their output, committed: chr.c, tables.c, texts.c, rammap_syms.c
     game.h                struct game: every piece of game state
     main.c                the frame loop and the screen state machine (orig: main.s)
     title.c practice.c cutscene.c levels.c missiles.c explosion.c smoke.c
@@ -76,36 +79,62 @@ This costs more than writing straight-line C on a coroutine, but everything that
 here becomes easy: a save state is a `memcpy` of `struct game`, and a sync is "pick the
 state, fill the fields".
 
-### The frame boundary
+### Lining the two up: check points first, frame ends until then
+
+The decomp is built for check points
+([CHECKPOINT_PARITY_PLAN.md](CHECKPOINT_PARITY_PLAN.md)): the baseline stops where a step
+of the original's logic is done, the decomp runs to its own next one, and the two are
+compared there. Until that lands, it is checked at frame ends like any comparison core
+today. Both modes use the same state machine; only who decides when a step runs differs.
+
+**Thwaite's check points** go just past each wait loop's exit (the first instruction after
+the `beq` that spins on `nmis`), one per screen: `game` (in `main`, before
+`blitBGUpdate`), `pause`, `title`, `practice`, and one per cutscene wait. Just past the
+exit, not at the wait itself, because of how check points hand over input: a step gets
+the inputs of the frame its previous check point was in. Past the exit, that is the frame
+whose NMI started the step, which is the frame `read_pads` runs in. At the wait's entry it
+would be the frame before, one frame early. Where the check is, the step's logic is done
+and its BG update hasn't been sent yet, the same state the frame-end check sees.
+
+**With check points** (`check_at = "checkpoints"`):
+
+- `dj_run_to_checkpoint_named` advances the state machine one state and names the check
+  point it reached. A lag frame has no check point, the next has two, and the decomp
+  follows without knowing about lag.
+- `dj_sync` is told which check point the baseline is stopped at (version 2 handle), so it
+  never guesses the screen: the name picks the state, the RAM fills `struct game`.
+- `retro_run` still runs whole frames for plain play (one step per frame, never lagging).
+
+**At frame ends** (now, and for any baseline without check points):
 
 At the end of Mesen's `retro_run` (start of vblank, before NMI) the original is, on a
 normal frame, spinning in one of its wait loops with that frame's logic done. The decomp's
-frame is the same span: input read, logic, sprites and BG updates queued. Milestone 0
-checks this on every segment before anything is built on it, using the Mesen connector's
-existing trace hook (no connector changes): trace each frame's last instructions and
-record which wait loop, if any, the CPU was in when the frame ended.
+frame is the same span. Milestone 0 checks this on every segment, with Mesen's trace hook
+now, or the frame-end PC once `dj_get_cpu_state` exists.
 
-**Lag frames** (logic that runs past vblank) are the one place a frame-stepped rewrite can't
-follow the original by itself, because they depend on 6502 cycle counts. Milestone 0
-measures how often they happen in the segments. If they do, the decomp needs to see them
-from what dj already gives it:
+*Lag frames* (logic that runs past vblank) are the one place a frame-stepped rewrite can't
+follow by itself, because they depend on 6502 cycle counts:
 
-- **Signal:** the baseline's `dj_get_tick_count` (through `get_proc`) counts
-  `doStateAction`, which the project's `[tick]` already sets. In play, a frame where it
-  didn't move (and the game isn't paused) is a lag frame. Without a tick, the fallback is
-  the clock: `incGameClock` runs once per iteration, so an unchanged `gameSubTenth`
-  means the same.
+- **Signal: `frame_ticks` in the version 2 `dj_baseline`** (the ticks the real baseline ran
+  this frame; Thwaite's `[tick]` is `doStateAction`). In the game loop, a frame with
+  `frame_ticks == 0` while not paused is a lag frame. **Not** the baseline's
+  `dj_get_tick_count` through `get_proc`: under dj-gui and `dj parity` the handle reaches
+  a copy of the baseline that only has its save state loaded, never runs, and never has
+  its tick location set, so it always reads 0.
+- **Before version 2, or without `has_ticks`:** the game clock in RAM, which the copy does
+  have. `incGameClock` runs once per game-loop iteration, so an unchanged clock
+  (`gameSubTenth` and up) means the iteration didn't finish.
 - **Response:** `dj_check_parity` returns **skip** ("baseline lagged"), restores the
   decomp's state from before this frame and keeps the frame's input, so the next frame
   runs the same step. When the original finishes the late iteration, the two are level
   again.
+- Menus, cutscenes and pause have no ticks and no clock. They do almost nothing per frame
+  and shouldn't lag; milestone 0 confirms that.
 - Outside comparison, the decomp just doesn't lag. That's a documented difference.
 
-### Which screen the original is in, from RAM alone
-
-A sync needs to know *which loop* the original is in (title, pause, game, which cutscene
-step). That is in the PC and the call stack, and dj gives no PC. But the 6502's stack is
-RAM (page 1), and the original's call chains into its wait loops are fixed:
+*Which screen the original is in* comes from RAM alone in this mode, since the frame-end
+handle names no check point. The 6502's stack is RAM (page 1), and the call chains into the
+wait loops are fixed:
 
 1. `gen_rammap.py` lists, for every wait loop, the chain of JSR return addresses that
    reaches it (`main -> pauseScreen`, `main -> titleScreen`, ...) and where on the stack
@@ -113,16 +142,17 @@ RAM (page 1), and the original's call chains into its wait loops are fixed:
 2. `dj_sync` matches the baseline's stack page against those signatures, deepest first,
    then checks the RAM agrees (`gameState`, `isPractice`, the cutscene and pause
    variables). Stale return addresses below the live stack can fool the signature alone;
-   the RAM check is what rules them out.
+   the RAM check rules them out.
 3. That picks the decomp's state; the RAM fields fill `struct game`.
 4. When nothing matches, or more than one does, it returns 1 with the candidates in
    `reason`, and the player tries again at the next jump. Mid-logic (a lag frame) is one
    of these.
 
-`DJ_SYNC_BOOT` skips all of this: the decomp boots itself.
+With `dj_get_cpu_state` (Part 1 of the check point plan), the frame-end PC replaces step 2's
+guesswork: it names the wait loop directly, and the stack signature only picks the
+cutscene step. The stack matching is kept anyway, for baselines without it.
 
-If this turns out too weak in practice (milestone 1 will show), the fix is a small
-optional connector function that returns the CPU registers. That's out of scope for now.
+`DJ_SYNC_BOOT` skips all of this: the decomp boots itself.
 
 ### Syncing, writing and checking
 
@@ -181,7 +211,8 @@ Everything is exported, as asked:
 | `dj_region_count`, `dj_get_region` | `RAM` (the 2 KB view, cpu NULL) and `SRC`: one flag byte per instrumented block of the C code (a `COV()` macro at the start of each original-routine function and branch), cpu NULL |
 | `dj_clear`, `dj_set_tick_exec`, `dj_get_tick_count` | over `SRC`; the tick block is `doStateAction`'s |
 | `dj_trace_start/stop/read` | write events (kind 3) in the original's address space, from the export step, so `parity_explain` can trace both sides |
-| `dj_sync`, `dj_write`, `dj_check_parity`, `dj_parity_diffs`, `dj_run` | as above; `dj_run` reports an unimplemented screen or routine by name instead of running on |
+| `dj_sync`, `dj_write`, `dj_check_parity`, `dj_parity_diffs`, `dj_run` | as above; `dj_run` reports an unimplemented screen or routine by name instead of running on. All of them read the handle's version and use the version 2 fields only when present |
+| `dj_run_to_checkpoint_named` | once check points exist: one state of the state machine, naming the check point reached |
 
 dj ignores a comparison core's coverage today (connectors.md); `SRC` is there for when it
 doesn't.
@@ -200,6 +231,14 @@ the cutscenes that come before it in the tree.
    - The decomp core skeleton: libretro boilerplate, GL renderer showing the CHR, every
      `dj_*` stubbed, the converters and their committed tables, `build.sh`,
      `[[compare]]` in config.toml. It loads in dj-gui beside Mesen.
+   - Also answers, for the check point plan: does a spin-loop exit ever fall on the other
+     side of Mesen's frame boundary from the NMI that caused it (it decides which frame a
+     step's input comes from).
+
+Milestones 1 to 3 check at frame ends, which works today. When check points land (their
+plan's step 10 is this decomp), the `[[checkpoint]]` entries go into config.toml,
+`dj_run_to_checkpoint_named` is added, and all segments are checked again with
+`check_at = "checkpoints"`, lag frames included. The frame-end mode stays working.
 1. **Boot and menus**: reset, the legal screen, title, the 2-player and mouse paths,
    practice menu. Segments: Boot, 2 Players, Mouse, Practice open/cancel.
 2. **Gameplay**: new level, crosshairs, player and enemy missiles, balloons, explosions,
@@ -219,16 +258,17 @@ worth adding as the decomp gets there; the coverage map shows where.
 
 - **The frame boundary isn't where it's assumed.** Milestone 0 exists to find out before
   any game code is written.
-- **Lag frames** in heavy waves: handled by skip-and-hold above, if they show up.
+- **Lag frames** in heavy waves: at frame ends, skip-and-hold above; with check points,
+  nothing to do.
+- **The version 2 handle isn't there yet** when gameplay is written: the clock fallback
+  covers lag in the game loop until it is.
 - **The `missilesOverlay` reuse**: cutscenes and the practice menu reuse missile RAM for
   their own variables; the policy table has to know which layout is live.
 - **Sprite order**: if Thwaite's OAM rotation is part of its state (it decides flicker),
   it needs to match exactly; the `sprites` policy may become `exact`.
-- **Syncing from RAM alone is ambiguous somewhere.** Stack signatures plus RAM checks
+- **Frame-end syncing from RAM is ambiguous somewhere.** Stack signatures plus RAM checks
   should tell the screens apart, but stale stack bytes or two screens with the same chain
-  could defeat them. Such a sync fails with a reason instead of guessing; if it happens
-  often, revisit a CPU-state connector function.
-- **The lag signal depends on `[tick]`.** If a project drops it, the clock fallback only
-  works in play, not in menus (menus don't run the game clock, but they also don't lag).
+  could defeat them. Such a sync fails with a reason instead of guessing. Check points
+  (the name in the handle) and `dj_get_cpu_state` (the PC) both remove the guess.
 - **Committed tables drift** if the pinned Thwaite commit changes; the converters are
   rerun by hand then, and the README says so.

@@ -4,6 +4,14 @@ Status: agreed 2026-11-10; steps 1 (decoder plugins), 2 (comparison cores) and 3
 commands) done 2026-11-10; step 4's in-process protection done 2026-11-10, the GUI's core in
 a worker designed below, not built. Linked from [ROADMAP.md](ROADMAP.md#before-the-first-release).
 
+> **Step 2 is being reversed** (Andrew, 2026-11-13; note added 2026-11-13 16:36 EST by the meta-analysis
+> thread). Comparison cores in the GUI are to run in the GUI's process again, not in a
+> worker, so that a comparison core can read the baseline in the middle of a frame. The
+> reasons, what is given up, and what covers it are in
+> [yield-parity/PLAN.md](yield-parity/archive/PLAN.md), section 9. Not built yet: the GUI still
+> uses the worker. The crash note is to name the comparison core and what it was doing.
+> Steps 1, 3 and 4 are unchanged. Suggested: keep `RemoteComparison` in the code, unused.
+
 ## The problem
 
 Cores, comparison cores and decoder plugins are native code loaded into dj's process. A
@@ -51,6 +59,8 @@ Least trusted and cheapest first.
      "the core isn't responding" with Wait and Quit (keeping edits).
 
 ## Step 2 details: comparison cores
+
+> Being reversed: see the note at the top of this file.
 
 **Done 2026-11-10.** The GUI loads `RemoteComparison` (compare.rs): the same calls as
 `Comparison`, run by a long-lived `compare` worker (`isolate::Worker`, `serve_session`; JSON

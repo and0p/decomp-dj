@@ -3,7 +3,7 @@
 Status: draft, 2026-11-11. Not started. Decided 2026-11-11: the C is written from the
 GPL source (a reimplementation, not clean room); generated data is committed as C tables;
 no sound. This plan changes nothing in dj's connector API itself. It builds on the changes
-[CHECKPOINT_PARITY_PLAN.md](CHECKPOINT_PARITY_PLAN.md) makes (the version 2 `dj_baseline`
+[CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md) makes (the version 2 `dj_baseline`
 handle, `dj_get_cpu_state`, check points), and works without them until they land.
 
 ## Goal
@@ -31,7 +31,7 @@ What it is:
 
 Not goals: sound (the core outputs silence), cycle accuracy, the PAL/Dendy speed paths (it
 runs as NTSC), replacing the art, a standalone (non-libretro) build. Changes to dj's
-connector API belong to [CHECKPOINT_PARITY_PLAN.md](CHECKPOINT_PARITY_PLAN.md).
+connector API belong to [CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md).
 
 ## Layout
 
@@ -82,7 +82,7 @@ state, fill the fields".
 ### Lining the two up: check points first, frame ends until then
 
 The decomp is built for check points
-([CHECKPOINT_PARITY_PLAN.md](CHECKPOINT_PARITY_PLAN.md)): the baseline stops where a step
+([CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md)): the baseline stops where a step
 of the original's logic is done, the decomp runs to its own next one, and the two are
 compared there. Until that lands, it is checked at frame ends like any comparison core
 today. Both modes use the same state machine; only who decides when a step runs differs.

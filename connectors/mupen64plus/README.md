@@ -38,6 +38,14 @@ code, ticks and the trace hook are still to come
   (angrylion keeps state outside the save state, so loads don't reproduce), and the pure
   interpreter (the only one that records coverage). `dj_forced_options` lists them, so the
   player records these values in `[core.options]` instead of what the options said.
+- **A GLideN64 fix, so the picture shows on macOS.** `BufferedDrawer`
+  (`opengl_BufferedDrawer.cpp`) enabled the rectangles' barycentric vertex attribute
+  always but gave it a buffer only when coverage is supported, which this fork turns off.
+  Apple's OpenGL draws nothing from a vertex array with an enabled attribute and no
+  buffer, and raises no error, so every rectangle was dropped: the copy to the screen
+  under framebuffer emulation (a black picture), and the game's own fill and texture
+  rectangles. The patch enables the attribute only with coverage. It doesn't touch what
+  dj hashes.
 
 Regions, in index order (connector API version 2):
 

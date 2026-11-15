@@ -1,3 +1,5 @@
+> **Archived. Agents: do not read this file unless the developer tells you to.** It is an earlier revision or a long design discussion, kept for the record, and it contradicts the current design in places. The current design is [PLAN.md](../PLAN.md), with charts in [FLOW.md](../FLOW.md).
+
 # Flow: sync, ticks and parity, now and as proposed
 
 Written 2026-11-11 by the meta-analysis thread, to go with
@@ -190,144 +192,135 @@ index would use.
 
 ## Current proposal: a blocking call at each yield
 
-Added 2026-11-11 21:23 EST by the meta-analysis thread. It follows "Where the design
-stands" in the plan's section "Experiments and where the design stands (2026-11-11 21:18
-EST)". Nothing here is built, and Andrew has not signed off on every point.
+Added 2026-11-11 21:23 EST by the meta-analysis thread. Last rewritten 2026-11-12 21:35 EST, when
+the design was settled enough to move to its own folder. **The same charts, without the
+history on this page, are in [yield-parity/FLOW.md](FLOW.md), and the
+design is written out in [yield-parity/PLAN.md](PLAN.md). Build from
+those.** Nothing here is built.
 
-A yield is a named place in the original's code. When the baseline runs it, the
-connector calls a function dj gave it and waits for that function to return. The baseline
-stays inside `retro_run` the whole time. `[tick]` is one of these yields: the one the
-project reports as its tick.
+What changed in this last rewrite, with the plan section that decided it:
+
+- The comparison core no longer subscribes to yields; every yield is passed to it, and
+  it answers "skip" for one it disregards. Yields have no N64 guard. ("Yield config, the
+  call, and patch files")
+- The statuses are match, mismatch, skip and error, with a "completed a tick" flag. The
+  core gives every verdict; dj compares no memory itself. (the same section, and "Final
+  round")
+- A mismatch or an error stops playback at the frame boundary. There is no halt setting
+  and no time limit box. (the same sections)
+- After a load, dj offers a sync at every yield, the frame end included, and the core
+  accepts where it can. Checkpoints and the "is this a tick start?" test are gone.
+  ("Final round")
 
 ### One frame
 
 ```mermaid
 flowchart TD
-    setup(["Session opens, or the comparison core loads"]) --> give["dj gives the baseline's connector<br/>the list of yields and one function to call"]
-    give --> wants["The comparison core says which<br/>yields it wants to be called at"]
-    wants --> fstart
+    setup(["Session opens"]) --> arm["dj gives the baseline's connector the yields:<br/>the [tick] and [[yield]] entries.<br/>The frame end is always one"]
+    arm --> fstart
 
-    fstart["Frame k: apply its lines.<br/>WRITE lines go to both cores"] --> run["Baseline: retro_run, as today"]
-    run --> hit{"The baseline runs<br/>a yield's instruction?"}
-    hit -- "yes" --> call[["The connector calls dj and waits.<br/>See 'Inside the call'"]]
+    fstart["Frame k: apply its input lines to both cores.<br/>A WRITE line goes to the baseline<br/>and puts a decomp out of step"] --> run["Baseline: retro_run, as today"]
+    run --> hit{"The baseline reaches<br/>a yield's address?"}
+    hit -- "yes" --> call[["The connector calls dj and waits.<br/>See 'At a yield'"]]
     call --> run
     hit -- "no, the frame ended" --> fend["retro_run returns"]
 
-    fend --> note["dj adds frame k to the list of frames<br/>since the last yield: its number,<br/>its full input state, its controller reads"]
-    note --> fcheck["dj_check_parity at the frame end,<br/>if checking is on"]
-    fcheck --> fverdict{"Verdict"}
-    fverdict -- "not judged" --> pic
-    fverdict -- "match" --> pic["Show the comparison core's picture"]
-    fverdict -- "mismatch or error" --> fail(["Failed: record the frame and what differed.<br/>Stop both cores at this frame boundary"])
-    pic --> pending{"A failure was recorded<br/>inside a call this frame?"}
-    pending -- "yes" --> fail
-    pending -- "no" --> next(["Frame k + 1"])
+    fend --> note["dj adds frame k's number to the list of frames<br/>since the last call to the comparison core"]
+    note --> fcall[["The frame-end yield: the same handling<br/>as 'At a yield', with the baseline between frames"]]
+    fcall --> pic["Show the comparison core's picture"]
+    pic --> lost{"Was a mismatch or an error<br/>recorded at any yield this frame?"}
+    lost -- "no" --> next(["Frame k + 1"])
+    lost -- "yes" --> halt(["Stop both cores at this frame boundary.<br/>Show the yield and the reasons.<br/>A user or an agent may step on by hand"])
     next --> fstart
 ```
 
-### Inside the call
+### At a yield
 
-The baseline is stopped mid-frame for as long as this takes. dj may read its memory and
-registers. dj must not run it, save it, load it or reset it.
+The baseline is stopped, mid-frame unless this is the frame end, for as long as this
+takes. dj may read its memory and registers. dj must not run it, save it, load it or
+reset it. Whatever the answer, the call returns and the frame finishes.
 
 ```mermaid
 flowchart TD
-    enter(["The connector calls dj: which yield"]) --> off{"Is a save state<br/>being loaded?"}
+    enter(["The connector calls dj: which yield, which address"]) --> off{"Is a save state<br/>being loaded?"}
     off -- "yes" --> ret(["Return. The baseline carries on"])
-    off -- "no" --> count["Add one to this yield's count.<br/>If it is the project's tick, that is the tick count"]
+    off -- "no" --> count["Add one to this yield's count.<br/>For [tick], that is the baseline's tick count"]
     count --> cap{"More than the cap<br/>for one frame?"}
     cap -- "yes" --> caperr["Record an error naming the yield:<br/>it is in a spin loop"]
     caperr --> ret
-    cap -- "no" --> wanted{"Does the comparison core<br/>want this yield?"}
-    wanted -- "no, count only" --> ret
+    cap -- "no" --> loaded{"Is a comparison core loaded,<br/>and no mismatch or error<br/>recorded yet this frame?"}
+    loaded -- "no" --> ret
 
-    wanted -- "yes" --> failed{"Already failed<br/>this frame?"}
-    failed -- "yes" --> ret
-    failed -- "no" --> instep{"Comparison core in step?"}
+    loaded -- "yes" --> instep{"Comparison core in step?"}
+    instep -- "no" --> offer[["Offer a sync.<br/>See 'After a load or a jump'"]]
+    offer --> ret
 
-    instep -- "no" --> sync["Sync from scratch: dj_sync with the yield's name<br/>and the baseline's live memory and registers"]
-    sync --> syncok{"Synced?"}
-    syncok -- "the core declines here" --> later["Try again at the next yield it wants"]
-    syncok -- "failed" --> later
-    syncok -- "yes" --> fresh["In step from here.<br/>Start a new interval"]
+    instep -- "yes" --> tell["One call to the comparison core: the yield's name,<br/>which address fired, whether parity checking is on,<br/>the yield's counts, the thread on the N64,<br/>the numbers of the frames since the last call,<br/>and a handle to read the baseline"]
+    tell --> runs["The core runs itself for as long<br/>as it decides, then returns a status,<br/>a 'completed a tick' flag, and reasons"]
+    runs --> status{"Status"}
 
-    instep -- "yes" --> complete{"Is the interval since<br/>the last yield complete?"}
-    complete -- "no: a load happened in it" --> sync
-    complete -- "yes" --> step["One call to the comparison core:<br/>the yield's name, the counts, the frames since<br/>the last yield with their inputs and reads,<br/>and whether checking is on"]
-    step --> verdict{"What the core returns"}
-    verdict -- "match" --> pass["Add the coverage flags since<br/>the last yield to the passed set"]
-    verdict -- "not judged" --> ran["Stepped, not judged.<br/>Counted in the report"]
-    verdict -- "mismatch or error" --> rec["Record the failure: the frame, which yield,<br/>what differed. The frame still finishes"]
+    status -- "skip" --> skipc["Count it as not judged"]
+    skipc --> empty
+    status -- "match" --> pass["Take and clear the coverage flags.<br/>Add them to the build's passed set.<br/>Count it as judged"]
+    status -- "mismatch" --> lostrec["Take and clear the coverage flags.<br/>Record the yield, the frame and the reasons,<br/>with both sides' values"]
+    status -- "error" --> cannot["Record the error.<br/>The core is out of step"]
 
-    pass --> clear["Take and clear the coverage flags.<br/>Empty the list of frames since the last yield"]
-    ran --> clear
-    rec --> clear
-    fresh --> clear
-    later --> clear
-    clear --> ret
+    pass --> empty["Empty the list of frames<br/>since the last call"]
+    lostrec --> empty
+    cannot --> empty
+    empty --> tick{"Did the core say it<br/>completed a tick?"}
+    tick -- "yes" --> addtick["Add one to the comparison's tick count"]
+    tick -- "no" --> ret
+    addtick --> ret
 ```
+
+The core gives every verdict. dj does not compare memory itself and keeps no list of
+bytes to ignore. "skip" covers a yield the core disregards, an overlay it is not built
+for, and checking being off.
 
 ### After a load or a jump
 
-Updated 2026-11-11 22:26 EST to match the plan's section "Frames and ticks: roles, the
-map, seeking, and tick start and end". The earlier chart said the first step after any
-load is never checked; that holds only when the save state was taken mid-tick.
-
-A save state is only ever taken or loaded at a frame start.
+A save state is only ever taken or loaded at a frame start. dj does not manage a
+comparison core's memory: the core brings itself fully into step from the baseline.
 
 ```mermaid
 flowchart TD
-    load(["A save state is loaded:<br/>a seek, a segment's snapshot, a parent's end state"]) --> kind{"How does the<br/>comparison core sync?"}
+    load(["A save state is loaded:<br/>a seek, a segment's snapshot, a parent's end state"]) --> kind{"What is the<br/>comparison core?"}
 
-    kind -- "sync = state (same emulator)" --> st["It loads the same save state,<br/>at this frame start. In step at once"]
+    kind -- "the same emulator" --> st["It loads the same save state,<br/>at this frame start. In step at once"]
 
-    kind -- "dj_sync (a decomp)" --> zero["Yield counts restart here. They are since the<br/>segment start for display, since the sync for the core"]
-    zero --> where{"Was the game waiting<br/>at this frame start?"}
-    where -. "how dj knows" .-> know["The frame-to-tick map says so for this frame.<br/>With no map: the program counter is in a wait loop"]
+    kind -- "a decomp" --> out["The core is out of step.<br/>The baseline plays on as normal"]
+    out --> ynext["The baseline reaches a yield.<br/>The frame end is one"]
+    ynext --> offer["dj offers a sync: dj_sync with the yield's name,<br/>which address fired, and a handle to read the baseline"]
+    offer --> answer{"The core's answer"}
+    answer -- "declines: it cannot sync here" --> ynext
+    answer -- "failed" --> failed(["Show the reason.<br/>No more offers until the next load or jump"])
+    answer -- "synced" --> instep(["In step from this yield.<br/>Nothing before it was checked.<br/>Checking starts at the next yield"])
 
-    where -- "yes: the last tick finished<br/>in an earlier frame" --> atstart["Sync from scratch now, at the frame start:<br/>dj_sync with the name of that wait.<br/>RAM is as it was when the tick finished"]
-    atstart --> checked(["The tick that finishes in this frame<br/>is stepped and checked"])
-
-    where -- "no: mid-tick (a lag frame)" --> mark["Mark the interval incomplete"]
-    mark --> runon["The baseline runs on inside this frame<br/>to the tick's finish"]
-    runon --> first["Sync from scratch there, inside the call:<br/>dj_sync, no step, no check"]
-    first --> gap(["That one tick is not checked.<br/>Checking starts with the next"])
-
-    cont(["A parent segment plays straight into its child"]) --> nojump["Not a jump: the comparison core stays in step.<br/>The open step and its coverage flags carry across,<br/>and are credited to the segment where the yield lands"]
+    cont(["A parent segment plays straight into its child"]) --> nojump["Not a jump: the comparison core stays in step.<br/>The list of frames and the coverage flags carry across,<br/>and are credited to the segment where the yield lands"]
 ```
 
-The "yes" branch relies on two things that are true for Thwaite on Mesen and not
-everywhere:
-
-- **Nothing changes RAM between the tick's finish and the frame start.** Mesen starts a
-  frame at scanline 240 and the NMI comes at 241. An emulator that ends frames after the
-  vblank interrupt has already run the handler, and the decomp must be told.
-- **One thread.** On the N64, other threads run between the main thread's wait and the
-  frame boundary.
+A project with no `[tick]` and no `[[yield]]` has only the frame end, so its decomp
+syncs at a frame boundary. That is what works today for Tetris. A decomp of a game whose
+frame ends fall inside a tick (No Mercy's tag match) declines the frame end and syncs at
+its tick.
 
 ### The same emulator as the comparison core
 
-Two emulators can't each wait inside the other's call, so neither is called to step here.
+Two emulators can't each wait inside the other's call, so neither is called at a yield.
+With only the frame end this is today's check: one comparison per frame.
 
 ```mermaid
 flowchart TD
     a(["After a jump: both load the same<br/>save state at a frame start"]) --> b["Both get the same list of yields"]
-    b --> c["Baseline runs frame k. At each yield its connector<br/>records the yield and a hash of RAM"]
+    b --> c["Baseline runs frame k. At each yield, the frame end<br/>included, its connector records the yield and a hash of RAM"]
     c --> d["Comparison core runs frame k<br/>and records the same way"]
     d --> e{"Same yields in the same order,<br/>with the same hashes?"}
     e -- "yes" --> f(["Frame k + 1"])
-    e -- "no" --> g(["Failed: name the first yield that differs"])
+    e -- "no" --> g(["Mismatch: name the first yield that differs.<br/>Stop both cores"])
     f --> c
 ```
 
 ### Still open
 
-| Box | What's open |
-| --- | --- |
-| "The baseline runs a yield's instruction" | Where a yield goes in a spin loop. It has to be an instruction that runs once per wait. In Thwaite's boot, a loop at `$C430` ran `cmp nmis` 2,693 times in one frame |
-| "The connector calls dj and waits" | On the N64 the game runs on a coroutine; whether its stack is big enough for the call is unchecked. A yield there must also say which thread hit it |
-| "One call to the comparison core" | The name of the call, and whether it is connector API 3. API 2 connectors still need their tick functions |
-| "match" | For a decomp, which bytes to ignore. The RAM-only sync run in the plan found 3 stack bytes below the stack pointer that differ without mattering |
-| "its controller reads" | Only the Mesen connector is close to counting these |
-| "Is a save state being loaded?" | Needed because a load on Mupen64Plus ran 1,951 distinct instructions inside `retro_unserialize` |
-| Everything in this section | Not built. The plan's next step is a spike in the Mesen connector with one yield at Thwaite's game wait |
+See "Open problems" in [yield-parity/PLAN.md](PLAN.md).

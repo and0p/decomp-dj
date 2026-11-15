@@ -1,3 +1,18 @@
+diff --git a/GLideN64/src/Graphics/OpenGLContext/opengl_BufferedDrawer.cpp b/GLideN64/src/Graphics/OpenGLContext/opengl_BufferedDrawer.cpp
+index bf781a2..f6d5b35 100644
+--- a/GLideN64/src/Graphics/OpenGLContext/opengl_BufferedDrawer.cpp
++++ b/GLideN64/src/Graphics/OpenGLContext/opengl_BufferedDrawer.cpp
+@@ -29,7 +29,9 @@ BufferedDrawer::BufferedDrawer(const GLInfo & _glinfo, CachedVertexAttribArray *
+ 	m_cachedAttribArray->enableVertexAttribArray(rectAttrib::position, true);
+ 	m_cachedAttribArray->enableVertexAttribArray(rectAttrib::texcoord0, true);
+ 	m_cachedAttribArray->enableVertexAttribArray(rectAttrib::texcoord1, true);
+-	m_cachedAttribArray->enableVertexAttribArray(rectAttrib::barycoords, true);
++	/* decomp-dj: only with a buffer to read (below). An enabled attribute with none makes
++	 * Apple's OpenGL drop every rectangle draw, without an error. */
++	m_cachedAttribArray->enableVertexAttribArray(rectAttrib::barycoords, _glinfo.coverage);
+ 	glVertexAttribPointer(rectAttrib::position, 4, GL_FLOAT, GL_FALSE, sizeof(RectVertex), (const GLvoid *)(offsetof(RectVertex, x)));
+ 	glVertexAttribPointer(rectAttrib::texcoord0, 2, GL_FLOAT, GL_FALSE, sizeof(RectVertex), (const GLvoid *)(offsetof(RectVertex, s0)));
+ 	glVertexAttribPointer(rectAttrib::texcoord1, 2, GL_FLOAT, GL_FALSE, sizeof(RectVertex), (const GLvoid *)(offsetof(RectVertex, s1)));
 diff --git a/Makefile.common b/Makefile.common
 index 72aef3a..3936839 100644
 --- a/Makefile.common

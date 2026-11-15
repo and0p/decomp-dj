@@ -18,7 +18,7 @@ Priorities: **high** blocks the release, **medium** should be in it, **low** can
 | medium | Decoder interface (step 1: one trait and one sweep; step 2: loadable decoders) | [DECODER_PLAN.md](DECODER_PLAN.md) | done (plugins 2026-11-10) |
 | high | Cores and plugins can't crash or hang dj: workers for decoder plugins, comparison cores, batch commands, then the GUI's core | [ISOLATION_PLAN.md](ISOLATION_PLAN.md) | done for plugins, comparison cores and batch commands; the GUI's core protected in process (edits kept, crash note); moving it to a worker designed, not built (decided 2026-11-10: not now, maybe before the release) |
 | medium | Root segments that start from a snapshot, finished ([below](#root-segments-from-a-snapshot)) | | partly built |
-| high | Parity at check points, not frame ends: the version 2 comparison handle (frame and tick facts, the baseline's memory instead of its save state, CPU state), then check points in Mesen, dj and the tools | [CHECKPOINT_PARITY_PLAN.md](CHECKPOINT_PARITY_PLAN.md) | planned 2026-11-11; changes the comparison core API, so before the release |
+| high | Parity at check points, not frame ends: the version 2 comparison handle (frame and tick facts, the baseline's memory instead of its save state, CPU state), then check points in Mesen, dj and the tools | [CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md) | planned 2026-11-11; changes the comparison core API, so before the release |
 
 ### Root segments from a snapshot
 
@@ -80,6 +80,35 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   height with no scroll area, and only the function list (`ScrollArea` `cov_list`) shrinks,
   so with less room left the rows above it run past the sidebar's remaining space into the
   map panel instead of being clipped or scrolled. Not confirmed.
+- **A port keeps the device a previously played segment plugged in** (found 2026-11-11,
+  [CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md), "The mouse segment: a leftover
+  port device"). Thwaite's "Mouse in port 2" segment plugs a mouse in with a `[DEVICE]`
+  line at its frame 0. Played a second time in the same process, from its start, it runs
+  without the mouse: RAM, the full state and the tick map differed on all 400 frames.
+  Likely cause: Mesen's `retro_set_controller_port_device` does nothing when the port
+  already holds that device, and it still remembers "mouse" from the first play while the
+  state loaded for the replay has none plugged in. dj doesn't reset the port:
+  `devices_at_start` (`player/src/player.rs`) sets only the ports listed in `config.toml`
+  and those an ancestor's `[DEVICE]` line changed. Reproduced through the library
+  (`start_trunk`, `restore_inputs`, `step`), not yet in dj-gui; `dj run` plays each
+  segment once per process and doesn't hit it. Fix: when dj enters a segment, set every
+  port explicitly, including ports the config doesn't list, and set it to something else
+  first if the core might skip an unchanged value. Thwaite's mouse is an outlier among
+  NES games, so this is low priority, but any project with `[DEVICE]` lines is exposed.
+- **Mesen's lag counter can be off by one after a save state is loaded** (found 2026-11-11,
+  [CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md), "The lag counter after a load").
+  Mesen's `ControlManager` saves `_lagCounter` and `_pollCounter` but not the `_isLagging`
+  flag that decides whether the next input poll counts as lag. After a load the flag holds
+  whatever the last frame run in that process left, so two save states of the same frame
+  can differ by one byte. The game can't read the counter: RAM, state hashes, playback and
+  parity are unaffected. It only shows when whole save states are compared byte for byte.
+  Seen on the boot frames of Tetris and Thwaite, where the game doesn't read the
+  controller every frame. Fix, in the Mesen connector patch
+  (`connectors/mesen/dj-mesen.patch`): add `_isLagging` to what
+  `ControlManager::StreamState` saves and loads. That changes Mesen's save state layout,
+  so stored snapshots and `snapshot` blobs made with the current core need a format
+  version check or have to be made again; do it together with the next change that
+  already needs `dj repin`. Low priority: nothing depends on the lag counter today.
 
 ## GUI
 - **Shipped 2026-11-10: a debug console in the app** ([gui.md](../docs/gui.md#debug-console)): View >
@@ -428,7 +457,7 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   - What differed is kept with each failure (`dj_parity_diffs`, or the RAM compare), and
     `--explain` traces the original's last write of each difference.
 - **Planned before the release: parity at check points**
-  ([CHECKPOINT_PARITY_PLAN.md](CHECKPOINT_PARITY_PLAN.md)): the baseline pauses where a
+  ([CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md)): the baseline pauses where a
   step of the original's logic ends, so lag frames and variable logic rates (N64,
   PlayStation) line up, and `dj_sync` knows which loop the original is in. Part 1 first: a
   version 2 `dj_baseline` with frame facts (fixes the tick count reading 0 through the
@@ -440,7 +469,7 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   formats). Needs inputs keyed below the frame in the segment format (playback.md reserves
   "keying input by tick"), the player applying them mid-frame (on top of
   `dj_run_to_checkpoint`), and the GUI's piano roll showing them. Check points
-  ([CHECKPOINT_PARITY_PLAN.md](CHECKPOINT_PARITY_PLAN.md)) don't need it: they keep inputs
+  ([CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md)) don't need it: they keep inputs
   per frame.
 - **Still to do for parity:** counts per block ("passed on X frames"); `dj parity --jobs`
   (a child process per job); `--from-power-on`; data symbols, so diffs can be given by
@@ -468,6 +497,57 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   `name`); per-platform paths (`path.macos`, `path.linux`); `sha256` per platform, since
   builds differ; and an entry with no `path` here showing in the Compare menu as "not set
   up on this machine" instead of failing on pick. The same applies to `[core]`.
+- **Done 2026-11-12: N64 video on macOS** (the picture was black, or smeared with framebuffer
+  emulation off). GLideN64's `BufferedDrawer` enabled the rectangles' barycentric vertex
+  attribute without giving it a buffer, and Apple's OpenGL then drops every rectangle
+  draw without an error. The connector patch
+  ([connectors/mupen64plus](../connectors/mupen64plus/README.md)) now enables it only
+  with coverage, and the core's build id changed to `mupen64plus@15bada85+dj.8c54df2b`.
+  Details in [CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md), "No Mercy video".
+  Left to do: send the one-line fix upstream to mupen64plus-libretro-nx (and GLideN64, if
+  it has the same code); compare state hashes between the old and new core; find the GL
+  "invalid operation" the core raises once per frame; `dj repin` any N64 project recorded
+  with the old build; decide whether `dj init` should default
+  `mupen64plus-EnableCopyColorToRDRAM` to off, since it lets the GPU write into the RAM
+  that dj hashes.
+- **Pin timing-dependent randomness by patching the game's code in memory** (asked for
+  2026-11-11; background in [CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md), "WWF No
+  Mercy"). Some games advance their random number generator from an idle loop, so its
+  state follows spare CPU time, not game logic. A decomp can't reproduce that, and parity
+  on anything the generator decides fails. The AKI wrestling decomp
+  (`build/aki_n64_decomp`) solves it in its own emulator with `--no-idle-rng`: it
+  replaces the idle thread's call to the generator with a no-op, after which the
+  generator only advances from game code and a match replays exactly. For WWF No Mercy
+  (USA, Rev 1) that is the word `0x0C00D844` (`jal rng_main`) at `0x80000570`, written as
+  `0x00000000`. dj should be able to do the same for a project:
+  - **A `[[patch]]` entry in the project's config.toml that points to a patch file**
+    (decided by Andrew 2026-11-12; details in
+    [yield-parity/PLAN.md](yield-parity/archive/PLAN.md), "Patches"). The file holds its own
+    offsets and bytes; the config does not. dj reads the ROM, applies the patch in memory,
+    and hands the core the buffer before boot. The ROM file on disk is not changed. The
+    format is not decided: the thread recommends BPS, because it checks that it is being
+    applied to the right ROM.
+  - **It is part of the project, not of a segment or a comparison.** It goes into the
+    setup id that keys hashes and the cache. A patch with a different hash means every
+    segment has to be replayed. There is no extra confirmation and nothing to accept: a
+    segment plays, and the user saves it or does not, as after a parent segment changes.
+    It does not mark segments as poked the way a `[WRITE]` line does. `dj status` and
+    reports say the project is patched.
+  - **Every emulator core gets the same patch:** the baseline, and a comparison core that
+    is an emulator. A decomp carries the change in its own build; dj passes it the patch
+    list so it can confirm.
+  - **Each core must take the ROM from the buffer.** Mupen64Plus-Next does. mGBA does when
+    a buffer is given. Mesen reads the path, so its connector patch must make
+    `retro_load_game` use the buffer, and make a power cycle (`Console::ReloadRom`) reuse
+    that buffer instead of reading the file again.
+  - **Not checked:** whether a game's overlays are stored compressed, which a byte patch
+    cannot reach; the ROM offset for No Mercy's idle-loop call. Whether Mupen64Plus
+    enforces the N64 boot checksum is set aside for now (Andrew, 2026-11-12).
+  - **Parity still needs an ignore rule for the generator's state.** In No Mercy the
+    camera also draws from it outside the match logic; the decomp's own tools copy the
+    state from the trace every frame and leave it out of the comparison.
+  Until this exists, a `[WRITE]` line at the right frame of a root segment does the same
+  job by hand, at the cost of the segment being poked.
 - **N64 follow-ups** (the connector and the MIPS decoder are in; details and results in
   [CONNECTOR_PLAN.md](CONNECTOR_PLAN.md), steps 3 and 4):
   - **Playback speed.** dj plays the N64 core at about 52 fps against 103 fps for the bare
@@ -532,7 +612,7 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   report. A core without the function falls back to the default check (RAM while
   stepping, below). Open: how much of the baseline to hand over each frame without
   slowing stepping down, and whether the check runs every frame or only at ticks (planned
-  in [CHECKPOINT_PARITY_PLAN.md](CHECKPOINT_PARITY_PLAN.md): at named check points
+  in [CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md): at named check points
   mid-frame, with frame ends as the fallback).
 - **Open question: how parity is checked.** Nothing is decided yet. The options are:
   - **RAM while stepping.** Run both cores frame by frame and compare RAM (or the

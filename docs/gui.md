@@ -128,13 +128,12 @@ transport.
   at (where its run started). Playing or stepping on syncs it again first, as after a jump;
   after a failed sync, playback carries on without the comparison until the next jump or
   **Sync now**.
-- **The comparison core runs in its own process**, so one that crashes or hangs can't take
-  the GUI (or your unsaved edits) with it. A crash, or a call that hasn't come back after
-  10 s (loading: 60 s), stops it like any failure, with what happened over its picture
-  ("crashed (signal 11, SIGSEGV) while checking parity (dj_check_parity)"), and the baseline
-  plays on. **Compare > Restart comparison core** loads it again. To debug a comparison core
-  under a debugger, raise the time limits with the `DJ_WORKER_TIMEOUT_SCALE` environment
-  variable (say `100`), and attach to the `dj-gui __dj-worker compare` process.
+- **The comparison core runs in dj-gui's own process**, beside the baseline, so that it
+  can read the baseline's memory directly. One that crashes takes the window with it, and
+  one that hangs freezes it, as the baseline core does
+  ([below](#if-dj-gui-crashes-or-hangs)). Your unsaved edits are kept, and the note shown
+  on the next launch names the comparison core and the call it was in ("comparison core in:
+  dj_check_parity"). To debug a comparison core, attach a debugger to `dj-gui` itself.
 
 ### Parity
 
@@ -200,7 +199,7 @@ decomp's CI can run it after each build ([connectors.md](connectors.md#checking-
 the coverage map: what dj says while it runs. It holds the warnings and notes dj prints (a
 core option the core doesn't declare, a core build other than the project's), the cores' own
 log messages (libretro's log interface: info, warnings and errors, their format strings not
-filled in), what comparison cores and decoder plugins print in their worker processes, and
+filled in), what decoder plugins print in their worker processes, and
 the status bar's messages. Lines show the seconds since the app started and where they came
 from (`dj`, `core`, `compare`, `decode`, `dj-gui`). Filter by text, show or hide Info, Warn
 and Error, **Copy** the lines shown (for a bug report) or **Clear** them. Drag its top edge to
@@ -209,9 +208,8 @@ stderr, as before (on Windows a release dj-gui has no console, so this is where 
 
 ## If dj-gui crashes or hangs
 
-The baseline core runs in dj-gui's own process (comparison cores don't: [comparison
-cores](#comparison-cores)), so a core that crashes takes the window with it, and one that
-hangs freezes it. What dj-gui does so that costs nothing you can't get back:
+The baseline core and a comparison core both run in dj-gui's own process, so a core that
+crashes takes the window with it, and one that hangs freezes it. What dj-gui does so that costs nothing you can't get back:
 
 - **Unsaved edits are kept as you make them**, in `.local/recovery/` (checked once a second).
   The next time the project opens after dj-gui didn't close normally (a crash, a hang you

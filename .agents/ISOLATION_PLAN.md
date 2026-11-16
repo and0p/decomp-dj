@@ -11,6 +11,13 @@ a worker designed below, not built. Linked from [ROADMAP.md](ROADMAP.md#before-t
 > [yield-parity/PLAN.md](yield-parity/archive/PLAN.md), section 9. Not built yet: the GUI still
 > uses the worker. The crash note is to name the comparison core and what it was doing.
 > Steps 1, 3 and 4 are unchanged. Suggested: keep `RemoteComparison` in the code, unused.
+>
+> **Built 2026-11-15.** The GUI and `dj parity` load the comparison core into their own
+> process (`compare::Comparison`). The crash note names it and the call it was in. Under
+> `dj parity` the supervisor reads that note and records a failure at the frame, where
+> before it would have blamed the baseline. `RemoteComparison` and the `compare` worker are
+> still in the code, used only by `tests/compare.rs`. Details:
+> [yield-parity/PLAN.md](yield-parity/PLAN.md), "Built so far".
 
 ## The problem
 

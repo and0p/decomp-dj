@@ -1,6 +1,8 @@
 //! A note for the next launch when dj-gui crashes or stops responding inside a core
 //! (.agents/ISOLATION_PLAN.md, step 4): which core, segment and frame, and which libretro call
-//! it was in.
+//! it was in. A comparison core runs in the same process, so the note also names it and the
+//! call it was in, if it was running. A `dj parity` child writes the same note, which its
+//! supervisor reads to tell which of the two cores died (`isolate::supervise`).
 //!
 //! The crash handler (Unix: SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT) only writes the note
 //! from buffers filled beforehand, with async-signal-safe calls, then lets the signal take
@@ -16,6 +18,20 @@ use std::time::{Duration, Instant};
 /// `.local/crash-gui-<pid>.txt`.
 pub fn note_path(root: &Path, pid: u32) -> PathBuf {
     root.join(".local").join(format!("crash-gui-{pid}.txt"))
+}
+
+/// `.local/crash-batch-<pid>.txt`: the note of a batch child (`dj parity`), for its supervisor.
+pub fn batch_note_path(root: &Path, pid: u32) -> PathBuf {
+    root.join(".local").join(format!("crash-batch-{pid}.txt"))
+}
+
+/// The line of a note that names the call a comparison core was in. It is there only when
+/// the comparison core was running.
+pub const COMPARE_IN: &str = "comparison core in: ";
+
+/// From a note's text: the call the comparison core was in, if it was the one running.
+pub fn compare_call(note: &str) -> Option<&str> {
+    note.lines().find_map(|l| l.strip_prefix(COMPARE_IN)).map(str::trim).filter(|c| !c.is_empty())
 }
 
 const CAP: usize = 1024;
@@ -52,22 +68,72 @@ impl Buf {
 }
 
 static NOTE: Buf = Buf::new();
+static PROGRAM: Buf = Buf::new();
 static CORE: Buf = Buf::new();
+static COMPARE: Buf = Buf::new();
 static SEGMENT: Buf = Buf::new();
 static FRAME: AtomicU64 = AtomicU64::new(u64::MAX);
 static CALL: AtomicUsize = AtomicUsize::new(0);
+static COMPARE_CALL: AtomicUsize = AtomicUsize::new(0);
 
-/// The libretro calls the note can name ([`enter`]).
-pub const CALLS: [&str; 7] = ["", "retro_run", "retro_serialize", "retro_unserialize", "retro_load_game", "retro_reset", "retro_init"];
+/// The calls the note can name ([`enter`], [`enter_compare`]): libretro's, then a comparison
+/// core's own.
+pub const CALLS: [&str; 12] = ["", "retro_run", "retro_serialize", "retro_unserialize", "retro_load_game", "retro_reset", "retro_init", "dj_sync", "dj_write", "dj_check_parity", "dj_parity_diffs", "dj_run"];
+pub const CALL_DJ_SYNC: usize = 7;
+pub const CALL_DJ_WRITE: usize = 8;
+pub const CALL_DJ_CHECK_PARITY: usize = 9;
+pub const CALL_DJ_PARITY_DIFFS: usize = 10;
+pub const CALL_DJ_RUN: usize = 11;
 
 /// Where to write the note (the project's `.local/crash-gui-<pid>.txt`); the handler is
 /// installed the first time.
 pub fn set_note_path(root: &Path) {
-    NOTE.set(note_path(root, std::process::id()).as_os_str().as_encoded_bytes());
+    set_note_file(&note_path(root, std::process::id()), "dj-gui");
+}
+
+/// A batch child's note (`.local/crash-batch-<pid>.txt`), for its supervisor.
+pub fn set_batch_note_path(root: &Path) {
+    let path = batch_note_path(root, std::process::id());
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    set_note_file(&path, "dj");
+}
+
+fn set_note_file(path: &Path, program: &str) {
+    PROGRAM.set(program.as_bytes());
+    NOTE.set(path.as_os_str().as_encoded_bytes());
     #[cfg(unix)]
     {
         static INSTALLED: std::sync::Once = std::sync::Once::new();
         INSTALLED.call_once(unix::install);
+    }
+}
+
+/// The comparison core loaded beside the baseline (its name and library), or "" for none.
+pub fn set_compare(what: &str) {
+    COMPARE.set(what.as_bytes());
+    COMPARE_CALL.store(0, Ordering::Relaxed);
+}
+
+/// The comparison core is entering call `CALLS[i]`; 0 when it is back in dj.
+pub fn enter_compare(call: usize) {
+    COMPARE_CALL.store(call, Ordering::Relaxed);
+}
+
+/// Names the comparison core's call in progress, until dropped.
+pub struct CompareCall;
+
+impl CompareCall {
+    pub fn enter(call: usize) -> CompareCall {
+        enter_compare(call);
+        CompareCall
+    }
+}
+
+impl Drop for CompareCall {
+    fn drop(&mut self) {
+        enter_compare(0);
     }
 }
 
@@ -134,7 +200,27 @@ fn compose(out: &mut [u8], headline: &[u8], signal: Option<i32>) -> usize {
     let call = CALLS.get(CALL.load(Ordering::Relaxed)).copied().unwrap_or("");
     push(out, &mut at, b"\nin: ");
     push(out, &mut at, if call.is_empty() { b"dj itself, not a libretro call" } else { call.as_bytes() });
+    if !COMPARE.get().is_empty() {
+        push(out, &mut at, b"\ncomparison core: ");
+        push(out, &mut at, COMPARE.get());
+        // Only when it was running: then the fault is its, whatever the baseline was in.
+        let call = CALLS.get(COMPARE_CALL.load(Ordering::Relaxed)).copied().unwrap_or("");
+        if !call.is_empty() {
+            push(out, &mut at, b"\n");
+            push(out, &mut at, COMPARE_IN.as_bytes());
+            push(out, &mut at, call.as_bytes());
+        }
+    }
     push(out, &mut at, b"\n");
+    at
+}
+
+/// "dj-gui crashed", or "dj crashed" in a batch child.
+fn headline(out: &mut [u8], what: &[u8]) -> usize {
+    let mut at = 0;
+    let program = PROGRAM.get();
+    push(out, &mut at, if program.is_empty() { b"dj-gui" } else { program });
+    push(out, &mut at, what);
     at
 }
 
@@ -171,7 +257,9 @@ pub fn start_watchdog(after: Duration) {
                 let path = PathBuf::from(std::ffi::OsStr::new(&String::from_utf8_lossy(NOTE.get()).into_owned()));
                 match (stalled, &written) {
                     (true, None) if !NOTE.get().is_empty() => {
-                        let _ = std::fs::write(&path, text(&format!("dj-gui stopped responding for over {} s", after.as_secs())));
+                        let mut who = [0u8; 64];
+                        let n = headline(&mut who, b"");
+                        let _ = std::fs::write(&path, text(&format!("{} stopped responding for over {} s", String::from_utf8_lossy(&who[..n]), after.as_secs())));
                         written = Some(path);
                     }
                     (false, Some(p)) => {
@@ -195,7 +283,9 @@ mod unix {
         let path = NOTE.get();
         if !path.is_empty() {
             let mut buf = [0u8; 4 * CAP];
-            let n = compose(&mut buf, b"dj-gui crashed", Some(sig));
+            let mut head = [0u8; 64];
+            let h = headline(&mut head, b" crashed");
+            let n = compose(&mut buf, &head[..h], Some(sig));
             unsafe {
                 // NOTE's buffer ends in a NUL (Buf::set).
                 let fd = libc::open(path.as_ptr() as *const libc::c_char, libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC, 0o644);
@@ -235,5 +325,17 @@ mod tests {
         assert!(t.contains("core: cores/mesen_libretro.dylib") && t.contains("segment: d0c14220-1332") && t.contains("frame: 120") && t.contains("in: retro_run"), "{t}");
         enter(0);
         assert!(text("x").contains("in: dj itself"));
+        // A comparison core is named when one is loaded, and its call only while it runs.
+        assert!(!text("x").contains("comparison core"));
+        set_compare("decomp (cores/decomp_libretro.dylib)");
+        let idle = text("x");
+        assert!(idle.contains("comparison core: decomp (cores/decomp_libretro.dylib)") && compare_call(&idle).is_none(), "{idle}");
+        {
+            let _c = CompareCall::enter(CALL_DJ_CHECK_PARITY);
+            assert_eq!(compare_call(&text("x")), Some("dj_check_parity"));
+        }
+        assert!(compare_call(&text("x")).is_none());
+        set_compare("");
+        assert!(!text("x").contains("comparison core"));
     }
 }

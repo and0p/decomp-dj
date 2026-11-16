@@ -190,11 +190,11 @@ connector functions. With them `dj_sync` reads whatever it needs from the baseli
 whatever way suits the port: a RAM map, a few watched values, or the save state. The handle
 is only good for the length of the call.
 
-The GUI runs a comparison core in a process of its own, so a crash or a hang in it costs
-the comparison, not the app ([gui.md](gui.md#comparison-cores)). There, the handle points to
-a copy of the baseline core in that process, which has just loaded the baseline's save
-state: it reads exactly what the baseline would, but writing through it changes only the
-copy. A comparison core should only read the baseline.
+A comparison core runs in dj's own process, in the GUI and under `dj parity`
+([gui.md](gui.md#comparison-cores)), and the handle points at the baseline core itself.
+Reading through it copies nothing. **A comparison core must only read the baseline:** a
+write through the handle changes the baseline, and its state hashes with it, and nothing
+reports that.
 
 **When the player syncs.** After every jump (a seek, a step back, choosing a segment,
 switching the comparison on), just before the first frame it shows. While the playhead is
@@ -341,7 +341,9 @@ jobs:
   are left out and listed. Clean them locally (`dj clean`) and commit.
 - **Exit status:** 0 when every frame passed, 1 when one failed, 2 on an error (the job
   fails either way). A crash or hang in the decomp's core is a failure at that frame, not an
-  error: it runs in a process of its own.
+  error. `dj parity` plays in a child process that it watches: when the decomp's core takes
+  the child down, `dj parity` reads which core it was, records the failure at that frame,
+  keeps the frames that passed before it, and goes on to the segments below.
 - **`--explain`** needs the trace hook in the baseline's connector, which Mesen's has; it
   replays each failure, so leave it out for long segments or many failures.
 - Comparing two builds of the same emulator needs no decomp: `sync = "state"` in the

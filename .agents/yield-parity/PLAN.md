@@ -2,8 +2,9 @@
 
 Written 2026-11-15 15:20 EST, from a conversation with the developer that day. The
 developer asked for the design to be looked at afresh, with the comparison core doing
-more and dj less. Build steps 1 to 3 are done: the two connector spikes ("Spike results")
-and the new connector API ("Built so far"). The rest is not built.
+more and dj less. Build steps 1 to 4 are done: the two connector spikes ("Spike results"),
+the new connector API, and the comparison core in dj's process ("Built so far"). The rest
+is not built.
 
 Revisions, all 2026-11-15:
 
@@ -26,6 +27,7 @@ Revisions, all 2026-11-15:
   patch.
 - 22:40 EST: build step 3 is built: connector API 3 in all three connectors, with dj
   counting ticks itself.
+- 22:54 EST: build step 4 is built: the comparison core runs in dj's process.
 
 How to read it:
 
@@ -651,6 +653,50 @@ Checked:
 - **The spike cores no longer load their connector:** they speak API 2. The commands under
   "Where the spike code is" need the spike patches carried over to API 3 to run again.
 
+**Step 4, 2026-11-15: the comparison core in dj's process.** The comparison still works
+frame by frame, as before: `dj_sync`, `dj_run`, `dj_check_parity`. Only where it runs has
+changed. Events and verdicts come with step 6.
+
+- **`parity::Checker`, `check_span`, `dj parity` and the GUI use `compare::Comparison`,**
+  loaded into the second core slot of their own process. The handle points at the
+  baseline itself; there is no copy of the baseline any more.
+- **The crash note** (`player/src/crash.rs`) names the comparison core when one is loaded,
+  and the call it was in when it was the one running: `retro_run`, `dj_sync`, `dj_write`,
+  `dj_check_parity`, `dj_parity_diffs`, `dj_run`. The baseline's call is kept beside it, so
+  both show when the comparison core is entered inside the baseline's frame.
+- **Under `dj parity`** the batch child writes that note too
+  (`.local/crash-batch-<pid>.txt`), and runs the watchdog, so a hang leaves one as well.
+  The supervisor (`isolate::supervise`) reads it. If the comparison core was running, it
+  starts the child again and tells it the segment and frame (`DJ_BATCH_COMPARE_DIED`). The
+  new child checks that segment up to the frame before, which keeps the passes, records a
+  failure at the frame, and goes on. The segments below are still checked. A second death
+  in the same segment ends the command with an error.
+- **OpenGL contexts nest** (`player/src/gl.rs`). Leaving a context puts back the one that
+  was current before it, when that was another core's. macOS already did this; the EGL
+  code now does too.
+- **`RemoteComparison` and the `compare` worker stay in the code,** used only by the tests,
+  so going back is cheap. The GUI's "Restart comparison core" is gone.
+
+Checked:
+
+| Check | Result |
+| --- | --- |
+| `tests/compare.rs`, with the span tests in process | pass |
+| A comparison core that crashes, crashes in `dj_check_parity`, or hangs, under `dj parity` (new test) | each a failure at frame 9, named as the comparison core with its call, the nine passes kept, the segment below checked and passing, no note left behind |
+| GL contexts nesting (new test) | pass on macOS |
+| Thwaite against the same emulator, in process | 12 segments, 11,140 frames, 0 failed |
+| Tetris against its decomp, in process | 30 segments, 24,392 frames, 0 failed |
+| The whole test suite, and the GUI's build | pass |
+
+Not checked:
+
+- **The EGL nesting code has only been type-checked,** by building it on macOS with the
+  platform switch flipped. It has not run on Linux.
+- **The GUI was not run.** Its note is the same code as the batch child's, which the new
+  test exercises through a real crash.
+- **`dj parity --rerun` and `--explain`** do not handle a comparison core that dies: the
+  second death ends the command with an error.
+
 ## Spike results
 
 Run 2026-11-15, as build steps 1 and 2. Each spike is a patched copy of a connector that
@@ -809,7 +855,8 @@ game's save storage ("Spike results", existing problem 1).
    not tried.
 2. **How the handle hands out N64 memory.** It is host-order 32-bit words. Either the
    handle says so, or it hands out bytes in the console's order.
-3. **OpenGL contexts nesting** (section 11). Not tried.
+3. **OpenGL contexts nesting on Linux** (section 11). Built, and tested on macOS; the EGL
+   code has only been type-checked.
 4. **A core that corrupts memory before it crashes,** dj's or the baseline's. No answer.
 5. **dj's own tick count on the N64** counts other code at the `[tick]` address in
    another overlay: 86 of 588 hits in the spike. A project should pick an address in
@@ -842,7 +889,8 @@ protection.
    Done when Thwaite's tick counts equal those of a
    plain `dj run` today, with the GUI and a parity check running, and mGBA still reports
    coverage.
-4. **Move the comparison core into dj's process,** with the crash note, the supervisor's
+4. **Move the comparison core into dj's process,** *(done 2026-11-15: see "Built so
+   far")* with the crash note, the supervisor's
    handling of a comparison core that dies, and nested OpenGL contexts. Done when
    `tests/compare.rs` passes without a worker, and a core that crashes on purpose is
    named in the GUI's note and recorded as a failure at its frame by `dj parity`, with

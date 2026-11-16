@@ -349,6 +349,8 @@ impl Comparison {
         match loaded {
             Ok(mut c) => {
                 c.copy = copy;
+                // It shares dj's process: a crash note names it (crash.rs).
+                crate::crash::set_compare(&format!("{} ({})", c.name, path.display()));
                 Ok(c)
             }
             Err(e) => {
@@ -382,6 +384,7 @@ impl Comparison {
                 let f = self.sync_fn.ok_or_else(|| anyhow!("the core has no dj_sync"))?;
                 let h = handle(baseline);
                 let mut buf = vec![0u8; 512];
+                let _call = crate::crash::CompareCall::enter(crate::crash::CALL_DJ_SYNC);
                 let r = unsafe { f(&h, power_on_frame, if boot { DJ_SYNC_BOOT } else { 0 }, buf.as_mut_ptr() as *mut c_char, buf.len()) };
                 match r {
                     DJ_SYNC_OK => SyncOutcome::Synced,
@@ -440,6 +443,7 @@ impl Comparison {
                         let h = handle(baseline);
                         let region_c = CString::new(region.as_str())?;
                         let mut buf = vec![0u8; 512];
+                        let _call = crate::crash::CompareCall::enter(crate::crash::CALL_DJ_WRITE);
                         let r = unsafe { f(&h, region_c.as_ptr(), *address, bytes.as_ptr(), bytes.len(), buf.as_mut_ptr() as *mut c_char, buf.len()) };
                         match r {
                             DJ_WRITE_OK | DJ_WRITE_IGNORED => {}
@@ -456,7 +460,11 @@ impl Comparison {
         let (out, tick_failed) = match self.run_fn {
             Some(f) => {
                 let mut buf = vec![0u8; 512];
-                let (out, r) = self.core.run_frame_with(capture, || unsafe { f(buf.as_mut_ptr() as *mut c_char, buf.len()) });
+                let (out, r) = self.core.run_frame_with(capture, || {
+                    // After the guard for retro_run that run_frame_with sets: the core's own name for it.
+                    crate::crash::enter_compare(crate::crash::CALL_DJ_RUN);
+                    unsafe { f(buf.as_mut_ptr() as *mut c_char, buf.len()) }
+                });
                 (out, (r != DJ_RUN_OK).then(|| reason(&buf).unwrap_or_else(|| format!("dj_run returned {r}"))))
             }
             None => (self.core.run_frame(capture), None),
@@ -475,7 +483,11 @@ impl Comparison {
         if let Some(f) = self.check_fn {
             let h = handle(baseline);
             let mut buf = vec![0u8; 512];
-            let r = unsafe { f(&h, power_on_frame, buf.as_mut_ptr() as *mut c_char, buf.len()) };
+            let r = {
+                let _call = crate::crash::CompareCall::enter(crate::crash::CALL_DJ_CHECK_PARITY);
+                unsafe { f(&h, power_on_frame, buf.as_mut_ptr() as *mut c_char, buf.len()) }
+            };
+            let _call = crate::crash::CompareCall::enter(crate::crash::CALL_DJ_PARITY_DIFFS);
             return match r {
                 DJ_PARITY_MATCH => Ok(Verdict::Match),
                 DJ_PARITY_MISMATCH => Ok(Verdict::Mismatch(reason(&buf).unwrap_or_else(|| "the core reports a mismatch".into()), self.diffs_fn.map(read_diffs).unwrap_or_default())),
@@ -515,6 +527,7 @@ impl Comparison {
 
 impl Drop for Comparison {
     fn drop(&mut self) {
+        crate::crash::set_compare("");
         if let Some(c) = &self.copy {
             // Unix keeps a loaded library's file alive after it is removed.
             let _ = std::fs::remove_file(c);

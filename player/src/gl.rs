@@ -5,9 +5,12 @@
 //! when they are captured, so everything after `video_cb` sees the same RGB frames as a
 //! software core.
 //!
-//! The context is current only while the core runs (`enter` .. `leave`). On macOS leaving
-//! puts back the context that was current before (the GUI's); elsewhere it makes no context
-//! current, and eframe, finding its own not current, makes it current again before it paints.
+//! The context is current only while the core runs (`enter` .. `leave`). Leaving puts back
+//! the context that was current before, when that was another core's: a comparison core may
+//! be entered while the baseline is inside its frame, and the baseline goes on drawing
+//! afterwards. On macOS a GUI's context is put back too; elsewhere leaving makes no context
+//! current when none of ours was, and eframe, finding its own not current, makes it current
+//! again before it paints.
 
 use anyhow::{anyhow, bail, Result};
 use std::ffi::c_void;
@@ -211,9 +214,15 @@ impl GlContext {
         Ok(())
     }
 
-    /// Makes no context current.
+    /// Puts back the context that was current before `enter`, if it was another core's (or,
+    /// on macOS, a GUI's); else makes no context current.
     pub fn leave(&self) {
         self.plat.release();
+    }
+
+    /// Whether this is the thread's current context.
+    pub fn is_current(&self) -> bool {
+        self.plat.is_current()
     }
 
     /// Reads the bottom-left `width` x `height` of the framebuffer (where the core drew this
@@ -422,6 +431,10 @@ mod platform {
             }
         }
 
+        pub fn is_current(&self) -> bool {
+            cgl().is_ok_and(|c| unsafe { (c.get_current)() } == self.ctx)
+        }
+
         pub fn proc(&self, name: &str) -> *const c_void {
             let (Ok(c), Ok(n)) = (cgl(), CString::new(name)) else { return std::ptr::null() };
             unsafe { c.lib.get::<*const c_void>(n.as_bytes_with_nul()).map(|s| *s).unwrap_or(std::ptr::null()) }
@@ -478,6 +491,7 @@ mod platform {
         create_context: unsafe extern "C" fn(Ptr, Ptr, Ptr, *const i32) -> Ptr,
         destroy_context: unsafe extern "C" fn(Ptr, Ptr) -> u32,
         make_current: unsafe extern "C" fn(Ptr, Ptr, Ptr, Ptr) -> u32,
+        get_current_context: unsafe extern "C" fn() -> Ptr,
         get_error: unsafe extern "C" fn() -> i32,
         /// libGL/libOpenGL, for GL 1.x functions some EGLs don't hand out.
         gl: Option<libloading::Library>,
@@ -514,6 +528,7 @@ mod platform {
                 create_context: s!("eglCreateContext"),
                 destroy_context: s!("eglDestroyContext"),
                 make_current: s!("eglMakeCurrent"),
+                get_current_context: s!("eglGetCurrentContext"),
                 get_error: s!("eglGetError"),
                 _lib: lib,
                 gl,
@@ -569,9 +584,15 @@ mod platform {
         bail!("couldn't open an EGL display without a window (EGL error 0x{:x})", (e.get_error)())
     }
 
+    /// The contexts this module has made, as addresses: the ones `release` may put back.
+    static OURS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
     pub struct Platform {
         dpy: Ptr,
         ctx: Ptr,
+        /// Another core's context that was current when this one was entered, put back on
+        /// release.
+        prev: std::cell::Cell<Ptr>,
     }
 
     impl Platform {
@@ -608,7 +629,8 @@ mod platform {
                 if ctx.is_null() {
                     bail!("EGL couldn't make a {} context (error 0x{:x})", req.describe(), (e.get_error)());
                 }
-                Ok(Platform { dpy, ctx })
+                OURS.lock().unwrap_or_else(|e| e.into_inner()).push(ctx as usize);
+                Ok(Platform { dpy, ctx, prev: std::cell::Cell::new(std::ptr::null_mut()) })
             }
         }
 
@@ -621,6 +643,15 @@ mod platform {
                         glx_make_current(cur_dpy(), 0, std::ptr::null_mut());
                     }
                 }
+                // Another core's context is current when this one is entered inside that
+                // core's frame: remember it, to put it back on release. Only one of ours: they
+                // are all surfaceless and on this display. A GUI's EGL context has surfaces
+                // this code doesn't know, and the GUI makes it current again itself.
+                let cur = (e.get_current_context)();
+                if cur != self.ctx {
+                    let ours = !cur.is_null() && OURS.lock().unwrap_or_else(|e| e.into_inner()).contains(&(cur as usize));
+                    self.prev.set(if ours { cur } else { std::ptr::null_mut() });
+                }
                 if (e.make_current)(self.dpy, std::ptr::null_mut(), std::ptr::null_mut(), self.ctx) == 0 {
                     bail!("eglMakeCurrent failed (error 0x{:x})", (e.get_error)());
                 }
@@ -630,8 +661,14 @@ mod platform {
 
         pub fn release(&self) {
             if let Ok(e) = egl() {
-                unsafe { (e.make_current)(self.dpy, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) };
+                // The context current before ours, if it was another core's; else none.
+                let prev = self.prev.replace(std::ptr::null_mut());
+                unsafe { (e.make_current)(self.dpy, std::ptr::null_mut(), std::ptr::null_mut(), prev) };
             }
+        }
+
+        pub fn is_current(&self) -> bool {
+            egl().is_ok_and(|e| unsafe { (e.get_current_context)() } == self.ctx)
         }
 
         pub fn proc(&self, name: &str) -> *const c_void {
@@ -648,6 +685,7 @@ mod platform {
         pub fn destroy(&mut self) {
             if let Ok(e) = egl() {
                 if !self.ctx.is_null() {
+                    OURS.lock().unwrap_or_else(|e| e.into_inner()).retain(|c| *c != self.ctx as usize);
                     unsafe { (e.destroy_context)(self.dpy, self.ctx) };
                     self.ctx = std::ptr::null_mut();
                 }

@@ -7,7 +7,7 @@ use serde_json::json;
 use std::path::Path;
 
 use decomp_dj::collection::{Collection, Status};
-use decomp_dj::compare::RemoteComparison;
+use decomp_dj::compare::Comparison;
 use decomp_dj::parity::{self as store, check_span, Checker, Failure, RunRow, Span};
 use decomp_dj::player::Session;
 
@@ -40,6 +40,9 @@ pub fn parity(dir: &Path, local: &Local, a: Args) -> Result<i32> {
         bail!("parity keeps its results in the local database, so it can't run with --no-db");
     }
     let col = Collection::open(dir)?;
+    // The comparison core runs in this process: if it dies, the supervisor reads which core
+    // it was from this note.
+    decomp_dj::isolate::batch_note(dir);
     let name = store::compare_name(&col, a.compare.as_deref()).map_err(|e| if a.compare.is_none() && col.config.compare.len() > 1 { anyhow!("{e:#}: pick it with --compare") } else { e })?;
     if !a.clear.is_empty() {
         return clear(&col, local, &name, &a.clear);
@@ -104,14 +107,16 @@ fn seek(s: &mut Session, col: &Collection, id: &str, frame: u64) -> Result<u64> 
     Ok(start_frame)
 }
 
-fn open_compare(col: &Collection, local: &Local, name: &str) -> Result<RemoteComparison> {
+/// Loads the comparison core into dj's own process, beside the baseline
+/// (.agents/yield-parity/PLAN.md, section 11).
+fn open_compare(col: &Collection, local: &Local, name: &str) -> Result<Comparison> {
     let (rom, core) = resolve_local(col, local)?;
-    RemoteComparison::open(col, name, &core, Some(&rom)).map_err(|e| anyhow!("loading the comparison core \"{name}\": {e:#}"))
+    Comparison::open(col, name, &core, Some(&rom)).map_err(|e| anyhow!("loading the comparison core \"{name}\": {e:#}"))
 }
 
 /// Keeps what a span found: the passes, and the failure that ended it (in place of the same
 /// failure found before). Returns the failure's id.
-fn keep(conn: &rusqlite::Connection, cmp: &RemoteComparison, span: &Span) -> Result<Option<i64>> {
+fn keep(conn: &rusqlite::Connection, cmp: &Comparison, span: &Span) -> Result<Option<i64>> {
     if !span.passed_flags.is_empty() {
         store::add_passed(conn, &cmp.name, &cmp.build, &span.passed_flags)?;
     }
@@ -173,7 +178,15 @@ fn check(col: &Collection, local: &Local, name: &str, a: &Args) -> Result<i32> {
                 continue;
             }
         }
-        let span = check_span(&mut s, &mut cmp, &mut Checker::default(), col, id, 0, n, start_frame)?;
+        // Where the comparison core crashed or hung in an earlier child (it shares this
+        // process, so it took the child with it): check up to there, which keeps the passes,
+        // and record the failure at that frame.
+        let died = decomp_dj::isolate::batch_compare_died(id);
+        let mut ck = Checker::default();
+        let mut span = check_span(&mut s, &mut cmp, &mut ck, col, id, 0, died.as_ref().map_or(n, |d| d.0.min(n)), start_frame)?;
+        if let (Some((frame, what)), None) = (&died, &span.failure) {
+            span.failure = Some(ck.failure(&cmp, id, *frame, &format!("The comparison core {what} at frame {frame}"), vec![], decomp_dj::compare::Diffs::default()));
+        }
         checked += 1;
         let ran = span.passed + span.skipped + span.unchecked + span.failure.is_some() as u64;
         frames += ran;
@@ -194,10 +207,6 @@ fn check(col: &Collection, local: &Local, name: &str, a: &Args) -> Result<i32> {
                 failures.push(f.clone());
             }
             None => line("passed", detail, ran, &mut rows),
-        }
-        // A comparison core that crashed or hung: load it again for the next segment.
-        if cmp.dead().is_some() {
-            cmp = open_compare(col, local, name)?;
         }
     }
     if a.events {
@@ -316,9 +325,6 @@ fn rerun(col: &Collection, local: &Local, name: &str, ids: &[i64], json_out: boo
         } else {
             println!("{verdict:<8} #{} {} frame {}: {text}", f.id, short(&f.segment), f.frame);
         }
-        if cmp.dead().is_some() {
-            cmp = open_compare(col, local, name)?;
-        }
     }
     if events {
         println!("{}", json!({"event": "done", "reran": todo.len(), "still_failing": still}));
@@ -332,7 +338,7 @@ fn rerun(col: &Collection, local: &Local, name: &str, ids: &[i64], json_out: boo
 
 /// Syncs where `f` was synced and checks through its frame, along the segments from there to
 /// the failing one. None: those segments aren't there any more.
-fn rerun_one(s: &mut Session, cmp: &mut RemoteComparison, col: &Collection, f: &Failure) -> Result<Option<Span>> {
+fn rerun_one(s: &mut Session, cmp: &mut Comparison, col: &Collection, f: &Failure) -> Result<Option<Span>> {
     if !col.replays.contains_key(&f.synced.0) || !col.replays.contains_key(&f.segment) {
         return Ok(None);
     }
@@ -388,7 +394,7 @@ struct Replayed {
 
 /// Plays failure `f` again as `rerun_one` does, tracing the baseline from `frames_back`
 /// frames before the failing one (within its segment) through it.
-fn replay_traced(s: &mut Session, cmp: &mut RemoteComparison, col: &Collection, f: &Failure, frames_back: u64) -> Result<Option<Replayed>> {
+fn replay_traced(s: &mut Session, cmp: &mut Comparison, col: &Collection, f: &Failure, frames_back: u64) -> Result<Option<Replayed>> {
     if !col.replays.contains_key(&f.synced.0) || !col.replays.contains_key(&f.segment) {
         return Ok(None);
     }

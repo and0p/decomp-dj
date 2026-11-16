@@ -106,3 +106,43 @@ fn opengl_cores() {
     drop(a);
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+/// A comparison core that draws with OpenGL may be entered while the baseline is inside its
+/// frame, with the baseline's context current. Leaving must put the baseline's back, on
+/// every platform, or the baseline goes on drawing with none.
+#[test]
+fn contexts_nest() {
+    use decomp_dj::gl::{unsupported, GlContext, Request};
+    let req = Request { core_profile: true, major: 3, minor: 2, depth: false, stencil: false, debug: false };
+    if let Some(why) = unsupported(&req) {
+        eprintln!("skipped: {why}");
+        return;
+    }
+    // `new` leaves its context current: leave each, so the test starts with neither.
+    let (Ok(mut a), ) = (GlContext::new(req, 64, 48), ) else {
+        eprintln!("skipped: no OpenGL context without a window");
+        return;
+    };
+    a.leave();
+    let mut b = GlContext::new(req, 64, 48).unwrap();
+    b.leave();
+    assert!(!a.is_current() && !b.is_current());
+
+    a.enter(64, 48).unwrap();
+    assert!(a.is_current());
+    // Inside a's "frame": b is entered and left.
+    b.enter(64, 48).unwrap();
+    assert!(b.is_current() && !a.is_current());
+    b.leave();
+    assert!(a.is_current(), "leaving the inner context must put the outer one back");
+    // And again: the inner context remembers nothing stale.
+    b.enter(64, 48).unwrap();
+    b.leave();
+    assert!(a.is_current());
+    a.leave();
+    assert!(!a.is_current() && !b.is_current());
+    // Entered on its own, the inner context puts nothing back.
+    b.enter(64, 48).unwrap();
+    b.leave();
+    assert!(!a.is_current() && !b.is_current());
+}

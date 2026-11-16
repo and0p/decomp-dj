@@ -12,7 +12,7 @@
 use anyhow::{anyhow, Result};
 use eframe::egui::{self, Color32, RichText};
 use decomp_dj::collection::{Collection, LocalConfig, Status};
-use decomp_dj::compare::RemoteComparison;
+use decomp_dj::compare::Comparison;
 use decomp_dj::parity::Checked;
 use decomp_dj::format::{Command, InputKey};
 use decomp_dj::hydrate::Hydrator;
@@ -309,8 +309,9 @@ struct App {
     /// File > Keyboard mapping…
     mapping: Option<record::MappingDialog>,
     /// The comparison core (docs/gui.md#comparison-cores), if one is selected and loaded.
-    /// The comparison core, in its own worker process (.agents/ISOLATION_PLAN.md).
-    compare: Option<RemoteComparison>,
+    /// The comparison core, in this process beside the baseline
+    /// (.agents/yield-parity/PLAN.md, section 11).
+    compare: Option<Comparison>,
     /// Where the comparison core is in step with the baseline (the segment and the next
     /// frame it runs; None: out of sync) and where it was last synced, where its run started.
     checker: decomp_dj::parity::Checker,
@@ -2229,7 +2230,7 @@ impl App {
         let local = col.settings().unwrap_or_default();
         let rom = local.rom.clone();
         let core = local.core.clone().unwrap_or_default();
-        match RemoteComparison::open(col, &name, &core, rom.as_deref()) {
+        match Comparison::open(col, &name, &core, rom.as_deref()) {
             Ok(c) => {
                 self.compare = Some(c);
                 self.compare_need_sync = true;
@@ -5671,12 +5672,6 @@ impl App {
             .response
             .on_disabled_hover_text(if names.is_empty() { "The project has no [[compare]] entries" } else { "Busy: wait for the clean or seek to finish" });
         });
-        // A comparison core that crashed or hung is loaded again, in a new worker.
-        if let Some(why) = self.compare.as_ref().and_then(|c| c.dead()).map(String::from) {
-            if ui.button("Restart comparison core").on_hover_text(format!("It stopped: {why}")).clicked() {
-                pick = Some(cur.clone());
-            }
-        }
         if let Some(p) = pick {
             self.select_compare(p);
         }

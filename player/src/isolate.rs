@@ -422,6 +422,10 @@ const BATCH_CHILD_ENV: &str = "DJ_BATCH_CHILD";
 /// Segments the batch child leaves out (comma-separated ids): ones that crashed the core
 /// or hung in an earlier child.
 const BATCH_SKIP_ENV: &str = "DJ_BATCH_SKIP";
+/// Segments where the comparison core crashed or hung in an earlier child, with the frame
+/// and what happened: the next child records each as a failure there and goes on
+/// (`id`, `frame`, `what`, separated by \x1f; entries by \x1e).
+const BATCH_COMPARE_DIED_ENV: &str = "DJ_BATCH_COMPARE_DIED";
 /// Runs a batch command in dj's own process, without a supervisor (for debugging).
 const IN_PROCESS_ENV: &str = "DJ_IN_PROCESS";
 /// How a batch child's progress lines start on stderr.
@@ -451,12 +455,41 @@ pub fn batch_skipped(col: &crate::collection::Collection, id: &str) -> Option<&'
     col.chain(id).ok()?.iter().any(|a| skip.contains(*a)).then_some("blocked")
 }
 
+/// In a batch child: where the comparison core died in segment `id` in an earlier child, if
+/// it did: the frame, and what happened ("crashed (signal 11, SIGSEGV) in dj_check_parity").
+pub fn batch_compare_died(id: &str) -> Option<(u64, String)> {
+    static DIED: std::sync::OnceLock<Vec<(String, u64, String)>> = std::sync::OnceLock::new();
+    let died = DIED.get_or_init(|| {
+        std::env::var(BATCH_COMPARE_DIED_ENV)
+            .unwrap_or_default()
+            .split('\x1e')
+            .filter_map(|e| {
+                let mut p = e.splitn(3, '\x1f');
+                Some((p.next()?.to_string(), p.next()?.parse().ok()?, p.next()?.to_string()))
+            })
+            .collect()
+    });
+    died.iter().find(|d| d.0 == id).map(|d| (d.1, d.2.clone()))
+}
+
+/// In a batch child that loads a comparison core into its own process: leaves a note when
+/// it crashes or stops responding, saying which core was running, for the supervisor.
+pub fn batch_note(dir: &std::path::Path) {
+    if !batch_child() {
+        return;
+    }
+    crate::crash::set_batch_note_path(dir);
+    // Sooner than the supervisor gives up on the child, so the note is there to read.
+    crate::crash::start_watchdog(timeout(BATCH_HANG_TIMEOUT) / 3);
+}
+
 /// In a batch child: segment `id` is starting `frame`. Reported to the supervisor every
 /// frame (a short line on stderr), so a crash or hang names its frame exactly.
 pub fn batch_progress(id: &str, frame: u64) {
     if !batch_child() {
         return;
     }
+    crate::crash::heartbeat();
     let stderr = std::io::stderr();
     let mut e = stderr.lock();
     let _ = writeln!(e, "{PROGRESS_MARK}{frame} {id}");
@@ -483,11 +516,14 @@ pub fn supervise(dir: &std::path::Path) -> Result<Option<i32>> {
     let title = |id: &str| titles.as_ref().and_then(|c| c.replays.get(id)).map(|r| r.title().to_string()).unwrap_or_default();
     let mut skip: Vec<String> = vec![];
     let mut failures: Vec<(String, u64, String)> = vec![];
+    // Segments where the comparison core died: a failure there, recorded by the next child.
+    let mut compare_died: Vec<(String, u64, String)> = vec![];
     loop {
         let mut child = Command::new(&exe)
             .args(&args)
             .env(BATCH_CHILD_ENV, "1")
             .env(BATCH_SKIP_ENV, skip.join(","))
+            .env(BATCH_COMPARE_DIED_ENV, compare_died.iter().map(|(id, frame, what)| format!("{id}\x1f{frame}\x1f{what}")).collect::<Vec<_>>().join("\x1e"))
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::piped())
@@ -528,8 +564,13 @@ pub fn supervise(dir: &std::path::Path) -> Result<Option<i32>> {
                 Err(mpsc::RecvTimeoutError::Disconnected) => std::thread::sleep(Duration::from_millis(20)),
             }
         };
+        let pid = child.id();
         let status = child.wait()?;
         let _ = reader.join();
+        // The child's note, if it left one: which core was running when it died.
+        let note_path = crate::crash::batch_note_path(dir, pid);
+        let note = std::fs::read_to_string(&note_path).unwrap_or_default();
+        let _ = std::fs::remove_file(&note_path);
         while let Ok(p) = rx.try_recv() {
             at = Some(p);
         }
@@ -554,6 +595,16 @@ pub fn supervise(dir: &std::path::Path) -> Result<Option<i32>> {
         };
         if skip.contains(&id) {
             bail!("dj {what} again in segment {} after leaving it out", &id[..8.min(id.len())]);
+        }
+        // The comparison core, not the baseline: the baseline is sound, so the segment is a
+        // failure at that frame and the segments below it are still checked.
+        if let Some(call) = crate::crash::compare_call(&note) {
+            if compare_died.iter().any(|d| d.0 == id) {
+                bail!("the comparison core {what} again in segment {} (in {call}, at frame {frame}), after a failure was recorded there", &id[..8.min(id.len())]);
+            }
+            eprintln!("crashed  {} {} at frame {frame}: the comparison core {what} in {call}; recording a failure there and going on", &id[..8.min(id.len())], title(&id));
+            compare_died.push((id, frame, format!("{what} in {call}").replace(['\x1e', '\x1f'], " ")));
+            continue;
         }
         eprintln!("crashed  {} {} at frame {frame}: the core {what}; going on without it and the segments below it", &id[..8.min(id.len())], title(&id));
         failures.push((id.clone(), frame, what));

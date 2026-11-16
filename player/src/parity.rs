@@ -12,7 +12,7 @@ use anyhow::Result;
 use rusqlite::{params, Connection};
 
 use crate::collection::Collection;
-use crate::compare::{Diff, Diffs, RemoteComparison, SyncOutcome, Verdict};
+use crate::compare::{Comparison, Diff, Diffs, SyncOutcome, Verdict};
 use crate::coverage::FLAG_OPCODE;
 use crate::libretro::{Core, Frame};
 use crate::player::Session;
@@ -386,7 +386,7 @@ impl Checker {
     /// Syncs the comparison core to the baseline, which is about to run frame `k` of `id`
     /// (`power_on_frame` frames since power-on). Frame 0 of a root segment that doesn't start
     /// from a snapshot is a fresh power-on. Err: the message to show.
-    pub fn sync(&mut self, cmp: &mut RemoteComparison, baseline: &mut Core, col: &Collection, id: &str, k: u64, power_on_frame: u64) -> std::result::Result<(), String> {
+    pub fn sync(&mut self, cmp: &mut Comparison, baseline: &mut Core, col: &Collection, id: &str, k: u64, power_on_frame: u64) -> std::result::Result<(), String> {
         self.at = None;
         let boot = k == 0 && col.replays.get(id).is_some_and(|r| r.parent().is_none() && r.get("snapshot").is_none());
         match cmp.sync(baseline, col, id, k, power_on_frame, boot) {
@@ -404,7 +404,7 @@ impl Checker {
     /// `check`, judges it. None when the comparison core isn't in step at this frame (it
     /// didn't run).
     #[allow(clippy::too_many_arguments)]
-    pub fn step(&mut self, cmp: &mut RemoteComparison, baseline: &mut Core, col: &Collection, id: &str, k: u64, power_on_frame: u64, capture: bool, check: bool) -> Option<Stepped> {
+    pub fn step(&mut self, cmp: &mut Comparison, baseline: &mut Core, col: &Collection, id: &str, k: u64, power_on_frame: u64, capture: bool, check: bool) -> Option<Stepped> {
         if !self.in_step(id, k) {
             return None;
         }
@@ -442,7 +442,7 @@ impl Checker {
 
     /// The baseline went on from the end of `parent` into its child `child`: the comparison
     /// core goes with it if it was in step at that end. False when it wasn't, or couldn't.
-    pub fn enter(&mut self, cmp: &mut RemoteComparison, col: &Collection, parent: &str, child: &str) -> bool {
+    pub fn enter(&mut self, cmp: &mut Comparison, col: &Collection, parent: &str, child: &str) -> bool {
         let end = col.replays.get(parent).and_then(|r| r.frames().ok());
         if end.is_none() || self.at != Some((parent.to_string(), end.unwrap())) {
             self.at = None;
@@ -458,7 +458,7 @@ impl Checker {
 
     /// The record of a failure at frame `k` of `id`: how to reproduce it (the build and where
     /// the comparison core was synced), what the frame ran and what differed.
-    pub fn failure(&self, cmp: &RemoteComparison, id: &str, k: u64, reason: &str, flags: Vec<u8>, diffs: Diffs) -> Failure {
+    pub fn failure(&self, cmp: &Comparison, id: &str, k: u64, reason: &str, flags: Vec<u8>, diffs: Diffs) -> Failure {
         Failure {
             id: 0,
             core: cmp.name.clone(),
@@ -496,7 +496,7 @@ pub struct Span {
 /// [`Checker::enter`]), and again after a line it couldn't follow; stops at the first failure,
 /// as dj-gui does. A failed sync is a failure at that frame. Err: the baseline failed.
 #[allow(clippy::too_many_arguments)]
-pub fn check_span(s: &mut Session, cmp: &mut RemoteComparison, ck: &mut Checker, col: &Collection, id: &str, from: u64, to: u64, start_frame: u64) -> Result<Span> {
+pub fn check_span(s: &mut Session, cmp: &mut Comparison, ck: &mut Checker, col: &Collection, id: &str, from: u64, to: u64, start_frame: u64) -> Result<Span> {
     let mut span = Span::default();
     // What ran before the first frame isn't any frame's.
     let _ = take_code_flags(&mut s.core);

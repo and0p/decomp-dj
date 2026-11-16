@@ -275,7 +275,6 @@ fn comparison_cores_in_workers() {
 #[test]
 fn checking_spans() {
     let _slots = SLOTS.lock().unwrap_or_else(|e| e.into_inner());
-    std::env::set_var("DJ_WORKER_EXE", env!("CARGO_BIN_EXE_dj"));
     let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("compare-spans-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
     let (Some(core), Some(nodj)) = (build(&tmp, "testcore.so", &[]), build(&tmp, "testcore_nodj.so", &["-DNO_DJ"])) else {
@@ -289,7 +288,7 @@ fn checking_spans() {
 
     // Every frame passes, [WRITE] included (dj_write).
     s.enter_replay(&col, "seg").unwrap();
-    let mut c = RemoteComparison::open(&col, "dj", &core, Some(&rom)).unwrap();
+    let mut c = Comparison::open(&col, "dj", &core, Some(&rom)).unwrap();
     let span = check_span(&mut s, &mut c, &mut Checker::default(), &col, "seg", 0, 20, 0).unwrap();
     assert!(span.failure.is_none(), "{:?}", span.failure);
     assert_eq!((span.passed, span.skipped, span.unchecked), (20, 0, 0));
@@ -300,7 +299,7 @@ fn checking_spans() {
     for f in 0..5 {
         s.step(&col, "seg", f, false).unwrap();
     }
-    let mut c = RemoteComparison::open(&col, "state", &core, Some(&rom)).unwrap();
+    let mut c = Comparison::open(&col, "state", &core, Some(&rom)).unwrap();
     let span = check_span(&mut s, &mut c, &mut Checker::default(), &col, "seg", 5, 20, 0).unwrap();
     assert!(span.failure.is_none(), "{:?}", span.failure);
     assert_eq!(span.passed, 15);
@@ -309,7 +308,7 @@ fn checking_spans() {
     // A mismatch at frame 9: the frames before passed, and the failure says where the run
     // was synced, so it can be re-run.
     s.enter_replay(&col, "seg").unwrap();
-    let mut c = RemoteComparison::open(&col, "dj-mismatch", &core, Some(&rom)).unwrap();
+    let mut c = Comparison::open(&col, "dj-mismatch", &core, Some(&rom)).unwrap();
     let span = check_span(&mut s, &mut c, &mut Checker::default(), &col, "seg", 0, 20, 0).unwrap();
     let f = span.failure.expect("a failure");
     assert_eq!((f.segment.as_str(), f.frame, f.synced.clone()), ("seg", 9, ("seg".to_string(), 0)));
@@ -320,7 +319,7 @@ fn checking_spans() {
 
     // A sync the core declines is a failure at the frame it was tried.
     s.enter_replay(&col, "seg").unwrap();
-    let mut c = RemoteComparison::open(&col, "dj-fail", &core, Some(&rom)).unwrap();
+    let mut c = Comparison::open(&col, "dj-fail", &core, Some(&rom)).unwrap();
     let span = check_span(&mut s, &mut c, &mut Checker::default(), &col, "seg", 0, 20, 0).unwrap();
     let f = span.failure.expect("a failed sync");
     assert_eq!(f.frame, 0);
@@ -430,6 +429,56 @@ fn dj_parity_command() {
     assert_eq!(code, 1, "{out}{err}");
     assert!(out.contains("FAILED") && out.contains("crashed"), "{out}");
 
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// A comparison core that crashes or hangs under `dj parity`. It shares the batch child's
+/// process, so it takes the child down; the supervisor reads from the child's note that it
+/// was the comparison core, and the next child records a failure at that frame, keeps the
+/// frames that passed before it, and still checks the segment below.
+#[test]
+fn a_comparison_core_that_dies_under_dj_parity() {
+    let _slots = SLOTS.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("compare-dies-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let (Some(core), Some(nodj)) = (build(&tmp, "testcore.so", &[]), build(&tmp, "testcore_nodj.so", &["-DNO_DJ"])) else {
+        eprintln!("skipped: no C compiler");
+        return;
+    };
+    let dir = tmp.join("project");
+    project(&dir, &core, &nodj);
+    std::fs::write(dir.join("segments/kid.segment"), "dj-segment 1\nid: kid\nparent: seg\nframes: 10\n---\n3 P1 JOYPAD A 1\n").unwrap();
+    let dj = |args: &[&str]| -> (i32, String, String) {
+        let out = Command::new(env!("CARGO_BIN_EXE_dj")).arg(args[0]).arg(&dir).args(&args[1..]).arg("--rom").arg(dir.join("rom.bin")).arg("--core").arg(&core).env("DJ_WORKER_TIMEOUT_SCALE", "0.2").output().unwrap();
+        (out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned())
+    };
+    let (code, out, err) = dj(&["clean"]);
+    assert_eq!(code, 0, "{out}{err}");
+
+    // The test core goes wrong on the frame where its counter reaches 10: frame 9 of `seg`.
+    for (name, how, call) in [("dj-crash", "crashed", "dj_run"), ("dj-crash-check", "crashed", "dj_check_parity"), ("dj-hang", "made no progress", "dj_run")] {
+        let (code, out, err) = dj(&["parity", "--compare", name]);
+        assert_eq!(code, 1, "{name}: {out}{err}");
+        // The supervisor says which core it was, and where.
+        assert!(err.contains("the comparison core") && err.contains(how) && err.contains(call) && err.contains("at frame 9"), "{name}: {err}");
+        assert!(!err.contains("left out"), "{name}: the baseline was blamed: {err}");
+        // A failure at that frame, with the nine frames before it kept as passes.
+        let seg = out.lines().find(|l| l.contains(" seg ")).unwrap_or_else(|| panic!("{name}: no line for seg: {out}"));
+        assert!(seg.starts_with("FAILED") && seg.contains("9 passed") && seg.contains("frame 9") && seg.contains("The comparison core"), "{name}: {seg}");
+        // The segment below is still checked, and passes.
+        let kid = out.lines().find(|l| l.contains(" kid ")).unwrap_or_else(|| panic!("{name}: no line for kid: {out}"));
+        assert!(kid.trim_start().starts_with("passed") && kid.contains("10 passed"), "{name}: {kid}");
+        // The failure is kept like any other.
+        let (code, out, err) = dj(&["parity", "--compare", name, "--report", "--json"]);
+        assert_eq!(code, 0, "{name}: {out}{err}");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let fs = v["failures"].as_array().unwrap();
+        assert_eq!(fs.len(), 1, "{name}: {out}");
+        assert_eq!((fs[0]["segment"].as_str(), fs[0]["frame"].as_u64()), (Some("seg"), Some(9)), "{name}: {out}");
+        // No note is left behind.
+        let left: Vec<_> = std::fs::read_dir(dir.join(".local")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("crash-batch-")).collect();
+        assert!(left.is_empty(), "{name}: {left:?}");
+    }
     let _ = std::fs::remove_dir_all(&tmp);
 }
 

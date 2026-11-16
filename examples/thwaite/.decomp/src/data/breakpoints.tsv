@@ -1,0 +1,18 @@
+# id	kind	name	prg	spin_lo	spin_hi	source
+0	wait	wait:load_cutscene.1	PRG:0x1BDD	0x1BD7	0x1BDD	cutscene.s:376
+1	wait	wait:load_cutscene.2	PRG:0x1C63	0x1C5D	0x1C63	cutscene.s:461
+2	wait	wait:main	PRG:0xE9	0xE3	0xE9	main.s:275
+3	wait	wait:pauseScreen	PRG:0x167	0x161	0x167	main.s:354
+4	wait	wait:ppu_wait_vblank	PRG:0x441C	0x4416	0x441C	ppuclear.s:96
+5	wait	wait:practice_menu	PRG:0x185B	0x1855	0x185B	practice.s:79
+6	wait	wait:screen_off_title_palette	PRG:0x151C	0x1516	0x151C	title.s:96
+7	wait	wait:display_todo	PRG:0x1547	0x1541	0x1547	title.s:129
+8	wait	wait:titleScreen	PRG:0x15DD	0x15D7	0x15DD	title.s:239
+9	nmis	nmis:load_cutscene	PRG:0x1C44	0x0	0x0	cutscene.s:441
+10	nmis	nmis:cut_handle_state_wait_a	PRG:0x1D59	0x0	0x0	cutscene.s:637
+11	nmis	nmis:updateAllExplosions	PRG:0x12B7	0x0	0x0	explosion.s:371
+12	nmis	nmis:drawBalloonNumberX	PRG:0x9C7	0x0	0x0	missiles.s:175
+13	nmis	nmis:updateMissiles	PRG:0xAB2	0x0	0x0	missiles.s:316
+14	nmis	nmis:updateSmoke.1	PRG:0x4C1	0x0	0x0	smoke.s:85
+15	nmis	nmis:updateSmoke.2	PRG:0x4EB	0x0	0x0	smoke.s:113
+16	nmis	nmis:titleScreen	PRG:0x1620	0x0	0x0	title.s:296

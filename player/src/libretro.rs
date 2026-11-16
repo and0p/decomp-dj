@@ -906,7 +906,7 @@ impl Core {
     }
 
     pub fn load_game(&mut self, rom: &Path) -> Result<()> {
-        let _call = CallGuard::enter(4);
+        let _call = CallGuard::enter(self.slot, 4);
         let data = std::fs::read(rom).with_context(|| format!("reading {}", rom.display()))?;
         let path = CString::new(rom.to_string_lossy().as_bytes())?;
         let info = GameInfo { path: path.as_ptr(), data: data.as_ptr() as *const c_void, size: data.len(), meta: std::ptr::null() };
@@ -1027,7 +1027,7 @@ impl Core {
     /// Runs one frame through `tick` instead of `retro_run` (a connector's `dj_run`, which
     /// calls it itself), capturing the picture as `run_frame` does.
     pub fn run_frame_with<T>(&mut self, capture: bool, tick: impl FnOnce() -> T) -> (Option<Frame>, T) {
-        let _call = CallGuard::enter(1);
+        let _call = CallGuard::enter(self.slot, 1);
         // A new frame: the cap counts from nothing, and what it switched off is back on.
         let rearm = BREAKS.with(|b| {
             let b = &mut b.borrow_mut()[self.slot];
@@ -1059,7 +1059,7 @@ impl Core {
     }
 
     pub fn reset(&mut self) {
-        let _call = CallGuard::enter(5);
+        let _call = CallGuard::enter(self.slot, 5);
         self.gl_enter();
         unsafe { (self.api.reset)() }
         self.gl_leave();
@@ -1084,7 +1084,7 @@ impl Core {
     }
 
     pub fn serialize(&mut self) -> Result<Vec<u8>> {
-        let _call = CallGuard::enter(2);
+        let _call = CallGuard::enter(self.slot, 2);
         self.gl_enter();
         self.breaks_busy(true);
         let r = self.serialize_inner();
@@ -1138,7 +1138,7 @@ impl Core {
     }
 
     pub fn unserialize(&mut self, state: &[u8]) -> Result<()> {
-        let _call = CallGuard::enter(3);
+        let _call = CallGuard::enter(self.slot, 3);
         self.gl_enter();
         self.breaks_busy(true);
         let ok = unsafe { (self.api.unserialize)(state.as_ptr() as *const c_void, state.len()) };
@@ -1366,19 +1366,28 @@ impl Drop for Core {
     }
 }
 
-/// Names the libretro call in progress for a crash note (`crash::enter`), until dropped.
-struct CallGuard;
+/// Names the libretro call in progress for a crash note (`crash::enter`, or
+/// `crash::enter_compare` for the comparison core's slot), until dropped.
+struct CallGuard(usize);
 
 impl CallGuard {
-    fn enter(call: usize) -> CallGuard {
-        crate::crash::enter(call);
-        CallGuard
+    fn enter(slot: usize, call: usize) -> CallGuard {
+        if slot == COMPARISON {
+            crate::crash::enter_compare(call);
+        } else {
+            crate::crash::enter(call);
+        }
+        CallGuard(slot)
     }
 }
 
 impl Drop for CallGuard {
     fn drop(&mut self) {
-        crate::crash::enter(0);
+        if self.0 == COMPARISON {
+            crate::crash::enter_compare(0);
+        } else {
+            crate::crash::enter(0);
+        }
     }
 }
 

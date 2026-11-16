@@ -1,8 +1,9 @@
 # Plan: a C reimplementation of Thwaite as a comparison core
 
-Status: milestone 0 mostly done (2026-11-15): the core builds, draws the CHR with OpenGL,
-exports the API, and its breakpoint table is checked on all 12 segments. Results are under
-"Milestone 0 results". Written 2026-11-11, rewritten 2026-11-15 for parity by breakpoints
+Status (2026-11-16): milestones 0 and 1 done. The legal screen and the title screen
+(joypad and mouse) are in parity on every segment that reaches them; everything after the
+title is answered "unjudged", not written yet. Results are under "Milestone 0 results" and
+"Milestone 1 results". Written 2026-11-11, rewritten 2026-11-15 for parity by breakpoints
 ([yield-parity/PLAN.md](yield-parity/PLAN.md)).
 
 Decided by the developer:
@@ -11,11 +12,9 @@ Decided by the developer:
   generated data is committed as C tables; no sound.
 - 2026-11-15: built on the breakpoint design; drawn with OpenGL (no software renderer).
 
-This plan changes nothing in dj. It needs the breakpoint design built up to its step 6
-(`dj_handle_event` in dj), and the nested OpenGL contexts of its step 4. Where this plan
-finds a problem in that design, it says so under "For the breakpoint plan". As of
-2026-11-15, dj has steps 3 and 4 (connector API 3, with `dj_set_breakpoints` and
-`dj_read_registers`; the comparison core in dj's process), not step 6.
+This plan changes nothing in dj. It is built on the breakpoint design's events
+(`docs/connectors.md#events`), which dj has had since 2026-11-15. Where this plan finds a
+problem in that design, it says so under "For the breakpoint plan".
 
 ## Goal
 
@@ -104,9 +103,9 @@ rebuilt ROM moves the addresses with it. All in `PRG`.
 | --- | --- | --- |
 | **Wait exit**, one per wait loop: `game` (`main`), `pause` (`pauseScreen`), `title` ×3, `practice`, `cutscene` ×2 | The first instruction after the `beq` that spins on `nmis`. It runs once per wait, never in the spin (the Mesen spike saw a breakpoint inside a spin hit 3,891 times in a frame) | Runs its pending step, compares, answers |
 | **NMI-counter read**: `updateAllExplosions`, `drawBalloonNumberX`, the missile-target drawing, `updateSmoke` (two, one in a loop), `cut_handle_state_wait_a`, `load_cutscene`, `titleScreen` | The `lda nmis` that reads the counter for logic | Takes `nmis` through the handle and queues it for the step in progress; answers "pending" |
-| **Input**: `read_pads`, `read_mouse` | The routine's first instruction | Polls libretro's input (that frame's) and queues it for the step in progress; answers "pending" |
+| **Input**: `read_pads`, `read_mouse` | Where the raw bits are complete: after `read_pads` calls `read_pads_once` ($00-$01 hold the two ports), and `read_mouse`'s `rts` ($01-$03 hold the report, X the port) | Takes the raw bytes through the handle and queues them for the step in progress; answers "pending" |
 
-The generator finds 9 wait loops, 8 counter reads and the 2 input routines. One wait,
+The generator finds 9 wait loops, 8 counter reads and the 2 input points. One wait,
 `ppu_wait_vblank`, is in a routine nothing calls; it stays in the table and is never hit.
 The waits in `getTVSystem` (PAL detection, at boot) are left out.
 
@@ -131,7 +130,8 @@ needs a breakpoint. For Thwaite these are the only such places apart from input 
 | console reset | Treated as a jump. The decomp is parked at its last wait exit while the original was in the spin after the step, not where the game reset from. No segment has a `[RESET]` today |
 | break, wait exit `W` | Runs the pending step with the queued counter values. If the state machine reached a different wait than `W`, that's a mismatch in itself ("the decomp went to `title`, the original to `pause`"). Otherwise it compares (below). Then it draws the step's picture and parks at `W` |
 | break, counter read | Queues `nmis`; "pending" |
-| break, input | Queues that frame's pads (or mouse); "pending" |
+| break, input | Queues the raw bytes; "pending" |
+| a step into code the decomp doesn't have | "Unjudged", with what isn't written ("newGame and the practice menu (milestone 2)"). The decomp stops following, and copies the original again at the next wait it has. dj's docs give "an overlay not decompiled" as a reason for "unjudged"; this is the same case, and it lets every segment be checked as far as the decomp goes |
 | frame end | "Pending" |
 
 The verdict after a copy is "unjudged", never "pending". Otherwise the first match would
@@ -139,21 +139,21 @@ credit frames that were compared with nothing (breakpoint plan, section 4).
 
 ### Input
 
-dj sets input per frame through libretro, and the decomp has to use the frame the
-original read the controllers in. So it polls libretro's input at the input breakpoints,
-when the original enters `read_pads` or `read_mouse`, and queues it for the step that is
-running.
+Under dj, the decomp takes the controllers' raw bits from the original, at the input
+breakpoints, and runs its own version of everything after: new presses, mouse buttons,
+mouse detection and motion. Two reasons:
 
-Polling at the wait exit instead would be wrong once in the segments: in the step from the
-cutscene into the game, the wait exit is in frame 62 and `read_pads` runs in frame 63,
-after `setupGameBG` crosses the frame boundary (milestone 0). Every other read is in the
-frame of its step's wait exit.
+- **The frame.** The decomp has to use the input of the frame the original read it in. In
+  the step from the cutscene into the game the wait exit is in frame 62 and `read_pads`
+  runs in frame 63, after `setupGameBG` crosses the frame boundary (milestone 0).
+- **What is in the port is the emulator's business.** `read_mouse` runs on both ports in
+  every menu step, joypad or not, and reads past a joypad's 8 bits; a mouse's report
+  depends on how Mesen turns libretro's mouse motion into SNES mouse counts. Neither is
+  game logic. (Polling libretro at the input breakpoint was the first design; reading the
+  raw bits is simpler and exact.)
 
-The decomp still runs its own version of `read_pads` (new presses, autorepeat), so that
-code is tested; only the raw buttons come from the poll. The SNES mouse (the Mouse
-segment) is read the same way, through libretro's mouse device. Mesen reads mouse motion
-from libretro port 1 whatever port the mouse is in (the example's README), and the decomp
-does the same. In menus `read_mouse` runs twice a step, once for each port.
+Played on its own (RetroArch), the decomp builds the raw bits from libretro's joypad, and
+reports no mouse.
 
 ### Writes
 
@@ -234,18 +234,15 @@ original's names, so sounds can be added later where they play.
 | `dj_trace_start`, `_stop`, `_read` | write events in the original's address space, from the 2 KB view, so the decomp's side of a failure can be traced too. dj traces only the baseline today |
 
 `dj_sync`, `dj_write`, `dj_check_parity`, `dj_run` and the tick functions are gone from the
-API, so the decomp has none of them. A routine the decomp hasn't written yet answers
-"halt" with its name, where `dj_run` used to fail.
+API, so the decomp has none of them. A step into code the decomp hasn't written yet
+answers "unjudged" with what is missing (Events, above), and "halt" is kept for what the
+decomp can't go on from at all (a handle without RAM, a write outside RAM).
 
 ## Milestones
 
 Each ends with `dj parity examples/thwaite --compare decomp` on the segments it covers.
 Every segment can be checked from its own start (the decomp copies at the jump), so
 gameplay doesn't wait on the cutscenes that come before it in the tree.
-
-Until the breakpoint design reaches its step 6, game code is written and tried on its own
-(`dj run` with the decomp as the core, or RetroArch). Parity checking starts when step 6
-is in dj.
 
 0. **Skeleton and checks.**
    - *Done:* the core: libretro boilerplate, the GL renderer showing the CHR, every
@@ -254,25 +251,24 @@ is in dj.
    - *Done:* the breakpoint table checked on all 12 segments with
      `player/examples/thwaite_breaks.rs`, against the version 3 Mesen connector. Results
      below.
-   - *Waiting on the breakpoint plan's step 6:* the `[[compare]]` entry in config.toml.
-     Today's dj still loads a comparison core through `dj_sync`, which the decomp doesn't
-     have, so the entry would break the example's comparison until events exist.
-   - *Waiting on step 6 too:* drawing from inside the baseline's frame. The nested
-     contexts of step 4 are only exercised when dj calls the decomp during a frame, which
-     needs events. If nested contexts don't work on a platform, that's a finding for the
-     breakpoint plan, not a reason for a software renderer here.
-1. **Boot and menus**: the title screens, the 2-player and mouse paths, the practice
-   menu. Segments: Boot (from the first title wait), 2 Players, Mouse, Practice
-   open/cancel.
+   - *Done 2026-11-16:* the `[[compare]]` entry in config.toml (`decomp`).
+   - *Done 2026-11-16:* drawing from inside the baseline's frame, on macOS: the decomp's
+     pictures match the original's (milestone 1 results). Linux and Windows aren't tried.
+1. **Boot and menus.** *Done 2026-11-16* for the legal screen and the title, with the
+   2-player and mouse paths. Segments: Boot, and the title part of 1 Player, 2 Players,
+   Mouse, Practice open/cancel, and Idle's return to the legal screen. The practice menu
+   moved to milestone 2: it is built from the game's own routines (`moveCrosshairPlayerX`,
+   `doStateNewLevel`, `setupGameBG`, the status bar).
 2. **Gameplay**: new level, crosshairs, player and enemy missiles, balloons, explosions,
-   smoke, villagers, scoring, the clock, BG updates, pause, game over, and the counter
-   breakpoints. Segments: Defend, Idle, Pause, Practice play, Jump to Saturday (a queued
-   write).
+   smoke, villagers, scoring, the clock, BG updates, pause, game over, the counter
+   breakpoints, and the practice menu. Segments: Defend, Idle, Pause, Practice open,
+   cancel and play, Jump to Saturday (a queued write).
 3. **Cutscenes and between levels**: DTE text from `texts.txt` and `cutscripts.txt`, the
    level reward, silo and house rebuilding. Segment: the opening cutscene. All 12 pass,
    with the steps that cross a frame boundary judged.
-4. **Diffs and tracing**: `dj_parity_diffs` and the trace hook complete, checked with
-   `dj parity --explain` on a build that is broken on purpose.
+4. **Diffs and tracing**: the trace hook, and `dj parity --explain` on a build that is
+   broken on purpose. `dj_parity_diffs` already gives every differing field with both
+   names, and the broken build exists (`THW_BREAK_ON_PURPOSE`, README).
 5. **CI and docs**: a CI job builds Mesen and the decomp and runs `dj parity` on the
    example; a README for the decomp; examples/thwaite/README and the ROADMAP updated.
 
@@ -280,6 +276,31 @@ New segments that reach more of the game (later days, a rebuilt house, a high sc
 heavier waves that might lag in play) are worth adding as the decomp gets there. The
 coverage map shows where. No balloon appears in today's segments, so
 `drawBalloonNumberX`'s counter read is never hit.
+
+### Milestone 1 results
+
+`dj parity examples/thwaite --compare decomp --all`, 2026-11-16, all 12 segments (11,137
+frames in 16 s): **0 failed.** 985 frames passed: Boot 111, 1 Player 5, 2 Players 15,
+Mouse 70, Practice open 25, Practice cancel 70, Idle 689 (its return to the legal screen
+after the game over). The frames before the decomp copies the original are skipped, and
+everything after the title is "not checked", with the reason. `dj parity --report`: 572
+instructions of the original with parity, in 27 functions in full.
+
+- **The comparison catches bugs.** A build with a bug planted on purpose (held keys count
+  as new presses) fails 4 segments at the first frame it matters, with diffs in both
+  names: `new_keys (game.new_keys): 04 here, 00 in the original`, then `numPlayers` and the
+  sprite it moves.
+- **The pictures match.** `player/examples/thwaite_pictures.rs` plays a segment through
+  dj's `Checker`, as dj-gui does, with the decomp drawing with OpenGL inside the baseline's
+  frame. The legal screen and the title (with the mouse's cursor and icon) look the same
+  as the original's.
+- **What the decomp models so far:** 23 of the original's RAM symbols as its own fields;
+  the rest is carried as copied and still compared, so any change the original makes that
+  the decomp doesn't shows as a mismatch. Sound, the VRAM transfer buffer and the text
+  buffer are ignored, and `nmis` is taken from the original.
+- **A slip, put right:** `dj play --core` saves the core it is given as the project's own,
+  so a milestone 0 check had set the decomp as Thwaite's baseline in `.local/local.toml`.
+  It is back to Mesen, and the README warns against it.
 
 ### Milestone 0 results
 

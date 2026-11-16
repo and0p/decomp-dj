@@ -34,6 +34,9 @@ pub struct Failure {
     pub build: String,
     /// Where the comparison core was synced: (segment, frame). Its run started there.
     pub synced: (String, u64),
+    /// How many frames from there on were pre-roll: played so the core could copy the
+    /// baseline, and not judged. A re-run marks the same frames.
+    pub preroll: u64,
     pub segment: String,
     pub frame: u64,
     pub reason: String,
@@ -87,7 +90,7 @@ pub fn or_opcodes(to: &mut Vec<u8>, from: &[u8]) -> bool {
 /// Every failure kept for `core`, whatever the build, oldest first.
 pub fn failures(conn: &Connection, core: &str) -> Result<Vec<Failure>> {
     let mut st = conn.prepare(
-        "SELECT id, core, build, synced_segment, synced_frame, segment, frame, reason, created, flags FROM parity_failures WHERE core = ?1 AND region = ?2 ORDER BY id",
+        "SELECT id, core, build, synced_segment, synced_frame, segment, frame, reason, created, flags, preroll FROM parity_failures WHERE core = ?1 AND region = ?2 ORDER BY id",
     )?;
     let rows = st.query_map(params![core, REGION], |r| {
         Ok(Failure {
@@ -100,6 +103,7 @@ pub fn failures(conn: &Connection, core: &str) -> Result<Vec<Failure>> {
             reason: r.get(7)?,
             created: r.get(8)?,
             flags: r.get(9)?,
+            preroll: r.get::<_, i64>(10)? as u64,
             diffs: Diffs::default(),
         })
     })?;
@@ -129,8 +133,8 @@ pub fn failures(conn: &Connection, core: &str) -> Result<Vec<Failure>> {
 /// Keeps a failure; returns its id.
 pub fn add_failure(conn: &Connection, f: &Failure) -> Result<i64> {
     conn.execute(
-        "INSERT INTO parity_failures(core, build, synced_segment, synced_frame, segment, frame, reason, created, region, flags) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-        params![f.core, f.build, f.synced.0, f.synced.1 as i64, f.segment, f.frame as i64, f.reason, f.created, REGION, f.flags],
+        "INSERT INTO parity_failures(core, build, synced_segment, synced_frame, segment, frame, reason, created, region, flags, preroll) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        params![f.core, f.build, f.synced.0, f.synced.1 as i64, f.segment, f.frame as i64, f.reason, f.created, REGION, f.flags, f.preroll as i64],
     )?;
     let id = conn.last_insert_rowid();
     // A row id can come back after the newest failure was deleted.
@@ -341,16 +345,13 @@ pub fn take_code_flags(core: &mut Core) -> Option<Vec<u8>> {
 pub enum Checked {
     /// Checked, and the cores agree.
     Passed,
-    /// The core didn't judge it (`dj_check_parity` said skip, or an event was answered
-    /// "unjudged"), with its reason.
+    /// Not judged (an event was answered "unjudged", or there was no RAM to compare), with
+    /// the reason.
     Skipped(String),
     /// Ran in step but not checked (checking is off), or not judged yet: a core that takes
     /// events gives its verdict at an event of its own choosing, maybe in a later frame.
     Ran,
-    /// It had a line the comparison core couldn't follow (a `[WRITE]` without `dj_write`):
-    /// not checked, and the core must be synced again before the next frame.
-    NeedsSync,
-    /// A mismatch, a failed tick (`dj_run`), a halt or an error, with the message to show.
+    /// A mismatch, a halt or an error, with the message to show.
     /// Playback stops. A core that takes events stays as it is after a mismatch, and
     /// carries on if playback does; any other is out of step until synced again.
     Failed(String),
@@ -456,7 +457,12 @@ struct Ev {
     segment: String,
     frame: u64,
     check: bool,
+    /// The frame being run is pre-roll: only a halt counts, and its flags are held for no one.
     preroll: bool,
+    /// Frames of pre-roll still to run, this one included.
+    preroll_left: u64,
+    /// The segment the pre-roll is for: what a crash during it is reported against.
+    preroll_for: String,
     has_reset: bool,
     /// The frame's `[WRITE]` lines that name no instruction: (region, address, bytes).
     writes: Vec<(String, u64, Vec<u8>)>,
@@ -487,6 +493,8 @@ impl Default for Ev {
             frame: 0,
             check: false,
             preroll: false,
+            preroll_left: 0,
+            preroll_for: String::new(),
             has_reset: false,
             writes: vec![],
             impulses: vec![],
@@ -643,8 +651,7 @@ impl Ev {
 /// of each jump, console reset, write, breakpoint and frame end, runs itself inside those
 /// calls, and gives its verdict when it chooses; dj holds each frame's coverage until one
 /// comes (.agents/yield-parity/PLAN.md). Any other runs one frame after the baseline and
-/// is checked there (`dj_sync`, `dj_run`, `dj_check_parity`, or the same emulator's save
-/// state and RAM).
+/// is checked there: the same emulator, by its save state and RAM (`sync = "state"`).
 #[derive(Default, Clone)]
 pub struct Checker {
     /// The frame the comparison core runs next, in step: (segment, frame). None: out of step.
@@ -652,6 +659,8 @@ pub struct Checker {
     /// Where it was last synced, or last jumped. A failure records it, so it can be re-run
     /// from there.
     pub synced: Option<(String, u64)>,
+    /// How many frames from `synced` on were pre-roll.
+    pub preroll: u64,
     ev: Rc<RefCell<Ev>>,
 }
 
@@ -665,6 +674,24 @@ impl Checker {
     pub fn lose_step(&mut self) {
         self.at = None;
         crate::libretro::set_frame_hook(None);
+    }
+
+    /// The next `frames` frames are pre-roll (.agents/yield-parity/PLAN.md, section 6): the
+    /// baseline was put that many frames before the place asked for, in or above
+    /// `for_segment`, so that a core that takes events can copy it on the way. Call before
+    /// the sync at the first of them. In those frames only a halt counts, and no coverage is
+    /// held; when they are over the core's verdicts start afresh. For any other core this
+    /// must not be called.
+    pub fn set_preroll(&mut self, frames: u64, for_segment: &str) {
+        let mut ev = self.ev.borrow_mut();
+        ev.preroll_left = frames;
+        ev.preroll_for = for_segment.to_string();
+    }
+
+    /// The segment a pre-roll now running is for.
+    pub fn preroll_for(&self) -> Option<String> {
+        let ev = self.ev.borrow();
+        (ev.preroll_left > 0).then(|| ev.preroll_for.clone())
     }
 
     /// Syncs the comparison core to the baseline, which is about to run frame `k` of `id`
@@ -682,13 +709,17 @@ impl Checker {
                 Ok(inputs) => inputs.apply(&mut cmp.core),
                 Err(e) => return Err(format!("Couldn't set the comparison core's inputs at frame {k}: {e:#}")),
             }
-            self.ev.borrow_mut().jump = Some(if boot { JumpReason::PowerOn } else { JumpReason::State });
+            let mut ev = self.ev.borrow_mut();
+            ev.jump = Some(if boot { JumpReason::PowerOn } else { JumpReason::State });
+            self.preroll = ev.preroll_left;
             self.at = Some((id.to_string(), k));
             self.synced = Some((id.to_string(), k));
             return Ok(());
         }
-        match cmp.sync(baseline, col, id, k, power_on_frame, boot) {
+        let _ = power_on_frame;
+        match cmp.sync(baseline, col, id, k) {
             Ok(SyncOutcome::Synced) => {
+                self.preroll = 0;
                 self.at = Some((id.to_string(), k));
                 self.synced = Some((id.to_string(), k));
                 Ok(())
@@ -737,7 +768,7 @@ impl Checker {
             ev.segment = id.to_string();
             ev.frame = k;
             ev.check = check;
-            ev.preroll = false;
+            ev.preroll = ev.preroll_left > 0;
             ev.claim = Claim::None;
             ev.muted = false;
             ev.out = FrameOut::default();
@@ -782,7 +813,8 @@ impl Checker {
         if cmp.takes_events() {
             return Some(self.step_events(cmp, baseline, id, k, capture, check));
         }
-        let st = match cmp.step(baseline, col, id, k, capture) {
+        let _ = power_on_frame;
+        let st = match cmp.step(col, id, k, capture) {
             Ok(st) => st,
             Err(e) => {
                 self.at = None;
@@ -790,14 +822,10 @@ impl Checker {
             }
         };
         let mut diffs = Diffs::default();
-        let checked = if let Some(why) = st.tick_failed {
-            Checked::Failed(format!("The comparison core's frame {k} failed: {why}"))
-        } else if st.needs_sync {
-            Checked::NeedsSync
-        } else if !check {
+        let checked = if !check {
             Checked::Ran
         } else {
-            match cmp.check(baseline, power_on_frame) {
+            match cmp.check(baseline) {
                 Ok(Verdict::Match) => Checked::Passed,
                 Ok(Verdict::Skip(why)) => Checked::Skipped(why),
                 Ok(Verdict::Mismatch(why, d)) => {
@@ -808,7 +836,7 @@ impl Checker {
             }
         };
         self.at = match checked {
-            Checked::Failed(_) | Checked::NeedsSync => None,
+            Checked::Failed(_) => None,
             _ => Some((id.to_string(), k + 1)),
         };
         // Judged frame by frame: each frame's flags go with its own verdict.
@@ -840,6 +868,11 @@ impl Checker {
         ev.baseline = baseline as *const Core;
         let flags = if check { Some(take_code_flags(baseline).unwrap_or_default()) } else { None };
         match (&flags, ev.claim) {
+            // Pre-roll: the frame is held for no one, unless a halt in it takes the blame.
+            (Some(f), Claim::Blame) if ev.preroll => {
+                or_opcodes(&mut ev.out.blame, f);
+            }
+            _ if ev.preroll => {}
             (None, _) => ev.out.unchecked_frames += 1,
             (Some(f), Claim::None) => {
                 or_opcodes(&mut ev.pile, f);
@@ -852,6 +885,16 @@ impl Checker {
             }
         }
         ev.send(Place::End, Event::FrameEnd, "the frame end");
+        if ev.preroll {
+            ev.preroll_left -= 1;
+            if ev.preroll_left == 0 && !ev.halted {
+                // The place asked for is next: verdicts start afresh, so that one given in
+                // pre-roll can't hide the first mismatch after it.
+                ev.last = Last::None;
+                ev.pile.clear();
+                ev.pile_frames = 0;
+            }
+        }
         for key in std::mem::take(&mut ev.impulses) {
             cmp.core.set_input(key, 0);
         }
@@ -910,6 +953,7 @@ impl Checker {
             core: cmp.name.clone(),
             build: cmp.build.clone(),
             synced: self.synced.clone().unwrap_or((id.to_string(), k)),
+            preroll: if self.synced.is_some() { self.preroll } else { 0 },
             segment: id.to_string(),
             frame: k,
             reason: reason.to_string(),
@@ -918,6 +962,31 @@ impl Checker {
             diffs,
         }
     }
+}
+
+/// The frames to pre-roll before frame `frame` of `id`: up to `n` of them, back through the
+/// segments above when there aren't that many in `id`, stopping at a root segment's start.
+/// In the order they play: (segment, from, to). Empty when there are none.
+pub fn preroll_route(col: &Collection, id: &str, frame: u64, n: u64) -> Result<Vec<(String, u64, u64)>> {
+    let mut out = vec![];
+    let mut left = n;
+    let chain = col.chain(id)?;
+    let mut to = frame;
+    for seg in chain.iter().rev() {
+        if left == 0 {
+            break;
+        }
+        if *seg != id {
+            to = col.replays[*seg].frames()?;
+        }
+        let take = left.min(to);
+        if take > 0 {
+            out.push((seg.to_string(), to - take, to));
+            left -= take;
+        }
+    }
+    out.reverse();
+    Ok(out)
 }
 
 /// What [`check_span`] found.
@@ -950,7 +1019,11 @@ pub fn check_span(s: &mut Session, cmp: &mut Comparison, ck: &mut Checker, col: 
     // What ran before the first frame isn't any frame's.
     let _ = take_code_flags(&mut s.core);
     for k in from..to {
-        crate::isolate::batch_progress(id, k);
+        // A crash in pre-roll is the segment's that the pre-roll is for.
+        match ck.preroll_for() {
+            Some(target) => crate::isolate::batch_progress(&target, 0),
+            None => crate::isolate::batch_progress(id, k),
+        }
         if !ck.in_step(id, k) {
             if let Err(msg) = ck.sync(cmp, &mut s.core, col, id, k, start_frame + k) {
                 span.failure = Some(ck.failure(cmp, id, k, &msg, vec![], Diffs::default()));
@@ -1024,7 +1097,7 @@ mod tests {
     #[test]
     fn failures_round_trip_and_delete() {
         let c = db();
-        let f = Failure { id: 0, core: "a".into(), build: "b1".into(), synced: ("s".into(), 3), segment: "t".into(), frame: 9, reason: "RAM 0x02".into(), created: 5, flags: vec![0, 1], diffs: Diffs::default() };
+        let f = Failure { id: 0, core: "a".into(), build: "b1".into(), synced: ("s".into(), 3), preroll: 2, segment: "t".into(), frame: 9, reason: "RAM 0x02".into(), created: 5, flags: vec![0, 1], diffs: Diffs::default() };
         let d = Diff { label: Some("Player 2 x".into()), region: Some("RAM".into()), address: Some(2), len: 1, expected: vec![5], actual: vec![6], ..Default::default() };
         let f = Failure { diffs: Diffs { list: vec![d.clone(), Diff { label: Some("score".into()), ..d }], total: 3 }, ..f };
         let id = add_failure(&c, &f).unwrap();

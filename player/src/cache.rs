@@ -235,6 +235,7 @@ impl Cache {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.execute_batch(SCHEMA)?;
+        add_columns(&conn);
         let info_map: BTreeMap<String, String> = setup_info.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
         // A different version of the same core is only a warning (.agents/CACHE_PLAN.md, "Decided").
         {
@@ -272,6 +273,7 @@ impl Cache {
         let conn = Connection::open(&path)?;
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.execute_batch(SCHEMA)?;
+        add_columns(&conn);
         Ok(conn)
     }
 
@@ -604,6 +606,12 @@ pub fn refresh_segments_now(conn: &mut Connection, col: &Collection, setup: &str
     Ok(())
 }
 
+/// Columns added since a table was first made: `CREATE TABLE IF NOT EXISTS` leaves an older
+/// database's table as it is. An error means the column is already there.
+pub(crate) fn add_columns(conn: &Connection) {
+    let _ = conn.execute("ALTER TABLE parity_failures ADD COLUMN preroll INTEGER NOT NULL DEFAULT 0", []);
+}
+
 pub(crate) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS setups(id TEXT PRIMARY KEY, info TEXT);
 CREATE TABLE IF NOT EXISTS contents(
@@ -629,7 +637,8 @@ CREATE TABLE IF NOT EXISTS run_results(run_id INTEGER NOT NULL, segment_id TEXT 
 CREATE TABLE IF NOT EXISTS parity_passed(core TEXT NOT NULL, build TEXT NOT NULL, region TEXT NOT NULL, flags BLOB NOT NULL, PRIMARY KEY(core, build, region));
 CREATE TABLE IF NOT EXISTS parity_failures(
     id INTEGER PRIMARY KEY, core TEXT NOT NULL, build TEXT NOT NULL, synced_segment TEXT NOT NULL, synced_frame INTEGER NOT NULL,
-    segment TEXT NOT NULL, frame INTEGER NOT NULL, reason TEXT NOT NULL, created INTEGER NOT NULL, region TEXT NOT NULL, flags BLOB NOT NULL);
+    segment TEXT NOT NULL, frame INTEGER NOT NULL, reason TEXT NOT NULL, created INTEGER NOT NULL, region TEXT NOT NULL, flags BLOB NOT NULL,
+    preroll INTEGER NOT NULL DEFAULT 0);
 -- What differed on a failing frame (dj_parity_diffs, or system RAM compared byte for byte), in
 -- the order given: up to 100 per failure. total: how many there were in all (on every row).
 CREATE TABLE IF NOT EXISTS parity_diffs(

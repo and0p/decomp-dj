@@ -6,7 +6,7 @@
 //! The baseline is the test core built with a small dj connector (-DCONNECTOR): a frame
 //! "runs" a fixed pattern of instructions, with a tick that ends between the frame's two
 //! halves and no tick on every seventh frame. The comparison core is the same core built to
-//! take events (-DEVENTS). Skipped when there is no C compiler.
+//! take events. Skipped when there is no C compiler.
 
 use decomp_dj::collection::Collection;
 use decomp_dj::compare::Comparison;
@@ -40,8 +40,8 @@ fn cores(what: &str) -> Option<Cores> {
     let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("events-{what}-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
     let base = build(&tmp, "base.so", &["-DCONNECTOR", "-DNO_DJ"])?;
-    let events = build(&tmp, "events.so", &["-DEVENTS"])?;
-    let no_write = build(&tmp, "no_write.so", &["-DEVENTS", "-DNO_WRITE_HANDLER"])?;
+    let events = build(&tmp, "events.so", &[])?;
+    let no_write = build(&tmp, "no_write.so", &["-DNO_WRITE_HANDLER"])?;
     Some(Cores { tmp, base, events, no_write })
 }
 
@@ -240,7 +240,7 @@ fn a_run_of_mismatches_is_one_failure() {
     let (span, _, _) = check(&c, &col, &mut s, "mismatch", "seg");
     let f = span.failure.expect("a failure");
     assert_eq!((f.frame, span.passed, f.synced.clone()), (9, 9, ("seg".to_string(), 0)));
-    assert_eq!(f.diffs.total, 1, "{:?}", f.diffs);
+    assert_eq!(f.diffs.total, 2, "{:?}", f.diffs);
     assert!(ran(&f.flags, 0x10), "the failing frame's code is blamed");
     drop(s);
     let _ = std::fs::remove_dir_all(&c.tmp);
@@ -438,5 +438,104 @@ fn ticks_are_counted_by_dj() {
     // A wait that spins 1,500 times on frames 4, 20 and 36: counted up to the cap each time.
     assert_eq!(ticks("[tick]\nexec = \"PRG:0x90\"\n"), Some(3 * decomp_dj::libretro::BREAK_CAP as u64));
     assert_eq!(ticks(""), None);
+    let _ = std::fs::remove_dir_all(&c.tmp);
+}
+
+/// Pre-roll (`[[compare]] preroll`, PLAN.md section 6): the baseline is put some frames
+/// before the place asked for and plays up to it, so a core that judges at a tick has copied
+/// the baseline by then. In those frames only a halt counts.
+#[test]
+fn pre_roll() {
+    use decomp_dj::parity::preroll_route;
+    let _slots = SLOTS.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(c) = cores("preroll") else { return eprintln!("skipped: no C compiler") };
+    let ev = c.events.display().to_string().replace('\\', "/");
+    let extra = format!(
+        "[[compare]]\nname = \"tick-pre\"\npath = \"{ev}\"\npreroll = 2\n[compare.options]\ntestcore_judge = \"tick\"\n\
+         [[compare]]\nname = \"tick-mismatch\"\npath = \"{ev}\"\n[compare.options]\ntestcore_judge = \"tick\"\ntestcore_break = \"mismatch\"\n\
+         [[compare]]\nname = \"tick-halt\"\npath = \"{ev}\"\n[compare.options]\ntestcore_judge = \"tick\"\ntestcore_break = \"halt\"\n"
+    );
+    let col = project(&c, &extra, &[]);
+    // seg (40 frames), then mid (3), then kid (20). The baseline has no tick on every seventh
+    // frame from power-on: frame 1 of mid, and frame 5 of kid.
+    std::fs::write(col.root.join("segments/mid.segment"), "dj-segment 1\nid: mid\nparent: seg\nframes: 3\n---\n").unwrap();
+    std::fs::write(col.root.join("segments/kid.segment"), "dj-segment 1\nid: kid\nparent: mid\nframes: 20\n---\n3 P1 JOYPAD A 1\n").unwrap();
+    let col = Collection::open(&col.root).unwrap();
+    let mut s = session(&c, &col);
+
+    // Where the pre-roll runs: back into the parent, and never before a root's start.
+    let route = |id: &str, frame: u64, n: u64| preroll_route(&col, id, frame, n).unwrap();
+    assert_eq!(route("kid", 0, 2), vec![("mid".to_string(), 1, 3)]);
+    assert_eq!(route("kid", 2, 4), vec![("mid".to_string(), 1, 3), ("kid".to_string(), 0, 2)]);
+    assert_eq!(route("kid", 0, 5), vec![("seg".to_string(), 38, 40), ("mid".to_string(), 0, 3)]);
+    assert_eq!(route("kid", 0, 100), vec![("seg".to_string(), 0, 40), ("mid".to_string(), 0, 3)]);
+    assert_eq!(route("seg", 5, 3), vec![("seg".to_string(), 2, 5)]);
+    assert!(route("seg", 0, 3).is_empty() && route("kid", 0, 0).is_empty());
+
+    // The child's first five frames from its own start, with no pre-roll: the core copies at
+    // the first tick, inside frame 0, so that frame is not judged.
+    s.enter_replay(&col, "kid").unwrap();
+    let mut cmp = open(&c, &col, "tick");
+    let mut ck = Checker::default();
+    let plain = check_span(&mut s, &mut cmp, &mut ck, &col, "kid", 0, 5, 43).unwrap();
+    assert!(plain.failure.is_none(), "{:?}", plain.failure);
+    assert!(sent(&cmp).starts_with("J2 "), "{}", sent(&cmp));
+    assert_eq!((plain.passed, plain.skipped, ck.finish()), (3, 1, 0), "{plain:?}");
+    drop(cmp);
+
+    // With pre-roll: the jump goes two frames up, in the parent, those frames count as
+    // nothing, and the child's frame 0 is judged.
+    let mut cmp = open(&c, &col, "tick-pre");
+    assert_eq!(cmp.preroll, 2);
+    s.enter_replay(&col, "mid").unwrap();
+    s.step(&col, "mid", 0, false).unwrap();
+    let mut ck = Checker::default();
+    ck.set_preroll(2, "kid");
+    assert_eq!(ck.preroll_for().as_deref(), Some("kid"));
+    let pre = check_span(&mut s, &mut cmp, &mut ck, &col, "mid", 1, 3, 40).unwrap();
+    assert!(pre.failure.is_none(), "{:?}", pre.failure);
+    assert_eq!((pre.passed, pre.skipped, pre.unchecked), (0, 0, 0));
+    assert!(pre.passed_flags.is_empty() && ck.preroll_for().is_none());
+    assert!(ck.enter(&mut cmp, &col, "mid", "kid"));
+    s.core.coverage_clear();
+    s.restore_inputs(&col, "kid", 0).unwrap();
+    let span = check_span(&mut s, &mut cmp, &mut ck, &col, "kid", 0, 5, 43).unwrap();
+    assert!(span.failure.is_none(), "{:?}", span.failure);
+    assert_eq!((span.passed, span.skipped, ck.finish()), (4, 0, 0), "{span:?}");
+    assert_eq!((ck.synced.clone(), ck.preroll), (Some(("mid".to_string(), 1)), 2));
+    drop(cmp);
+
+    // A mismatch in pre-roll is ignored, and doesn't hide the first one after it: that one is
+    // kept as a failure, with how much of its run was pre-roll.
+    let mut cmp = open(&c, &col, "tick-mismatch");
+    s.enter_replay(&col, "seg").unwrap();
+    for f in 0..6 {
+        s.step(&col, "seg", f, false).unwrap();
+    }
+    let mut ck = Checker::default();
+    ck.set_preroll(6, "seg");
+    let pre = check_span(&mut s, &mut cmp, &mut ck, &col, "seg", 6, 12, 0).unwrap();
+    assert!(pre.failure.is_none(), "{:?}", pre.failure);
+    let span = check_span(&mut s, &mut cmp, &mut ck, &col, "seg", 12, 20, 0).unwrap();
+    let f = span.failure.expect("the mismatch after the pre-roll");
+    assert_eq!((f.frame, f.synced.clone(), f.preroll), (12, ("seg".to_string(), 6), 6), "{}", f.reason);
+    assert!(f.reason.contains("Parity failure"), "{}", f.reason);
+    drop(cmp);
+
+    // A halt in pre-roll is a failure at the frame it happened in.
+    let mut cmp = open(&c, &col, "tick-halt");
+    s.enter_replay(&col, "seg").unwrap();
+    for f in 0..6 {
+        s.step(&col, "seg", f, false).unwrap();
+    }
+    let mut ck = Checker::default();
+    ck.set_preroll(6, "seg");
+    let span = check_span(&mut s, &mut cmp, &mut ck, &col, "seg", 6, 12, 0).unwrap();
+    let f = span.failure.expect("the halt");
+    assert_eq!((f.frame, f.preroll), (9, 6), "{}", f.reason);
+    assert!(f.reason.contains("told to halt"), "{}", f.reason);
+    assert_eq!(span.passed, 0);
+    drop(cmp);
+    drop(s);
     let _ = std::fs::remove_dir_all(&c.tmp);
 }

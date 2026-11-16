@@ -78,15 +78,11 @@ static COMPARE_CALL: AtomicUsize = AtomicUsize::new(0);
 
 /// The calls the note can name ([`enter`], [`enter_compare`]): libretro's, then a comparison
 /// core's own.
-pub const CALLS: [&str; 15] = ["", "retro_run", "retro_serialize", "retro_unserialize", "retro_load_game", "retro_reset", "retro_init", "dj_sync", "dj_write", "dj_check_parity", "dj_parity_diffs", "dj_run", "dj_handle_event", "dj_handle_write", "dj_breakpoints"];
-pub const CALL_DJ_HANDLE_EVENT: usize = 12;
-pub const CALL_DJ_HANDLE_WRITE: usize = 13;
-pub const CALL_DJ_BREAKPOINTS: usize = 14;
-pub const CALL_DJ_SYNC: usize = 7;
-pub const CALL_DJ_WRITE: usize = 8;
-pub const CALL_DJ_CHECK_PARITY: usize = 9;
-pub const CALL_DJ_PARITY_DIFFS: usize = 10;
-pub const CALL_DJ_RUN: usize = 11;
+pub const CALLS: [&str; 11] = ["", "retro_run", "retro_serialize", "retro_unserialize", "retro_load_game", "retro_reset", "retro_init", "dj_parity_diffs", "dj_handle_event", "dj_handle_write", "dj_breakpoints"];
+pub const CALL_DJ_PARITY_DIFFS: usize = 7;
+pub const CALL_DJ_HANDLE_EVENT: usize = 8;
+pub const CALL_DJ_HANDLE_WRITE: usize = 9;
+pub const CALL_DJ_BREAKPOINTS: usize = 10;
 
 /// Where to write the note (the project's `.local/crash-gui-<pid>.txt`); the handler is
 /// installed the first time.
@@ -334,8 +330,8 @@ mod tests {
         let idle = text("x");
         assert!(idle.contains("comparison core: decomp (cores/decomp_libretro.dylib)") && compare_call(&idle).is_none(), "{idle}");
         {
-            let _c = CompareCall::enter(CALL_DJ_CHECK_PARITY);
-            assert_eq!(compare_call(&text("x")), Some("dj_check_parity"));
+            let _c = CompareCall::enter(CALL_DJ_HANDLE_EVENT);
+            assert_eq!(compare_call(&text("x")), Some("dj_handle_event"));
         }
         assert!(compare_call(&text("x")).is_none());
         set_compare("");

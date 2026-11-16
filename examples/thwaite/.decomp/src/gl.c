@@ -292,9 +292,9 @@ static int sprite_rows(const struct gfx *g, bool behind, float *out) {
     int per_line[GFX_H] = {0};
     for (int i = 0; i < GFX_SPRITES; i++)
         for (int r = 0; r < 8; r++) {
-            int y = g->sprites[i].y + r;
+            int y = g->oam[i].y + 1 + r;   /* OAM's y is one less than the first line */
             shown[i][r] = 0;
-            if (g->sprites[i].y >= GFX_H || y >= GFX_H) continue;
+            if (g->oam[i].y >= 0xEF || y >= GFX_H) continue;
             if (per_line[y] < 8) {
                 per_line[y]++;
                 shown[i][r] = 1;
@@ -302,7 +302,7 @@ static int sprite_rows(const struct gfx *g, bool behind, float *out) {
         }
     float *o = out;
     for (int i = GFX_SPRITES - 1; i >= 0; i--) {
-        const struct gfx_sprite *s = &g->sprites[i];
+        const struct gfx_sprite *s = &g->oam[i];
         if (((s->attr & GFX_SPR_BEHIND) != 0) != behind) continue;
         int tx = (s->tile & 15) * 8, ty = (g->sprite_table & 1) * 128 + (s->tile >> 4) * 8;
         for (int r = 0; r < 8; r++) {
@@ -310,7 +310,7 @@ static int sprite_rows(const struct gfx *g, bool behind, float *out) {
             int row = (s->attr & GFX_SPR_FLIP_Y) ? 7 - r : r;
             int u0 = tx, u1 = tx + 8;
             if (s->attr & GFX_SPR_FLIP_X) { u0 = tx + 8; u1 = tx; }
-            o = row_quad(o, s->x, s->y + r, u0, u1, (float)(ty + row) + 0.5f, s->attr & 3);
+            o = row_quad(o, s->x, s->y + 1 + r, u0, u1, (float)(ty + row) + 0.5f, s->attr & 3);
         }
     }
     return (int)((o - out) / 5);

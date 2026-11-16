@@ -320,6 +320,11 @@ struct App {
     /// Try a sync at the next chance: set by jumps, Run comparison and Sync now; cleared by
     /// each attempt, so a failed sync is retried only at the next jump.
     compare_need_sync: bool,
+    /// Pre-roll ([[compare]] preroll, docs/gui.md): the frame a seek is going to show, when
+    /// it started far enough back for the comparison core to be sent its jump early.
+    preroll_to: Option<u64>,
+    /// Re-running a failure: how many frames from where it was synced were pre-roll.
+    rerun_preroll: Option<u64>,
     /// Why the comparison core is out of sync (a failed sync or step).
     compare_problem: Option<String>,
     compare_texture: Option<egui::TextureHandle>,
@@ -569,6 +574,8 @@ impl Default for App {
             checker: Default::default(),
             compare_run: true,
             compare_need_sync: false,
+            preroll_to: None,
+            rerun_preroll: None,
             compare_problem: None,
             compare_texture: None,
             compare_split: 0.5,
@@ -1584,6 +1591,18 @@ impl App {
             self.checker.lose_step();
             self.compare_need_sync = true;
         }
+        // Pre-roll: a seek that is going to show frame `t` sends the jump up to `preroll`
+        // frames before it, and those frames run in pre-roll.
+        if let Some(t) = self.preroll_to {
+            let n = self.compare.as_ref().map_or(0, |c| c.preroll);
+            if k >= t {
+                self.preroll_to = None;
+            } else if self.compare_need_sync && self.compare_run && self.check_parity && k + n >= t && !egui_ctx().input(|i| i.pointer.any_down()) {
+                self.preroll_to = None;
+                self.checker.set_preroll(t - k, &id);
+                self.compare_sync(&id, k);
+            }
+        }
         if capture && self.compare_need_sync && self.compare_run && self.compare.is_some() && !egui_ctx().input(|i| i.pointer.any_down()) {
             // Not while a button is held (dragging the ruler): that syncs once it's let go.
             self.compare_sync(&id, k);
@@ -1657,9 +1676,6 @@ impl App {
                                 self.compare_problem = None;
                             }
                         }
-                        // A [WRITE] it couldn't follow: sync again at the next frame shown
-                        // (this frame isn't checked: the core didn't see the write).
-                        Checked::NeedsSync => self.compare_need_sync = true,
                         Checked::Failed(msg) => failed = Some((msg, st.diffs)),
                         // The same loss of parity, still going: shown, and playback goes on.
                         Checked::Drifting(msg) => self.compare_problem = Some(msg),
@@ -1820,11 +1836,31 @@ impl App {
             }
         }
         let Some(pb) = &self.pb else { return Ok(()) };
+        // Pre-roll, for a comparison core whose [[compare]] entry asks for it, while parity is
+        // checked: start far enough back that it can copy the baseline before the frame
+        // shown. Inside this segment only; not when re-running a failure, which says itself
+        // where its run started.
+        self.preroll_to = None;
+        let preroll = match &self.compare {
+            Some(c) if self.compare_run && self.check_parity && self.rerun.is_none() => c.preroll,
+            _ => 0,
+        };
+        let jump_at = (want_ran - 1).saturating_sub(preroll);
         if want_ran != pb.ran || self.texture.is_none() || std::mem::take(&mut self.reshow) {
             // Restart from the nearest snapshot that still leaves one frame to draw,
             // unless running on from where we are is quicker.
             let (&k, _) = pb.snapshots.range(..want_ran).next_back().ok_or_else(|| anyhow!("no snapshot"))?;
-            if want_ran <= pb.ran || k > pb.ran {
+            let mut load = want_ran <= pb.ran || k > pb.ran;
+            let mut k = k;
+            if preroll > 0 && jump_at + 1 < want_ran && (load || self.compare_need_sync) {
+                // A jump: from a snapshot at or before the frame the jump event goes at.
+                if let Some((&back, _)) = pb.snapshots.range(..=jump_at).next_back() {
+                    k = back;
+                    load = pb.ran > jump_at || k > pb.ran;
+                    self.preroll_to = Some(want_ran - 1);
+                }
+            }
+            if load {
                 let id = pb.id.clone();
                 let state = pb.snapshots[&k].clone();
                 let (Some(col), Some(s)) = (&self.col, &mut self.session) else { return Ok(()) };
@@ -2286,6 +2322,12 @@ impl App {
     fn compare_sync(&mut self, id: &str, k: u64) {
         self.compare_need_sync = false;
         let (Some(col), Some(s), Some(pb), Some(c)) = (&self.col, &mut self.session, &self.pb, &mut self.compare) else { return };
+        // A failure being re-run: the frames that were pre-roll when it was found are again.
+        if let Some(n) = self.rerun_preroll.take() {
+            if n > 0 && c.takes_events() && self.rerun.is_some() {
+                self.checker.set_preroll(n, id);
+            }
+        }
         match self.checker.sync(c, &mut s.core, col, id, k, pb.start_frame + k) {
             Ok(()) => self.compare_problem = None,
             Err(msg) => {
@@ -5667,10 +5709,10 @@ impl App {
             self.checker.lose_step();
             self.compare_need_sync = true;
         }
-        let how = if self.compare.as_ref().is_some_and(|c| c.has_check()) { "with the core's dj_check_parity" } else { "by comparing system RAM (the core has no dj_check_parity)" };
+        let how = if self.compare.as_ref().is_some_and(|c| c.takes_events()) { "as the core judges it (dj_handle_event)" } else { "by comparing system RAM" };
         ui.add_enabled(loaded, egui::Checkbox::new(&mut self.check_parity, "Check parity"))
             .keep_open()
-            .on_hover_text(format!("After every frame both cores run, check that they agree, {how}. A failure stops playback at that frame."))
+            .on_hover_text(format!("Check that the comparison core agrees with the baseline, {how}. A failure stops playback at that frame."))
             .on_disabled_hover_text(no_core);
         ui.separator();
         if self.rerun.is_some() {

@@ -1,60 +1,57 @@
-/* The step loop and the screen state machine (orig: main.s).
- *
- * Milestone 0 has no game logic yet: power-on goes to a test screen that shows both
- * pattern tables and a sprite the d-pad moves, to check the renderer end to end. */
+/* The step loop and the screen state machine (orig: main.s). */
 #include "game.h"
 
+#include <stdio.h>
 #include <string.h>
 
-/* A grey test palette: black backdrop, then dark grey, light grey, white. */
-static const uint8_t TEST_PALETTE[32] = {
-    0x0F, 0x00, 0x10, 0x30, 0x0F, 0x06, 0x16, 0x26, 0x0F, 0x09, 0x19, 0x29, 0x0F, 0x02, 0x12, 0x22,
-    0x0F, 0x00, 0x10, 0x30, 0x0F, 0x06, 0x16, 0x26, 0x0F, 0x09, 0x19, 0x29, 0x0F, 0x02, 0x12, 0x22,
-};
+#define STARTING_HISCORE 2
 
-static void test_screen(struct game *g) {
-    struct gfx *x = &g->gfx;
-    gfx_clear(x);
-    memcpy(x->palette, TEST_PALETTE, sizeof x->palette);
-    /* Pattern table 0 at the top left, table 1 at the top right, 16x16 tiles each. */
-    for (int t = 0; t < 256; t++) {
-        gfx_put_tile(x, (t & 15), 1 + (t >> 4), (uint8_t)t, 0, 0);
-        gfx_put_tile(x, 16 + (t & 15), 1 + (t >> 4), (uint8_t)t, 1, 1);
-    }
-    x->sprites[0] = (struct gfx_sprite){200, 0x01, 0x00, 120};
-}
+static char unwritten[160];
+static char io_error[160];
 
-static void read_pads(struct game *g, const struct pads *in) {
-    for (int i = 0; i < 2; i++) {
-        g->new_keys[i] = (uint8_t)(in->held[i] & ~g->cur_keys[i]);
-        g->cur_keys[i] = in->held[i];
-    }
-}
+const char *game_unwritten(void) { return unwritten; }
+const char *game_io_error(void) { return io_error[0] ? io_error : NULL; }
+void game_set_unwritten(const char *what) { snprintf(unwritten, sizeof unwritten, "%s", what); }
+void game_set_io_error(const char *what) { snprintf(io_error, sizeof io_error, "%s", what); }
 
+/* orig: reset, then main up to the first wait. Boot's own waits (the PPU warming up, PAL
+ * detection) aren't modelled: the decomp starts where they end, as NTSC. */
 void game_power_on(struct game *g) {
     memset(g, 0, sizeof *g);
     g->version = THW_STATE_VERSION;
-    g->screen = SCR_POWER_ON;
     gfx_clear(&g->gfx);
+    memset(g->gfx.oam, 0, sizeof g->gfx.oam);   /* PEDANTIC_RAM_INIT clears shadow OAM */
+    g->hiscore100s = STARTING_HISCORE;
+    g->practice_side = 2;
+    memset(g->rand, 2, sizeof g->rand);
+    title_enter_legal(g);
 }
 
-void game_step(struct game *g, const struct pads *in) {
-    read_pads(g, in);
-    switch (g->screen) {
-    case SCR_POWER_ON:
-        test_screen(g);
-        g->screen = SCR_TEST_CHR;
+enum thw_wait game_step(struct game *g, const struct step_io *io) {
+    io_error[0] = 0;
+    snprintf(unwritten, sizeof unwritten, "the step from wait %d", g->wait);
+    enum thw_wait next = W_NONE;
+    switch (g->wait) {
+    case W_SCREEN_OFF:
+    case W_TODO:
+    case W_TITLE:
+        next = title_step(g, io);
         break;
-    case SCR_TEST_CHR: {
-        struct gfx_sprite *s = &g->gfx.sprites[0];
-        if (g->cur_keys[0] & KEY_LEFT) s->x--;
-        if (g->cur_keys[0] & KEY_RIGHT) s->x++;
-        if (g->cur_keys[0] & KEY_UP && s->y > 0) s->y--;
-        if (g->cur_keys[0] & KEY_DOWN && s->y < GFX_H - 8) s->y++;
-        if (g->new_keys[0] & KEY_A) s->tile++;
-        if (g->new_keys[0] & KEY_B) s->attr = (uint8_t)((s->attr + 0x40) & 0xC0);
+    default:
         break;
     }
-    }
+    g->wait = (uint8_t)next;
     g->steps++;
+    return next;
+}
+
+void game_redraw(struct game *g) {
+    switch (g->wait) {
+    case W_TODO:
+    case W_TITLE:
+        title_redraw(g);
+        break;
+    default:
+        break;
+    }
 }

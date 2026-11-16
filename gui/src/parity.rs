@@ -407,6 +407,7 @@ impl App {
             self.compare_problem = None;
             self.checker.lose_step();
             self.compare_need_sync = true;
+            self.rerun_preroll = Some(f.preroll);
             self.base_next = None;
             self.reshow = true;
             self.route_target = (!route.is_empty()).then(|| f.segment.clone());
@@ -556,7 +557,7 @@ mod tests {
     use super::*;
 
     fn fail(id: i64, build: &str, flags: Vec<u8>) -> Failure {
-        Failure { id, core: "c".into(), build: build.into(), synced: ("s".into(), 0), segment: "s".into(), frame: 1, reason: String::new(), created: 0, flags, diffs: Default::default() }
+        Failure { id, core: "c".into(), build: build.into(), synced: ("s".into(), 0), preroll: 0, segment: "s".into(), frame: 1, reason: String::new(), created: 0, flags, diffs: Default::default() }
     }
 
     #[test]

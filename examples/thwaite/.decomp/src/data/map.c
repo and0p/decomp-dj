@@ -125,7 +125,7 @@ const struct thw_bp thw_bps[] = {
     {14, THW_BP_NMIS_READ, "nmis:updateSmoke.1", 0x04C1, 0x0000, 0x0000}, /* smoke.s:85 */
     {15, THW_BP_NMIS_READ, "nmis:updateSmoke.2", 0x04EB, 0x0000, 0x0000}, /* smoke.s:113 */
     {16, THW_BP_NMIS_READ, "nmis:titleScreen", 0x1620, 0x0000, 0x0000}, /* title.s:296 */
-    {17, THW_BP_INPUT, "input:read_pads", 0x4358, 0x0000, 0x0000}, /* (label):read_pads */
-    {18, THW_BP_INPUT, "input:read_mouse", 0x4396, 0x0000, 0x0000}, /* (label):read_mouse */
+    {17, THW_BP_INPUT, "input:read_pads", 0x4363, 0x0000, 0x0000}, /* pads.s:38 */
+    {18, THW_BP_INPUT, "input:read_mouse", 0x43C2, 0x0000, 0x0000}, /* mouse.s:40 */
 };
 const unsigned thw_bp_count = 19;

@@ -456,7 +456,7 @@ pub fn batch_skipped(col: &crate::collection::Collection, id: &str) -> Option<&'
 }
 
 /// In a batch child: where the comparison core died in segment `id` in an earlier child, if
-/// it did: the frame, and what happened ("crashed (signal 11, SIGSEGV) in dj_check_parity").
+/// it did: the frame, and what happened ("crashed (signal 11, SIGSEGV) in dj_handle_event").
 pub fn batch_compare_died(id: &str) -> Option<(u64, String)> {
     static DIED: std::sync::OnceLock<Vec<(String, u64, String)>> = std::sync::OnceLock::new();
     let died = DIED.get_or_init(|| {

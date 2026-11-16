@@ -161,73 +161,41 @@ connector has the hook so far.
 ## Comparison cores
 
 A [comparison core](gui.md#comparison-cores) (a decomp built as a libretro core, say) runs
-beside the baseline on the same input lines. These functions are optional, found by name
-like the rest: through the core's proc address callback, then its library exports.
+beside the baseline on the same input lines. There are two kinds
+([config.md](config.md#compare-optional-repeatable), `sync`):
 
-```c
-struct dj_baseline {
-    uint32_t version;                                // 1
-    void    *ctx;
-    void    *(*get_proc)(void *ctx, const char *name);
-};
-
-#define DJ_SYNC_BOOT 1
-
-// Bring this core to the baseline's state at the start of power-on frame `frame`.
-// 0: synced. 1: can't match it here (fill in `reason`). Anything else: an error.
-int dj_sync(const struct dj_baseline *baseline, uint64_t frame, uint32_t flags,
-            char *reason, size_t reason_len);
-
-// Follow a [WRITE] line: `len` bytes at `address` in the baseline's region `region`.
-// 0: done. 1: ignored on purpose. Anything else: an error (fill in `reason`).
-int dj_write(const struct dj_baseline *baseline, const char *region, uint64_t address,
-             const uint8_t *bytes, size_t len, char *reason, size_t reason_len);
-```
-
-`get_proc` returns any function of the baseline core by name: the libretro API
-(`retro_get_memory_data`, `retro_get_memory_size`, `retro_serialize`, ...) and its own
-connector functions. With them `dj_sync` reads whatever it needs from the baseline, in
-whatever way suits the port: a RAM map, a few watched values, or the save state. The handle
-is only good for the length of the call.
+- **A core that takes events** (the default). It exports `dj_handle_event`, found by name
+  like the rest: through the core's proc address callback, then its library exports. The
+  rest of this section is about these.
+- **The same emulator as the baseline** (`sync = "state"`), to compare builds or options.
+  It needs no functions: dj loads the baseline's save state into it after a jump, runs it
+  one frame after the baseline, and compares the two cores' system RAM byte for byte.
+  `[WRITE]` lines go straight into its memory.
 
 A comparison core runs in dj's own process, in the GUI and under `dj parity`
-([gui.md](gui.md#comparison-cores)), and the handle points at the baseline core itself.
-Reading through it copies nothing. **A comparison core must only read the baseline:** a
-write through the handle changes the baseline, and its state hashes with it, and nothing
-reports that.
+([gui.md](gui.md#comparison-cores)), and the handle it is given points at the baseline core
+itself. Reading through it copies nothing. **A comparison core must only read the
+baseline.**
 
-**When the player syncs.** After every jump (a seek, a step back, choosing a segment,
-switching the comparison on), just before the first frame it shows. While the playhead is
-held (dragging the ruler) it waits for the button to be let go. Playing straight on,
-including from a segment's end into its child, needs no sync. A failed sync is tried again
-at the next jump, or with **Sync now**.
+**The header.** [`connectors/include/dj_compare.h`](../connectors/include/dj_compare.h)
+declares everything below, and has a helper for the part most cores share
+([below](#the-helper)). Copy it into your core.
 
-**`DJ_SYNC_BOOT`** marks a fresh power-on: frame 0 of a root segment that doesn't start from
-a snapshot. The baseline has only just booted, so a port may prefer to boot itself (read
-its own SRAM, skip a config menu) and line up from there, rather than copy the baseline.
+**Inputs.** Held buttons aren't part of a save state: after a jump, and before each frame,
+dj sets the comparison core's ports and inputs as the segment has them, as it does for the
+baseline. The core reads them through its libretro input callbacks, during any event.
 
-**Inputs.** Held buttons aren't part of a save state: after a sync the player sets the
-comparison core's ports and inputs as the segment has them at that frame, as it does for
-the baseline.
-
-**`[WRITE]` lines** go to `dj_write`. A core with `sync = "state"` takes them straight into
-its own memory. A `dj_sync` core without `dj_write` can't follow one, so the player syncs it
-again on the next frame shown.
-
-The comparison core's coverage functions are ignored for now. A test core with these
-functions is in `player/tests/testcore/`.
+The comparison core's coverage functions are ignored for now.
 
 ### Events
 
-A comparison core may take **events** instead of `dj_sync`, `dj_write`, `dj_run` and
-`dj_check_parity`. It is then a kind of debugger client: it says where in the original it
+A core that takes events is a kind of debugger client: it says where in the original it
 wants breakpoints, dj calls it each time the baseline gets to one, with the baseline
 stopped and readable, and the core runs itself, compares, and answers with a verdict. dj
-does not sync it or run its frames. A core that exports `dj_handle_event` is driven this
-way; the functions above are still read for a core that doesn't.
+does not sync it and does not call its `retro_run`.
 
 ```c
-struct dj_baseline {                 // version 2: read the baseline during a call
+struct dj_baseline {                 // read the baseline during a call
     uint32_t version;                // 2
     void    *ctx;
     // A memory region by the name [WRITE] and [hash] use: "RAM", "SRAM", "VRAM", "RTC".
@@ -242,7 +210,7 @@ enum dj_event_kind  { DJ_EVENT_JUMP = 1, DJ_EVENT_CONSOLE_RESET, DJ_EVENT_BREAK,
 enum dj_jump_reason { DJ_JUMP_POWER_ON = 1, DJ_JUMP_STATE, DJ_JUMP_COPY_AGAIN };
 enum dj_verdict     { DJ_PENDING = 0, DJ_MATCH, DJ_MISMATCH, DJ_UNJUDGED, DJ_HALT };
 
-#define DJ_PREROLL 1u       // in `flags`: this frame is pre-roll (not sent yet)
+#define DJ_PREROLL 1u       // in `flags`: this frame is pre-roll (below)
 
 struct dj_event {
     uint32_t size;          // sizeof(struct dj_event), so fields can be added later
@@ -335,28 +303,75 @@ verdict says what they are worth.
   says whether one is wanted, so a core with costly graphics can skip drawing.
 - **What differed** for a mismatch or a halt comes from `dj_parity_diffs`, as [below](#parity).
 
-The test core in `player/tests/testcore/` built with `-DEVENTS` takes events, in three ways
-(at frame ends, at a breakpoint inside the frame, and copying at every event), and
-`player/tests/events.rs` drives it through each case.
+#### Pre-roll
+
+A core that copies the baseline at a breakpoint can't judge the frames between a jump and
+that breakpoint. Under `dj parity` every segment starts with a jump, so its first frame
+or two would never be checked. `preroll = N` in the core's `[[compare]]` entry
+([config.md](config.md#compare-optional-repeatable)) has dj start N frames earlier:
+
+- **Where.** The jump event is sent N frames before the place asked for, in the segments
+  above when the place is a segment's start, and never before a root segment's start. dj
+  loads the nearest snapshot at or before that frame and plays to it first, with nothing
+  sent, so the jump is at the same frame on every machine.
+- **What the core sees.** Every event of those N frames has `DJ_PREROLL` in `flags`. The
+  core does what it always does: copies when it can. It may skip its compare.
+- **What dj does with the verdicts.** Nothing, except for a halt: no failure is kept for a
+  mismatch, no coverage is credited, and the core's verdicts start afresh at the place
+  asked for. A halt is a failure at the frame it happened in, and the place asked for is
+  not checked.
+- **When.** `dj parity`, at each segment's start; a failure played again (`--rerun`,
+  `--explain`), which marks the same frames; and a seek in dj-gui while Check parity is on,
+  inside the segment shown. Not when playback carries straight on from a parent into its
+  child, and not for "copy again": nothing was loaded.
+- **A failure records it:** where its run started (the jump) and how many frames from
+  there were pre-roll.
+
+The test core in `player/tests/testcore/` takes events in three ways (at frame ends, at a
+breakpoint inside the frame, and copying at every event), and `player/tests/events.rs`
+drives it through each case.
+
+### The helper
+
+After a jump a core copies what it needs from the baseline and answers "unjudged" for that
+event; from then on it runs itself up to each event it judges at, and compares. That is the
+same few lines in every core that judges at one place, so `dj_compare.h` has them, as
+`dj_helper_event`. It is not part of the API: a core that needs more writes its own
+`dj_handle_event`.
+
+```c
+#include "dj_compare.h"
+
+static int copy(void *user, const struct dj_event *ev, char *reason, size_t len);    // 0: copied
+static int run(void *user, const struct dj_event *ev, char *reason, size_t len);     // DJ_PENDING: go on and compare
+static int compare(void *user, const struct dj_event *ev, char *reason, size_t len); // the verdict
+
+static struct dj_helper helper = { .judge_at = 0, .copy = copy, .run = run, .compare = compare };
+
+int dj_handle_event(const struct dj_event *ev, char *reason, size_t len) {
+    return dj_helper_event(&helper, ev, reason, len);
+}
+```
+
+- **`judge_at`** is 0 to judge at frame ends, or the id of the breakpoint to judge at.
+- **Judging at frame ends,** the helper copies on the jump itself, so the first frame after
+  it is checked. Judging at a breakpoint, it waits for the breakpoint.
+- **`copy`** takes over from the baseline (`dj_baseline_memory(ev->baseline, "RAM", size)`
+  gives a region). It is also offered a power-on jump, where a core may boot itself.
+  Returning non-zero says "not here", and it is asked again at the next judging event.
+- **A halt** from `run` or `compare` leaves the core stale: it copies again when dj sends
+  the next jump. After a mismatch it is left as it is.
+- **`live`** is whether the core holds the baseline's state. Set it to 0 where the core
+  loses the baseline some other way, such as a write it can't follow.
+
+The Tetris decomp (`examples/tetris/.decomp/libretro/tetris_libretro.c`) is built on it. It
+judges at a breakpoint where the original starts waiting for the next frame, and has a
+core option to judge at frame ends instead.
 
 ### Parity
 
-```c
-// Called after each frame both cores ran from a synced state, if Check parity is on.
-// 0: match. 1: mismatch (fill in `reason`). 2: skip, not judged here (fill in `reason`).
-// Anything else: an error. `frame` is the frame just run, counted from power-on.
-int dj_check_parity(const struct dj_baseline *baseline, uint64_t frame,
-                    char *reason, size_t reason_len);
-
-// Called instead of retro_run when the core has it: run one frame (call retro_run, or your
-// own loop). 0: done. Anything else stops playback with `reason` shown.
-int dj_run(char *reason, size_t reason_len);
-```
-
-`dj_check_parity` decides what a match is, which matters for a port whose memory isn't laid
-out like the original's: compare watched values, a RAM map, or the picture. A core without
-it is checked by comparing both cores' system RAM (`retro_get_memory_data`) byte for byte;
-when the sizes differ, frames aren't judged.
+**What a match is** is the core's to decide, which matters for a port whose memory isn't
+laid out like the original's: compare watched values, a RAM map, or the picture.
 
 **What differed.** A reason string says one thing. A port that knows more can list every
 difference it found, in the original game's terms, through one more optional function:
@@ -372,8 +387,8 @@ struct dj_parity_diff {
     size_t         len;
 };
 
-// Called after dj_check_parity said mismatch: fill up to `cap` differences and return how
-// many there are in all. Pointers need to stay valid until the next dj_check_parity call.
+// Called after the core answered mismatch or halt: fill up to `cap` differences and return
+// how many there are in all. Pointers need to stay valid until the core's next verdict.
 size_t dj_parity_diffs(struct dj_parity_diff *out, size_t cap);
 ```
 
@@ -383,11 +398,10 @@ address can be traced: `dj parity --explain` ([cli.md](cli.md#parity)) finds the
 last instruction that wrote it, which is the function to fix. A label alone (a value the
 port keeps in no one place, like a checksum) is shown but can't be traced. The region names
 are the baseline connector's (`"RAM"` for Mesen's internal RAM), and `symbol` isn't
-resolved to an address yet. Without `dj_parity_diffs`, the RAM compare lists one difference
-per run of differing bytes; a core with `dj_check_parity` and no `dj_parity_diffs` gives
-none. The test core in `player/tests/testcore/` has one. `dj_run` lets a port stop with a message (a
-crash it caught, an unimplemented function it hit) instead of running on. A mismatch, an
-error or a failed `dj_run` stops playback at that frame ([gui.md](gui.md#comparison-cores)).
+resolved to an address yet. A core without `dj_parity_diffs` gives none; the RAM compare
+of a `sync = "state"` core lists one difference per run of differing bytes. The test core
+in `player/tests/testcore/` has one. A mismatch or a halt stops playback at that frame
+([gui.md](gui.md#comparison-cores)).
 
 ### Checking parity in CI
 
@@ -415,8 +429,8 @@ jobs:
           unzip -q $DJ.zip
           bash $DJ/connectors/mesen/build.sh "$PWD/cores"
 
-      # Your decomp, built as a libretro core with dj_sync (and dj_check_parity,
-      # dj_parity_diffs if it has them).
+      # Your decomp, built as a libretro core with dj_handle_event (and dj_parity_diffs,
+      # if it has it).
       - name: Build the decomp's core
         run: make libretro && cp build/mygame_libretro.so cores/
 

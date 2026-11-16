@@ -1,8 +1,8 @@
 /* The dj comparison-core API, as the decomp uses it.
  *
- * PROVISIONAL. This copies the shapes in .agents/yield-parity/PLAN.md (parity by
- * breakpoints, sections 1-4 and 12), which is not built in dj yet. When dj ships its own
- * header, this file goes and the decomp includes that one. Keep the two in step until then.
+ * Copied from docs/connectors.md ("Comparison cores", "Events"), which dj implements. When
+ * dj ships a header of its own, this file goes and the decomp includes that one. Keep the
+ * two in step until then.
  *
  * Copyright 2026 the decomp-dj developers. GPL-3.0-or-later.
  */

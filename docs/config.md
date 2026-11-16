@@ -176,7 +176,7 @@ and `options` and each machine's `local.toml` adds its own `path`.
 ```toml
 [[compare]]
 name = "decomp"
-sync = "dj_sync"          # the default
+sync = "events"           # the default
 build = "a1b2c3d"
 
 [[compare]]
@@ -193,7 +193,8 @@ mesen_ntsc_filter = "Composite"
 | `path` | yes, on each machine | The core library. Relative paths are from the project folder. It may leave out the suffix ([core paths](#core-paths)). It may be the baseline's own library: it is then loaded from a private copy in `.local/compare/`, so the two don't share globals. |
 | `build` | no | A free-form id of the build, for people. |
 | `sha256` | no | Pins the library, like `[core] sha256`: a different file doesn't load. |
-| `sync` | no | How the core is brought to the baseline's state after a jump. `"dj_sync"` (the default) calls the core's own `dj_sync` ([connectors.md](connectors.md#comparison-cores)), and a core without it doesn't load. `"state"` loads the baseline's save state: only for the same emulator (or one with the same state format), to compare builds or options. |
+| `sync` | no | How the core follows the baseline. `"events"` (the default) is a core that takes events: it has `dj_handle_event` ([connectors.md](connectors.md#comparison-cores)), copies what it needs from the baseline itself and runs itself; a core without the function doesn't load. `"state"` loads the baseline's save state: only for the same emulator (or one with the same state format), to compare builds or options. |
+| `preroll` | no | For a core that takes events: how many frames dj plays before a place it jumps to for a parity check, so the core has copied the baseline by then ([connectors.md](connectors.md#pre-roll)). Default 0. A core that copies the baseline between frames needs none; one that copies at a breakpoint inside the frame needs enough frames to be sure of reaching it, such as one full logic tick. |
 | `content` | no | What the core loads: `true` (the default) is the project's ROM, which a decomp may need for its assets or may ignore; `false` loads nothing; a path loads that file. |
 | `[compare.options]` | no | Core options, like `[core.options]`. |
 

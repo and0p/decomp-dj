@@ -1,9 +1,10 @@
 //! Comparison cores: a second libretro core that plays beside the baseline, driven by the
 //! same input lines (docs/config.md, docs/connectors.md#comparison-cores).
 //!
-//! After a jump, the comparison core is brought to the baseline's state with a sync:
-//! either its own `dj_sync`, which gets a handle to the baseline core, or (for the same
-//! emulator) by loading the baseline's save state.
+//! There are two kinds. A core that takes events (`dj_handle_event`) is told where the
+//! baseline has got to, with a handle to read it through, and runs itself and compares
+//! inside those calls. The same emulator as the baseline is brought to its state by
+//! loading its save state, runs one frame after it, and is judged by its system RAM.
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -16,13 +17,14 @@ use crate::format::{Command, InputKey};
 use crate::libretro::{Core, Frame, COMPARISON, MEMORY_SYSTEM_RAM};
 use crate::player::{restore_inputs_on, write_memory};
 
-/// How a comparison core is brought to the baseline's state after a jump.
+/// How a comparison core follows the baseline.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SyncMode {
-    /// The core's own `dj_sync`, which must exist.
+    /// The core takes events: it must have `dj_handle_event`, and copies what it needs from
+    /// the baseline itself.
     #[default]
-    #[serde(rename = "dj_sync")]
-    DjSync,
+    #[serde(rename = "events")]
+    Events,
     /// Load the baseline's save state: only for the same emulator (or one with the same
     /// state format), to compare builds or options.
     #[serde(rename = "state")]
@@ -54,34 +56,21 @@ pub struct CompareConfig {
     pub sha256: String,
     #[serde(default)]
     pub sync: SyncMode,
+    /// Frames to play before a place jumped to for a parity check, so that a core which
+    /// can't copy the baseline between frames has copied it by then (docs/config.md).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub preroll: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<Content>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub options: BTreeMap<String, String>,
 }
 
-/// `struct dj_baseline` (docs/connectors.md): the baseline core, as a comparison core sees it.
-#[repr(C)]
-struct DjBaseline {
-    version: u32,
-    ctx: *mut c_void,
-    get_proc: unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void,
-}
-
-const DJ_BASELINE_VERSION: u32 = 1;
-pub const DJ_SYNC_BOOT: u32 = 1;
-const DJ_SYNC_OK: i32 = 0;
-const DJ_SYNC_FAILED: i32 = 1;
-const DJ_WRITE_OK: i32 = 0;
-const DJ_WRITE_IGNORED: i32 = 1;
-
-const DJ_PARITY_MATCH: i32 = 0;
-const DJ_PARITY_MISMATCH: i32 = 1;
-const DJ_PARITY_SKIP: i32 = 2;
-const DJ_RUN_OK: i32 = 0;
-
-type CheckFn = unsafe extern "C" fn(*const DjBaseline, u64, *mut c_char, usize) -> i32;
 type DiffsFn = unsafe extern "C" fn(*mut DjParityDiff, usize) -> usize;
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
 
 /// `struct dj_parity_diff` (docs/connectors.md#parity): one difference, in the original's terms.
 #[repr(C)]
@@ -206,10 +195,10 @@ impl Diffs {
 
 // ---- events (.agents/yield-parity/PLAN.md, sections 1 to 4) ---------------------------------
 
-/// `struct dj_baseline`, version 2: what a comparison core reads the baseline through during
-/// an event. Memory and registers, and nothing else.
+/// `struct dj_baseline`: what a comparison core reads the baseline through during an event.
+/// Memory and registers, and nothing else.
 #[repr(C)]
-struct DjBaseline2 {
+struct DjBaseline {
     version: u32,
     ctx: *mut c_void,
     memory: unsafe extern "C" fn(*mut c_void, *const c_char, *mut usize) -> *const u8,
@@ -235,7 +224,7 @@ struct DjEventC {
     jump_reason: u32,
     segment: *const c_char,
     frame: u64,
-    baseline: *const DjBaseline2,
+    baseline: *const DjBaseline,
 }
 
 /// `struct dj_write`.
@@ -245,7 +234,7 @@ struct DjWriteC {
     flags: u32,
     segment: *const c_char,
     frame: u64,
-    baseline: *const DjBaseline2,
+    baseline: *const DjBaseline,
     region: *const c_char,
     offset: u64,
     bytes: *const u8,
@@ -374,44 +363,23 @@ fn read_diffs(f: DiffsFn) -> Diffs {
         .collect();
     Diffs { list, total: total as u64 }
 }
-type RunFn = unsafe extern "C" fn(*mut c_char, usize) -> i32;
-type SyncFn = unsafe extern "C" fn(*const DjBaseline, u64, u32, *mut c_char, usize) -> i32;
-type WriteFn = unsafe extern "C" fn(*const DjBaseline, *const c_char, u64, *const u8, usize, *mut c_char, usize) -> i32;
-
-unsafe extern "C" fn baseline_get_proc(ctx: *mut c_void, name: *const c_char) -> *mut c_void {
-    if ctx.is_null() || name.is_null() {
-        return std::ptr::null_mut();
-    }
-    let core = &*(ctx as *const Core);
-    core.proc(&CStr::from_ptr(name).to_string_lossy())
-}
-
-fn handle(baseline: &Core) -> DjBaseline {
-    DjBaseline { version: DJ_BASELINE_VERSION, ctx: baseline as *const Core as *mut c_void, get_proc: baseline_get_proc }
-}
-
 fn reason(buf: &[u8]) -> Option<String> {
     let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
     let s = String::from_utf8_lossy(&buf[..end]).trim().to_string();
     (!s.is_empty()).then_some(s)
 }
 
-/// What a sync came to.
+/// What a sync (`sync = "state"`) came to.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SyncOutcome {
     Synced,
-    /// The core says it can't match the baseline here, with its reason.
+    /// The baseline's state doesn't load in the core, with the reason.
     Failed(String),
 }
 
 /// One frame the comparison core ran.
 pub struct Stepped {
     pub frame: Option<Frame>,
-    /// The frame had a line the comparison couldn't follow (a `[WRITE]` without
-    /// `dj_write`): sync it again before trusting it.
-    pub needs_sync: bool,
-    /// The core's `dj_run` failed this frame, with its reason.
-    pub tick_failed: Option<String>,
 }
 
 /// A parity check of one frame (docs/connectors.md#parity).
@@ -421,7 +389,7 @@ pub enum Verdict {
     /// The cores disagree after this frame, with the reason and what differed (empty when
     /// the core doesn't say).
     Mismatch(String, Diffs),
-    /// Not checked: the core can't judge this frame (a loading screen, say), with the reason.
+    /// Not checked: there is nothing to compare, with the reason.
     Skip(String),
 }
 
@@ -430,11 +398,9 @@ pub struct Comparison {
     pub name: String,
     pub core: Core,
     pub mode: SyncMode,
-    sync_fn: Option<SyncFn>,
-    write_fn: Option<WriteFn>,
-    check_fn: Option<CheckFn>,
+    /// `preroll` of the `[[compare]]` entry; 0 for a core that doesn't take events.
+    pub preroll: u64,
     diffs_fn: Option<DiffsFn>,
-    run_fn: Option<RunFn>,
     /// `dj_handle_event`: the core takes events, and runs itself inside them.
     event_fn: Option<EventFn>,
     /// `dj_handle_write` (optional, for a core that takes events).
@@ -479,16 +445,8 @@ impl Comparison {
                 Loads::Nothing => core.load_no_game()?,
                 Loads::File(p) => core.load_game(p)?,
             }
-            let sync_ptr = core.proc("dj_sync");
-            let write_ptr = core.proc("dj_write");
-            let sync_fn: Option<SyncFn> = (!sync_ptr.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, SyncFn>(sync_ptr) });
-            let write_fn: Option<WriteFn> = (!write_ptr.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, WriteFn>(write_ptr) });
-            let check_ptr = core.proc("dj_check_parity");
-            let run_ptr = core.proc("dj_run");
-            let check_fn: Option<CheckFn> = (!check_ptr.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, CheckFn>(check_ptr) });
             let diffs_ptr = core.proc("dj_parity_diffs");
             let diffs_fn: Option<DiffsFn> = (!diffs_ptr.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, DiffsFn>(diffs_ptr) });
-            let run_fn: Option<RunFn> = (!run_ptr.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, RunFn>(run_ptr) });
             let ev_ptr = core.proc("dj_handle_event");
             let event_fn: Option<EventFn> = (!ev_ptr.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, EventFn>(ev_ptr) });
             let wev_ptr = core.proc("dj_handle_write");
@@ -511,13 +469,13 @@ impl Comparison {
                 core.set_video_hint(true);
             }
             match spec.mode {
-                SyncMode::DjSync if sync_fn.is_none() && event_fn.is_none() => bail!("the core has neither dj_handle_event nor dj_sync, which [[compare]] \"{name}\" asks for (sync = \"dj_sync\", the default). For the same emulator as the baseline, sync = \"state\" syncs by save state instead"),
+                SyncMode::Events if event_fn.is_none() => bail!("the core has no dj_handle_event, which [[compare]] \"{name}\" needs (sync = \"events\", the default: docs/connectors.md, \"Comparison cores\"). For the same emulator as the baseline, sync = \"state\" follows it by save state instead"),
                 SyncMode::State => {
                     core.serialize().context("sync = \"state\" needs save states, and this core can't save one")?;
                 }
                 _ => {}
             }
-            Ok(Comparison { name: name.to_string(), core, mode: spec.mode, sync_fn, write_fn, check_fn, diffs_fn, run_fn, event_fn, write_event_fn, breakpoints, build: spec.build.clone(), copy: None })
+            Ok(Comparison { name: name.to_string(), core, mode: spec.mode, preroll: if spec.mode == SyncMode::Events { spec.preroll } else { 0 }, diffs_fn, event_fn, write_event_fn, breakpoints, build: spec.build.clone(), copy: None })
         })();
         match loaded {
             Ok(mut c) => {
@@ -535,36 +493,23 @@ impl Comparison {
         }
     }
 
-    /// Brings the comparison core to the baseline's state at the start of frame `frame` of
-    /// segment `id`. `power_on_frame` is the same frame counted from power-on, which is what
-    /// `dj_sync` is told. `boot` marks a fresh power-on (frame 0 of a root segment).
-    /// An error is a sync that went wrong (as opposed to one the core declined).
-    pub fn sync(&mut self, baseline: &mut Core, col: &Collection, id: &str, frame: u64, power_on_frame: u64, boot: bool) -> Result<SyncOutcome> {
-        self.sync_with(baseline, power_on_frame, boot, &InputState::at(col, id, frame)?)
+    /// Brings a `sync = "state"` core to the baseline's state at the start of frame `frame`
+    /// of segment `id`, by loading the baseline's save state. An error is a sync that went
+    /// wrong (as opposed to a state that doesn't load). A core that takes events is not
+    /// synced: it is sent a jump ([`crate::parity::Checker::sync`]).
+    pub fn sync(&mut self, baseline: &mut Core, col: &Collection, id: &str, frame: u64) -> Result<SyncOutcome> {
+        self.sync_with(baseline, &InputState::at(col, id, frame)?)
     }
 
     /// `sync`, with the inputs held at that frame given.
-    pub fn sync_with(&mut self, baseline: &mut Core, power_on_frame: u64, boot: bool, inputs: &InputState) -> Result<SyncOutcome> {
-        let out = match self.mode {
-            SyncMode::State => {
-                let state = baseline.serialize().context("saving the baseline's state")?;
-                match self.core.unserialize(&state) {
-                    Ok(()) => SyncOutcome::Synced,
-                    Err(e) => SyncOutcome::Failed(format!("{e} (the baseline's save state doesn't load in this core)")),
-                }
-            }
-            SyncMode::DjSync => {
-                let f = self.sync_fn.ok_or_else(|| anyhow!("the core has no dj_sync"))?;
-                let h = handle(baseline);
-                let mut buf = vec![0u8; 512];
-                let _call = crate::crash::CompareCall::enter(crate::crash::CALL_DJ_SYNC);
-                let r = unsafe { f(&h, power_on_frame, if boot { DJ_SYNC_BOOT } else { 0 }, buf.as_mut_ptr() as *mut c_char, buf.len()) };
-                match r {
-                    DJ_SYNC_OK => SyncOutcome::Synced,
-                    DJ_SYNC_FAILED => SyncOutcome::Failed(reason(&buf).unwrap_or_else(|| "the core couldn't match the baseline here".into())),
-                    _ => bail!("dj_sync failed: {}", reason(&buf).unwrap_or_else(|| format!("error {r}"))),
-                }
-            }
+    pub fn sync_with(&mut self, baseline: &mut Core, inputs: &InputState) -> Result<SyncOutcome> {
+        if self.mode != SyncMode::State {
+            bail!("a comparison core that takes events is not synced by dj");
+        }
+        let state = baseline.serialize().context("saving the baseline's state")?;
+        let out = match self.core.unserialize(&state) {
+            Ok(()) => SyncOutcome::Synced,
+            Err(e) => SyncOutcome::Failed(format!("{e} (the baseline's save state doesn't load in this core)")),
         };
         if out == SyncOutcome::Synced {
             inputs.apply(&mut self.core);
@@ -583,16 +528,15 @@ impl Comparison {
         inputs.apply(&mut self.core);
     }
 
-    /// Applies frame `frame`'s lines of `id` and runs that frame. `baseline` is handed to
-    /// `dj_write` for `[WRITE]` lines.
-    pub fn step(&mut self, baseline: &Core, col: &Collection, id: &str, frame: u64, capture: bool) -> Result<Stepped> {
-        self.step_with(Some(baseline), &Action::of_frame(col, id, frame), capture)
+    /// Applies frame `frame`'s lines of `id` and runs that frame, for a `sync = "state"` core.
+    pub fn step(&mut self, col: &Collection, id: &str, frame: u64, capture: bool) -> Result<Stepped> {
+        self.step_with(&Action::of_frame(col, id, frame), capture)
     }
 
     /// Whether the core takes events (`dj_handle_event`): dj then calls it at each jump,
     /// console reset, breakpoint and frame end, and the core runs itself inside the call.
     pub fn takes_events(&self) -> bool {
-        self.event_fn.is_some() && self.mode == SyncMode::DjSync
+        self.event_fn.is_some() && self.mode == SyncMode::Events
     }
 
     /// Where in the original the core wants to be called.
@@ -605,8 +549,8 @@ impl Comparison {
         self.write_event_fn.is_some()
     }
 
-    fn handle2(baseline: *const Core) -> DjBaseline2 {
-        DjBaseline2 { version: 2, ctx: baseline as *mut c_void, memory: baseline_memory, registers: baseline_registers }
+    fn handle(baseline: *const Core) -> DjBaseline {
+        DjBaseline { version: 2, ctx: baseline as *mut c_void, memory: baseline_memory, registers: baseline_registers }
     }
 
     /// The core's answer `r`, with its reason, and what differed for a mismatch or a halt.
@@ -638,7 +582,7 @@ impl Comparison {
     /// `baseline` must point at the live baseline core.
     pub unsafe fn event(&mut self, baseline: *const Core, ev: Event, segment: &str, frame: u64, preroll: bool) -> Reply {
         let Some(f) = self.event_fn else { return Reply { answer: Answer::Pending, reason: String::new(), diffs: Diffs::default() } };
-        let h = Self::handle2(baseline);
+        let h = Self::handle(baseline);
         let seg = CString::new(segment).unwrap_or_default();
         let (kind, breakpoint, jump_reason) = match ev {
             Event::Jump(r) => (DJ_EVENT_JUMP, 0, r as u32),
@@ -661,7 +605,7 @@ impl Comparison {
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn write_event(&mut self, baseline: *const Core, segment: &str, frame: u64, preroll: bool, region: &str, offset: u64, bytes: &[u8], at: Option<(&str, u64)>) -> Reply {
         let Some(f) = self.write_event_fn else { return Reply { answer: Answer::Pending, reason: String::new(), diffs: Diffs::default() } };
-        let h = Self::handle2(baseline);
+        let h = Self::handle(baseline);
         let seg = CString::new(segment).unwrap_or_default();
         let region_c = CString::new(region).unwrap_or_default();
         let at_c = at.map(|(r, _)| CString::new(r).unwrap_or_default());
@@ -683,16 +627,12 @@ impl Comparison {
         self.reply(r, &buf, "dj_handle_write")
     }
 
-    /// Whether a frame's `actions` need the baseline (a `[WRITE]` for `dj_write`).
-    pub fn needs_baseline(&self, actions: &[Action]) -> bool {
-        self.mode == SyncMode::DjSync && self.write_fn.is_some() && actions.iter().any(|a| matches!(a, Action::Write { .. }))
-    }
-
-    /// `step`, with the frame's lines given as `actions`. `baseline` is needed only for
-    /// `[WRITE]` lines that go to `dj_write`.
-    pub fn step_with(&mut self, baseline: Option<&Core>, actions: &[Action], capture: bool) -> Result<Stepped> {
+    /// `step`, with the frame's lines given as `actions`.
+    pub fn step_with(&mut self, actions: &[Action], capture: bool) -> Result<Stepped> {
+        if self.mode != SyncMode::State {
+            bail!("a comparison core that takes events runs itself");
+        }
         let mut impulses = vec![];
-        let mut needs_sync = false;
         for action in actions {
             match action {
                 Action::Input { key, value, impulse } => {
@@ -702,72 +642,24 @@ impl Comparison {
                     }
                 }
                 Action::Device { port, device } => self.core.set_port_device(*port, *device),
-                Action::Write { region, address, bytes, at } => match (self.mode, self.write_fn) {
-                    // The same emulator: the write goes straight into its memory, or, for a
-                    // line that names an instruction, is made when this core runs it too.
-                    (SyncMode::State, _) => match at {
-                        None => write_memory(&mut self.core, region, *address, bytes)?,
-                        Some((at_region, at_offset)) => self.core.arm_write(at_region, *at_offset, region, *address, bytes, &format!("[WRITE] {region} {address:#X} @{at_region}:{at_offset:#X} (comparison core)"))?,
-                    },
-                    // dj_write is told before the frame: it can't follow a write made inside it.
-                    (SyncMode::DjSync, Some(_)) if at.is_some() => needs_sync = true,
-                    (SyncMode::DjSync, Some(f)) => {
-                        let baseline = baseline.ok_or_else(|| anyhow!("a [WRITE] for dj_write needs the baseline"))?;
-                        let h = handle(baseline);
-                        let region_c = CString::new(region.as_str())?;
-                        let mut buf = vec![0u8; 512];
-                        let _call = crate::crash::CompareCall::enter(crate::crash::CALL_DJ_WRITE);
-                        let r = unsafe { f(&h, region_c.as_ptr(), *address, bytes.as_ptr(), bytes.len(), buf.as_mut_ptr() as *mut c_char, buf.len()) };
-                        match r {
-                            DJ_WRITE_OK | DJ_WRITE_IGNORED => {}
-                            _ => bail!("dj_write failed: {}", reason(&buf).unwrap_or_else(|| format!("error {r}"))),
-                        }
-                    }
-                    // No way to follow the write: sync again after this frame.
-                    (SyncMode::DjSync, None) => needs_sync = true,
-                },
+                // The same emulator: the write goes straight into its memory, or, for a line
+                // that names an instruction, is made when this core runs it too.
+                Action::Write { region, address, bytes, at: None } => write_memory(&mut self.core, region, *address, bytes)?,
+                Action::Write { region, address, bytes, at: Some((at_region, at_offset)) } => self.core.arm_write(at_region, *at_offset, region, *address, bytes, &format!("[WRITE] {region} {address:#X} @{at_region}:{at_offset:#X} (comparison core)"))?,
                 Action::Reset => self.core.reset(),
                 Action::Rng => bail!("[RNG] is not supported yet"),
             }
         }
-        let (out, tick_failed) = match self.run_fn {
-            Some(f) => {
-                let mut buf = vec![0u8; 512];
-                let (out, r) = self.core.run_frame_with(capture, || {
-                    // After the guard for retro_run that run_frame_with sets: the core's own name for it.
-                    crate::crash::enter_compare(crate::crash::CALL_DJ_RUN);
-                    unsafe { f(buf.as_mut_ptr() as *mut c_char, buf.len()) }
-                });
-                (out, (r != DJ_RUN_OK).then(|| reason(&buf).unwrap_or_else(|| format!("dj_run returned {r}"))))
-            }
-            None => (self.core.run_frame(capture), None),
-        };
+        let frame = self.core.run_frame(capture);
         for k in impulses {
             self.core.set_input(k, 0);
         }
-        Ok(Stepped { frame: out, needs_sync, tick_failed })
+        Ok(Stepped { frame })
     }
 
-    /// Checks parity after a frame both cores ran from a synced state: the core's own
-    /// `dj_check_parity` when it has one, otherwise the two cores' system RAM byte for byte.
-    /// `power_on_frame` is the frame just run, counted from power-on. An error is a check
-    /// that went wrong (a failure too, for the player).
-    pub fn check(&mut self, baseline: &mut Core, power_on_frame: u64) -> Result<Verdict> {
-        if let Some(f) = self.check_fn {
-            let h = handle(baseline);
-            let mut buf = vec![0u8; 512];
-            let r = {
-                let _call = crate::crash::CompareCall::enter(crate::crash::CALL_DJ_CHECK_PARITY);
-                unsafe { f(&h, power_on_frame, buf.as_mut_ptr() as *mut c_char, buf.len()) }
-            };
-            let _call = crate::crash::CompareCall::enter(crate::crash::CALL_DJ_PARITY_DIFFS);
-            return match r {
-                DJ_PARITY_MATCH => Ok(Verdict::Match),
-                DJ_PARITY_MISMATCH => Ok(Verdict::Mismatch(reason(&buf).unwrap_or_else(|| "the core reports a mismatch".into()), self.diffs_fn.map(read_diffs).unwrap_or_default())),
-                DJ_PARITY_SKIP => Ok(Verdict::Skip(reason(&buf).unwrap_or_else(|| "not checked here".into()))),
-                _ => bail!("dj_check_parity failed: {}", reason(&buf).unwrap_or_else(|| format!("error {r}"))),
-            };
-        }
+    /// Checks parity after a frame both cores ran from a synced state, for a `sync = "state"`
+    /// core: the two cores' system RAM, byte for byte.
+    pub fn check(&mut self, baseline: &mut Core) -> Result<Verdict> {
         let base = baseline.memory(MEMORY_SYSTEM_RAM).map(|m| m.to_vec());
         let mine = self.core.memory(MEMORY_SYSTEM_RAM);
         Ok(match (base, mine) {
@@ -779,13 +671,9 @@ impl Comparison {
                     Verdict::Mismatch(format!("system RAM differs at 0x{i:X}: 0x{:02X} here, 0x{:02X} in the baseline{more}", b[i], a[i]), d)
                 }
             },
-            (Some(a), Some(b)) => Verdict::Skip(format!("system RAM sizes differ ({} bytes here, {} in the baseline) and the core has no dj_check_parity", b.len(), a.len())),
-            _ => Verdict::Skip("no system RAM to compare, and the core has no dj_check_parity".into()),
+            (Some(a), Some(b)) => Verdict::Skip(format!("system RAM sizes differ ({} bytes here, {} in the baseline)", b.len(), a.len())),
+            _ => Verdict::Skip("no system RAM to compare".into()),
         })
-    }
-
-    pub fn has_check(&self) -> bool {
-        self.check_fn.is_some()
     }
 
     /// The core's preferred display aspect ratio (0 if unset).
@@ -793,9 +681,6 @@ impl Comparison {
         self.core.timing().1
     }
 
-    pub fn has_write(&self) -> bool {
-        self.write_fn.is_some()
-    }
 }
 
 impl Drop for Comparison {
@@ -826,12 +711,13 @@ pub struct OpenSpec {
     /// The library's sha256: the build parity results belong to.
     pub build: String,
     pub mode: SyncMode,
+    #[serde(default)]
+    pub preroll: u64,
     pub content: Loads,
     pub options: BTreeMap<String, String>,
     /// `.local/compare/<name>/`: the core's save and system folders.
     pub work: PathBuf,
-    /// The baseline core and its options, for a worker's copy of it (the handle `dj_sync`
-    /// and friends get).
+    /// The baseline core and its options, for a worker's copy of it.
     pub baseline_library: PathBuf,
     pub baseline_options: BTreeMap<String, String>,
     pub rom: Option<PathBuf>,
@@ -860,6 +746,7 @@ impl OpenSpec {
             library: path,
             build,
             mode: cfg.sync,
+            preroll: cfg.preroll,
             content,
             options: cfg.options.clone(),
             work: col.local_dir().join("compare").join(sanitize(name)),
@@ -939,8 +826,10 @@ impl Action {
 }
 
 /// The comparison worker (`__dj-worker compare`): the comparison core, and a copy of the
-/// baseline core that the handle given to `dj_sync`, `dj_write` and `dj_check_parity`
-/// points to, loaded with the baseline's state before each of those calls.
+/// baseline core, loaded with the baseline's state before a sync or a check. Only for
+/// `sync = "state"`: a core that takes events reads the baseline in the middle of a frame,
+/// which a copy in another process can't give it. dj doesn't use the worker; it is kept so
+/// that going back is cheap (.agents/yield-parity/PLAN.md, "Built so far").
 #[derive(Default)]
 pub struct CompareWorker {
     cmp: Option<Comparison>,
@@ -1028,7 +917,7 @@ impl CompareWorker {
             self.shadow = Some(shadow);
             self.shadow_copy = copy;
             let c = Comparison::open_spec(&spec)?;
-            let info = json!({ "has_check": c.has_check(), "has_write": c.has_write(), "aspect": c.aspect() });
+            let info = json!({ "aspect": c.aspect() });
             self.cmp = Some(c);
             return Ok((info, vec![]));
         }
@@ -1037,7 +926,7 @@ impl CompareWorker {
             "sync" => {
                 let inputs: InputState = serde_json::from_value(req.args["inputs"].clone())?;
                 let shadow = Self::shadow(&mut self.shadow, state.ok_or_else(|| anyhow!("a sync needs the baseline's state"))?)?;
-                let out = c.sync_with(shadow, req.args["power_on_frame"].as_u64().unwrap_or(0), req.args["boot"].as_bool().unwrap_or(false), &inputs)?;
+                let out = c.sync_with(shadow, &inputs)?;
                 Ok((match out {
                     SyncOutcome::Synced => json!({ "synced": true }),
                     SyncOutcome::Failed(why) => json!({ "failed": why }),
@@ -1049,17 +938,13 @@ impl CompareWorker {
             }
             "step" => {
                 let actions: Vec<Action> = serde_json::from_value(req.args["actions"].clone())?;
-                let baseline = match state {
-                    Some(s) => Some(&*Self::shadow(&mut self.shadow, s)?),
-                    None => None,
-                };
-                let st = c.step_with(baseline, &actions, req.args["capture"].as_bool().unwrap_or(false))?;
+                let st = c.step_with(&actions, req.args["capture"].as_bool().unwrap_or(false))?;
                 let size = st.frame.as_ref().map(|f| json!({ "width": f.width, "height": f.height }));
-                Ok((json!({ "needs_sync": st.needs_sync, "tick_failed": st.tick_failed, "frame": size }), st.frame.map(|f| vec![f.rgb]).unwrap_or_default()))
+                Ok((json!({ "frame": size }), st.frame.map(|f| vec![f.rgb]).unwrap_or_default()))
             }
             "check" => {
                 let shadow = Self::shadow(&mut self.shadow, state.ok_or_else(|| anyhow!("a parity check needs the baseline's state"))?)?;
-                let v = c.check(shadow, req.args["power_on_frame"].as_u64().unwrap_or(0))?;
+                let v = c.check(shadow)?;
                 Ok((verdict_json(&v), vec![]))
             }
             other => bail!("unknown comparison request {other}"),
@@ -1077,8 +962,6 @@ pub struct RemoteComparison {
     pub name: String,
     pub build: String,
     pub mode: SyncMode,
-    has_check: bool,
-    has_write: bool,
     aspect: f32,
     worker: crate::isolate::Worker,
 }
@@ -1086,6 +969,9 @@ pub struct RemoteComparison {
 impl RemoteComparison {
     pub fn open(col: &Collection, name: &str, baseline_core: &Path, rom: Option<&Path>) -> Result<RemoteComparison> {
         let spec = OpenSpec::resolve(col, name, baseline_core, rom)?;
+        if spec.mode != SyncMode::State {
+            bail!("[[compare]] \"{name}\" takes events, and such a core runs in dj's own process: only sync = \"state\" can run in a worker");
+        }
         let mut worker = crate::isolate::Worker::spawn("compare")?;
         let (info, _) = worker
             .request("open", serde_json::json!({ "spec": spec }), &[], crate::isolate::timeout(OPEN_TIMEOUT), "while loading")
@@ -1094,8 +980,6 @@ impl RemoteComparison {
             name: spec.name,
             build: spec.build,
             mode: spec.mode,
-            has_check: info["has_check"].as_bool().unwrap_or(false),
-            has_write: info["has_write"].as_bool().unwrap_or(false),
             aspect: info["aspect"].as_f64().unwrap_or(0.0) as f32,
             worker,
         })
@@ -1116,11 +1000,10 @@ impl RemoteComparison {
         })
     }
 
-    pub fn sync(&mut self, baseline: &mut Core, col: &Collection, id: &str, frame: u64, power_on_frame: u64, boot: bool) -> Result<SyncOutcome> {
+    pub fn sync(&mut self, baseline: &mut Core, col: &Collection, id: &str, frame: u64) -> Result<SyncOutcome> {
         let state = baseline.serialize().context("saving the baseline's state")?;
-        let args = serde_json::json!({ "inputs": InputState::at(col, id, frame)?, "power_on_frame": power_on_frame, "boot": boot });
-        let what = if self.mode == SyncMode::DjSync { "while syncing (dj_sync)" } else { "while loading the baseline's state" };
-        let (v, _) = self.call("sync", args, &[&state], what)?;
+        let args = serde_json::json!({ "inputs": InputState::at(col, id, frame)? });
+        let (v, _) = self.call("sync", args, &[&state], "while loading the baseline's state")?;
         Ok(match v["failed"].as_str() {
             Some(why) => SyncOutcome::Failed(why.to_string()),
             None => SyncOutcome::Synced,
@@ -1132,22 +1015,19 @@ impl RemoteComparison {
         Ok(())
     }
 
-    pub fn step(&mut self, baseline: &mut Core, col: &Collection, id: &str, frame: u64, capture: bool) -> Result<Stepped> {
+    pub fn step(&mut self, col: &Collection, id: &str, frame: u64, capture: bool) -> Result<Stepped> {
         let actions = Action::of_frame(col, id, frame);
-        let state = if self.mode == SyncMode::DjSync && self.has_write && actions.iter().any(|a| matches!(a, Action::Write { .. })) { Some(baseline.serialize().context("saving the baseline's state")?) } else { None };
-        let bulk: Vec<&[u8]> = state.iter().map(Vec::as_slice).collect();
-        let (v, mut bytes) = self.call("step", serde_json::json!({ "actions": actions, "capture": capture }), &bulk, &format!("while running frame {frame}"))?;
+        let (v, mut bytes) = self.call("step", serde_json::json!({ "actions": actions, "capture": capture }), &[], &format!("while running frame {frame}"))?;
         let frame = match (&v["frame"], bytes.pop()) {
             (serde_json::Value::Object(size), Some(rgb)) => Some(Frame { width: size["width"].as_u64().unwrap_or(0) as u32, height: size["height"].as_u64().unwrap_or(0) as u32, rgb }),
             _ => None,
         };
-        Ok(Stepped { frame, needs_sync: v["needs_sync"].as_bool().unwrap_or(false), tick_failed: v["tick_failed"].as_str().map(String::from) })
+        Ok(Stepped { frame })
     }
 
-    pub fn check(&mut self, baseline: &mut Core, power_on_frame: u64) -> Result<Verdict> {
+    pub fn check(&mut self, baseline: &mut Core) -> Result<Verdict> {
         let state = baseline.serialize().context("saving the baseline's state")?;
-        let what = if self.has_check { "while checking parity (dj_check_parity)" } else { "while comparing RAM" };
-        let (v, _) = self.call("check", serde_json::json!({ "power_on_frame": power_on_frame }), &[&state], what)?;
+        let (v, _) = self.call("check", serde_json::json!({}), &[&state], "while comparing RAM")?;
         Ok(if let Some(w) = v["mismatch"].as_str() {
             Verdict::Mismatch(w.to_string(), serde_json::from_value(v["diffs"].clone()).unwrap_or_default())
         } else if let Some(w) = v["skip"].as_str() {
@@ -1157,16 +1037,8 @@ impl RemoteComparison {
         })
     }
 
-    pub fn has_check(&self) -> bool {
-        self.has_check
-    }
-
     pub fn aspect(&self) -> f32 {
         self.aspect
-    }
-
-    pub fn has_write(&self) -> bool {
-        self.has_write
     }
 }
 
@@ -1200,7 +1072,7 @@ mod tests {
             compare: Vec<CompareConfig>,
         }
         let w: W = toml::Value::Table(t).try_into().unwrap();
-        assert_eq!(w.compare[0].sync, SyncMode::DjSync);
+        assert_eq!(w.compare[0].sync, SyncMode::Events);
         assert_eq!(w.compare[0].content, Some(Content::Rom(false)));
         assert_eq!(w.compare[0].options.get("x").map(String::as_str), Some("1"));
         assert_eq!(w.compare[1].sync, SyncMode::State);

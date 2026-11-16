@@ -16,5 +16,5 @@
 14	nmis	nmis:updateSmoke.1	PRG:0x4C1	0x0	0x0	smoke.s:85
 15	nmis	nmis:updateSmoke.2	PRG:0x4EB	0x0	0x0	smoke.s:113
 16	nmis	nmis:titleScreen	PRG:0x1620	0x0	0x0	title.s:296
-17	input	input:read_pads	PRG:0x4358	0x0	0x0	(label):read_pads
-18	input	input:read_mouse	PRG:0x4396	0x0	0x0	(label):read_mouse
+17	input	input:read_pads	PRG:0x4363	0x0	0x0	pads.s:38
+18	input	input:read_mouse	PRG:0x43C2	0x0	0x0	mouse.s:40

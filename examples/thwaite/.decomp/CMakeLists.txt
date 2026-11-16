@@ -27,14 +27,23 @@ add_library(thwaite_decomp_libretro SHARED
   src/libretro.c
   src/events.c
   src/main.c
+  src/title.c
+  src/pads.c
+  src/compare.c
   src/gfx.c
   src/gl.c
   src/data/chr.c
   src/data/palette.c
   src/data/map.c
+  src/data/texts.c
 )
 set_target_properties(thwaite_decomp_libretro PROPERTIES PREFIX "")
 target_compile_definitions(thwaite_decomp_libretro PRIVATE THW_BUILD_ID="thwaite-decomp@${THW_COMMIT}")
+# A build with a bug planted on purpose, to check that parity catches it (README).
+option(THW_BREAK_ON_PURPOSE "Plant a known bug" OFF)
+if(THW_BREAK_ON_PURPOSE)
+  target_compile_definitions(thwaite_decomp_libretro PRIVATE THW_BREAK_ON_PURPOSE)
+endif()
 if(MSVC)
   target_compile_options(thwaite_decomp_libretro PRIVATE /W4)
 else()

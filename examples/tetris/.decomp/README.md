@@ -9,7 +9,7 @@ together for decomp-dj. None of it needs the ROM.
 | --- | --- |
 | [decomp/](decomp/) | The game logic as a library: `tetris_init()`, `tetris_tick()`, all state in one struct. Builds to `libtetris.a` |
 | [port/](port/) | Draws a game state in 3D with [small3dlib](https://gitlab.com/drummyfish/small3dlib) (CC0). Builds to `libtetris_port.a` |
-| [libretro/](libretro/) | The libretro core: decomp + port, with decomp-dj's `dj_sync` and `dj_write`. Builds to `tetris_decomp_libretro.dylib` / `.so` |
+| [libretro/](libretro/) | The libretro core: decomp + port, a decomp-dj comparison core that takes events (`dj_handle_event`). Builds to `tetris_decomp_libretro.dylib` / `.so` |
 | [tools/gen_decomp.py](tools/gen_decomp.py) | Regenerates the RAM layout and the game's data tables from a build of the disassembly |
 | [tools/gen_sites.py](tools/gen_sites.py) | Regenerates `decomp/src/sites.h`, the resume points the snapshot loader matches against the stack |
 | [tools/measure_draws.py](tools/measure_draws.py) | Measures, in a 6502 emulator, how long the original takes to draw each screen with NMIs off (needs the ROM and py65) |
@@ -99,29 +99,46 @@ a GPU backend can draw the same list.
 - Save states are the `struct tetris` of this build. Reset powers on.
 - `retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM)` gives the game's 2 KB of RAM.
 
-For decomp-dj:
+For decomp-dj it is a comparison core that takes events (decomp-dj's
+`docs/connectors.md`, "Comparison cores"), built on the helper in decomp-dj's
+`connectors/include/dj_compare.h` (the Makefile's `DJ_INCLUDE` says where that is). dj
+tells it where the original has got to; it runs itself to the same place and compares with
+`tetris_check_nes_parity`.
 
-- **`dj_sync`**: with `DJ_SYNC_BOOT` it powers on. Otherwise it loads the baseline's system
-  RAM with `tetris_load_nes_snapshot`, returning 1 with the reason when it can't.
-- **`dj_write`**: region `RAM` is written into the game's RAM. Other regions are ignored (it
-  returns 1).
-- **`dj_check_parity`**: `tetris_check_nes_parity` against the baseline's RAM. It judges
-  every frame and never skips. In the two frames after power-on, the original has nothing
-  on the stack yet, so only RAM is compared. When the original is partway through a draw
-  that takes more than a frame (the power-on clear, the level menu, name entry), the few
-  bytes that draw writes are left out of that one frame.
-- **`dj_run`**: one frame. It stops playback where the decomp can't follow the original:
-  gameModeState 9 (the two-player game over, which has no handler), or a wait for an NMI
-  with NMIs off.
+- **Where it judges.** The core option **Compare with the original** (`tetris_judge`):
+  - **at its wait for the next frame** (the default). Two breakpoints, one in each of the
+    original's wait routines (`$AA36` and `$AA4C`, the NOP after `verticalBlankingInterval`
+    is cleared), reached once per wait. There the decomp runs one tick and every byte it
+    keeps is compared. A third breakpoint at the NMI (`$8005`) takes the controllers as the
+    original reads them, which matters for a tick that ends a frame or two after its NMI.
+  - **at frame ends.** One tick per frame. When the original is partway through a draw
+    that takes more than a frame (the power-on clear, the level menu, name entry), the few
+    bytes that draw writes are left out of that one frame (`parity.c`, `inFlight`).
+- **After a jump** it loads the baseline's system RAM with `tetris_load_nes_snapshot`, at
+  the jump when judging at frame ends and at the next wait otherwise. At a power-on it
+  powers on instead.
+- **The 15 frames with no wait** in the example's 30 segments are all long work with NMIs
+  off: 11 screen draws that lose a frame, and two frames at each of the two power-ons. No
+  NMI runs in the middle of a tick, so judging at the wait compares all of them in full.
+  If one ever did (a real lag frame), the decomp answers "unjudged" and takes the
+  original's state from there.
+- **`dj_handle_write`**: a write to region `RAM` made between frames goes into the game's
+  RAM. One made at an instruction can't be followed: the decomp copies the original again.
+- **It halts** where it can't follow the original: gameModeState 9 (the two-player game
+  over, which has no handler), or a wait for an NMI with NMIs off.
 
 In `examples/tetris/config.toml`:
 
 ```toml
 [[compare]]
 name = "decomp (3D)"
-sync = "dj_sync"
 content = false
+preroll = 3
 ```
+
+`preroll` is for judging at the wait: the decomp copies the original at the first wait
+after a jump, and the longest stretch with no wait is two frames (at power-on). With it,
+`dj parity` checks frame 0 of every segment that isn't a root.
 
 And in `.local/local.toml`:
 

@@ -66,6 +66,12 @@ dj parity <dir> --explain 12              # what differed on failure 12, and who
   the stored end state of its parent) and every frame is checked to the end, or to the first
   failure, which ends that segment's check; the others go on. Segments that aren't clean are
   left out unless `--dirty` (clean them first: `dj clean`).
+- **Pre-roll.** When the `[[compare]]` entry sets `preroll = N`
+  ([connectors.md](connectors.md#pre-roll)), the baseline starts N frames up, in the
+  segments above, and plays to the segment's frame 0 with nothing judged, so a core that
+  copies the baseline at a breakpoint has done so by then. A core that halts in those
+  frames leaves the segment not checked, and it counts as failed. A failure says how many
+  frames of its run were pre-roll, and `--rerun` and `--explain` mark the same ones.
 - **Done once per build.** A segment whose content was checked with this build of the
   comparison core (the sha256 of its library) is skipped, with how it went then; `--all`
   checks it again. A rebuilt core is a new build, so everything is checked again.

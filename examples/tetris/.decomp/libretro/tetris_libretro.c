@@ -11,12 +11,9 @@
  * build's layout: they load in the same build of the core on the same kind of
  * machine.
  *
- * For decomp-dj it also exports the comparison-core functions (see
- * docs/connectors.md in decomp-dj): dj_sync takes over the game from the
- * baseline's RAM (tetris_load_nes_snapshot), dj_write follows writes to
- * the baseline's RAM, dj_check_parity compares the two every frame
- * (tetris_check_nes_parity) and dj_run stops playback where the decomp can't
- * follow the original.
+ * For decomp-dj it is a comparison core that takes events (docs/connectors.md in
+ * decomp-dj, "Events"): dj tells it where the original has got to, and it runs itself to
+ * the same place and compares. See the last section of this file.
  */
 #include <stdarg.h>
 #include <stdio.h>
@@ -61,6 +58,7 @@ static void logf_(enum retro_log_level level, const char *fmt, ...)
 
 static const struct retro_variable variables[] = {
     {"tetris_resolution", "Resolution; 640x480|320x240|960x720|1280x960"},
+    {"tetris_judge", "Compare with the original (decomp-dj); at its wait for the next frame|at frame ends"},
     {NULL, NULL},
 };
 
@@ -195,23 +193,27 @@ static uint8_t readPad(unsigned port)
     return b;
 }
 
-static void runFrame(void)
+/* Reads the core options and the controllers. */
+static void poll(uint8_t pad[2])
 {
     bool updated = false;
     if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated && readOptions()) {
         struct retro_game_geometry g = {width, height, MAX_WIDTH, MAX_HEIGHT, (float)width / (float)height};
         environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &g);
     }
-
     input_poll_cb();
-    tetris_tick(&game, readPad(0), readPad(1));
+    pad[0] = readPad(0);
+    pad[1] = readPad(1);
+}
 
+/* Draws the game as it is and sends a frame's worth of silence. */
+static void present(void)
+{
     if (framebuffer && tetris_port_draw(&game, framebuffer, (int)width, (int)height, (int)width) == 0)
         video_cb(framebuffer, width, height, width * sizeof *framebuffer);
     else
         video_cb(NULL, width, height, 0);
 
-    /* silence, a frame's worth */
     static int16_t silence[2 * 800];
     static double owed;
     owed += SAMPLE_RATE / FPS;
@@ -219,6 +221,14 @@ static void runFrame(void)
     owed -= (double)n;
     if (audio_batch_cb)
         audio_batch_cb(silence, n);
+}
+
+static void runFrame(void)
+{
+    uint8_t pad[2];
+    poll(pad);
+    tetris_tick(&game, pad[0], pad[1]);
+    present();
 }
 
 RETRO_API void retro_run(void) { runFrame(); }
@@ -273,79 +283,83 @@ RETRO_API size_t retro_get_memory_size(unsigned id) { return id == RETRO_MEMORY_
 
 /* ---- decomp-dj comparison core --------------------------------------------- */
 
-struct dj_baseline {
-    uint32_t version;
-    void *ctx;
-    void *(*get_proc)(void *ctx, const char *name);
+/*
+ * dj does not run this core's frames or sync it. It sends events (a jump, a console
+ * reset, a breakpoint in the original, a frame end) with the original stopped and
+ * readable, and the core answers each with a verdict. The helper in dj_compare.h does the
+ * part every such core shares: after a jump copy the original (copyNes), then at each
+ * judging event run up to it (runToHere) and compare (compareNes).
+ *
+ * The core option tetris_judge picks the judging event:
+ *
+ * - "at its wait for the next frame" (the default). The original's main loop waits for the
+ *   NMI in two places, and the decomp is parked at the same wait between ticks. A
+ *   breakpoint sits in each, on the NOP between clearing verticalBlankingInterval and the
+ *   loop that polls it: reached once per wait, with the tick's work done and nothing of
+ *   the next begun. There the decomp runs one tick and every byte it keeps is compared.
+ *   A third breakpoint, at the NMI, takes the controllers as they are when the original
+ *   reads them: a tick that draws a screen with NMIs off ends a frame or two after its
+ *   NMI, when dj has moved on to later frames' input.
+ * - "at frame ends". One tick per frame. A frame that ends with the original part-way
+ *   through drawing a screen can only be judged in part (parity.c, inFlight).
+ */
+#include "dj_compare.h"
+
+enum { BP_WAIT = 1, BP_NMI = 2 };
+
+static const struct dj_breakpoint breakpoints[] = {
+    {BP_WAIT, "PRG", 0x2A36, "updateAudioWaitForNmiAndResetOamStaging, before its wait"}, /* $AA36 */
+    {BP_WAIT, "PRG", 0x2A4C, "updateAudioAndWaitForNmi, before its wait"},                /* $AA4C */
+    {BP_NMI, "PRG", 0x0005, "nmi"},                                                       /* $8005 */
 };
 
-#define DJ_SYNC_BOOT 1u
+static struct dj_helper helper;
+static uint8_t nmiPad[2]; /* the controllers at the original's last NMI */
+static int nmis;          /* NMIs the original has run since its last wait */
+static int waited;        /* the original reached a wait in the frame now running */
+static int atWait;        /* the last frame ended with the original at a wait, as the decomp is */
 
-/* The baseline's 2 KB of system RAM, or NULL with the reason. */
-static const uint8_t *baselineRam(const struct dj_baseline *b, char *reason, size_t len)
+static int judgeAtWait(void)
 {
-    void *(*getData)(unsigned) = b && b->get_proc ? (void *(*)(unsigned))b->get_proc(b->ctx, "retro_get_memory_data") : NULL;
-    size_t (*getSize)(unsigned) = b && b->get_proc ? (size_t(*)(unsigned))b->get_proc(b->ctx, "retro_get_memory_size") : NULL;
-    const uint8_t *ram = getData ? getData(RETRO_MEMORY_SYSTEM_RAM) : NULL;
-    if (!ram || !getSize || getSize(RETRO_MEMORY_SYSTEM_RAM) < 0x800) {
-        snprintf(reason, len, "the baseline doesn't give its 2 KB of system RAM");
-        return NULL;
+    static int cached = -1;
+    if (cached < 0) {
+        struct retro_variable var = {"tetris_judge", NULL};
+        cached = !(environ_cb && environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value &&
+                   strcmp(var.value, "at frame ends") == 0);
     }
+    return cached;
+}
+
+/* The original's 2 KB of system RAM, or NULL with the reason. */
+static const uint8_t *nesRam(const struct dj_event *ev, char *reason, size_t len)
+{
+    const uint8_t *ram = dj_baseline_memory(ev->baseline, "RAM", 0x800);
+    if (!ram)
+        snprintf(reason, len, "the baseline doesn't give its 2 KB of system RAM");
     return ram;
 }
 
-/* Brings the game to the baseline's state at the start of a frame. At a
- * fresh power-on it powers on too; otherwise it takes over from the
- * baseline's RAM, which works whenever the original is waiting for the next
+/* Takes over from the original. At a fresh power-on the decomp powers on too. Otherwise it
+ * reads the original's RAM, which works whenever the original is waiting for the next
  * frame (not while it draws a new screen with NMIs off). */
-RETRO_API int dj_sync(const struct dj_baseline *b, uint64_t frame, uint32_t flags, char *reason, size_t len)
+static int copyNes(void *user, const struct dj_event *ev, char *reason, size_t len)
 {
-    (void)frame;
-    if (flags & DJ_SYNC_BOOT) {
+    (void)user;
+    nmis = 0;
+    if (ev->kind == DJ_EVENT_JUMP && ev->jump_reason == DJ_JUMP_POWER_ON) {
         tetris_init(&game);
+        snprintf(reason, len, "powered on");
         return 0;
     }
-    const uint8_t *ram = baselineRam(b, reason, len);
-    if (!ram)
-        return 2;
-    return tetris_load_nes_snapshot(&game, ram, reason, len) ? 1 : 0;
+    const uint8_t *ram = nesRam(ev, reason, len);
+    return ram ? tetris_load_nes_snapshot(&game, ram, reason, len) : 1;
 }
 
-/* Follows a write to the baseline's RAM ("RAM", $0000-$07FF); other regions
- * mean nothing to the decomp and are ignored. */
-RETRO_API int dj_write(const struct dj_baseline *b, const char *region, uint64_t address, const uint8_t *bytes,
-                       size_t n, char *reason, size_t len)
+/* Where the decomp can't follow the original: a gameModeState with no handler (9, the
+ * two-player game over, which jumps through whatever follows the table), or NMIs left off
+ * with the game waiting for one, where the original hangs. */
+static int stuck(char *reason, size_t len)
 {
-    (void)b;
-    if (!region || strcmp(region, "RAM") != 0)
-        return 1;
-    if (address >= 0x800 || n > 0x800 - address) {
-        snprintf(reason, len, "$%llX+%zu is past the 2 KB of RAM", (unsigned long long)address, n);
-        return 2;
-    }
-    memcpy(&game.ram.b[address], bytes, n);
-    return 0;
-}
-
-/* Compares the game with the baseline after a frame: where the code is and
- * the RAM the decomp keeps (tetris_check_nes_parity, in decomp/src/parity.c).
- * Every frame is judged; nothing returns "skip". */
-RETRO_API int dj_check_parity(const struct dj_baseline *b, uint64_t frame, char *reason, size_t len)
-{
-    (void)frame;
-    const uint8_t *ram = baselineRam(b, reason, len);
-    if (!ram)
-        return 3;
-    return tetris_check_nes_parity(&game, ram, reason, len) ? 1 : 0;
-}
-
-/* One frame, as retro_run, stopping where the decomp can't follow the
- * original: a gameModeState with no handler (9, the two-player game over, which
- * jumps through whatever follows the table), or NMIs left off with the game
- * waiting for one, where the original hangs. */
-RETRO_API int dj_run(char *reason, size_t len)
-{
-    runFrame();
     if (game.ram.v.gameModeState > 0x08) {
         snprintf(reason, len, "gameModeState is %u, which has no handler (the original jumps through the bytes after its table)",
                  game.ram.v.gameModeState);
@@ -356,4 +370,110 @@ RETRO_API int dj_run(char *reason, size_t len)
         return 1;
     }
     return 0;
+}
+
+static int runToHere(void *user, const struct dj_event *ev, char *reason, size_t len)
+{
+    (void)user;
+    if (!judgeAtWait()) {
+        runFrame();
+        return stuck(reason, len) ? DJ_HALT : DJ_PENDING;
+    }
+    /* A lag frame: the original's NMI ran in the middle of its tick, at an instruction the
+     * decomp can't place. Not judged; the decomp takes the original's state from here. */
+    if (nmis > 1) {
+        char why[160] = "";
+        const uint8_t *ram = nesRam(ev, why, sizeof why);
+        int lost = !ram || tetris_load_nes_snapshot(&game, ram, why, sizeof why) != 0;
+        snprintf(reason, len, "a lag frame: %d NMIs ran in one tick%s%s", nmis, lost ? "; " : "", lost ? why : "");
+        if (lost)
+            helper.live = 0;
+        nmis = 0;
+        present();
+        return DJ_UNJUDGED;
+    }
+    nmis = 0;
+    /* One tick: the NMI, then the game up to its next wait. At power-on that is three
+     * calls, the first two ending at reset's waits for a vertical blank. */
+    uint8_t pad[2];
+    poll(pad); /* for the options; the controllers are the ones the NMI saw */
+    for (int i = 0; i < 8; i++) {
+        tetris_tick(&game, nmiPad[0], nmiPad[1]);
+        if (game.ctl.waiting == 1)
+            break;
+    }
+    /* The frames a long draw took have passed: the original is at its wait now too. */
+    game.ctl.framesBehind = 0;
+    present();
+    return stuck(reason, len) ? DJ_HALT : DJ_PENDING;
+}
+
+/* Where the code is and the RAM the decomp keeps (tetris_check_nes_parity, in
+ * decomp/src/parity.c). */
+static int compareNes(void *user, const struct dj_event *ev, char *reason, size_t len)
+{
+    (void)user;
+    const uint8_t *ram = nesRam(ev, reason, len);
+    if (!ram)
+        return DJ_HALT;
+    return tetris_check_nes_parity(&game, ram, reason, len) ? DJ_MISMATCH : DJ_MATCH;
+}
+
+static void setUpHelper(void)
+{
+    helper.judge_at = judgeAtWait() ? BP_WAIT : 0;
+    helper.copy = copyNes;
+    helper.run = runToHere;
+    helper.compare = compareNes;
+    /* No `reset`: the console's reset is not the decomp's power-on, so it copies again. */
+}
+
+DJ_EXPORT size_t dj_breakpoints(const struct dj_breakpoint **out)
+{
+    if (!judgeAtWait())
+        return 0;
+    *out = breakpoints;
+    return sizeof breakpoints / sizeof breakpoints[0];
+}
+
+DJ_EXPORT int dj_handle_event(const struct dj_event *ev, char *reason, size_t len)
+{
+    if (!helper.copy)
+        setUpHelper();
+    if (judgeAtWait()) {
+        if (ev->kind == DJ_EVENT_BREAK && ev->breakpoint == BP_NMI) {
+            input_poll_cb();
+            nmiPad[0] = readPad(0);
+            nmiPad[1] = readPad(1);
+            nmis++;
+            return DJ_PENDING;
+        }
+        if (ev->kind == DJ_EVENT_BREAK && ev->breakpoint == BP_WAIT)
+            waited = 1;
+        if (ev->kind == DJ_EVENT_FRAME_END) {
+            atWait = waited;
+            waited = 0;
+        }
+        if (ev->kind == DJ_EVENT_JUMP)
+            waited = atWait = 0;
+    }
+    return dj_helper_event(&helper, ev, reason, len);
+}
+
+/* Follows a write to the original's RAM ("RAM", $0000-$07FF); other regions mean nothing
+ * to the decomp. A write made between frames lands where the decomp is parked, as long as
+ * the original is at its wait too. Any other can't be followed: the decomp copies the
+ * original again. */
+DJ_EXPORT int dj_handle_write(const struct dj_write *w, char *reason, size_t len)
+{
+    (void)reason;
+    (void)len;
+    if (!w->region || strcmp(w->region, "RAM") != 0)
+        return DJ_PENDING;
+    int parked = !w->at_region && (!judgeAtWait() || atWait);
+    if (helper.live && parked && w->offset < 0x800 && w->len <= 0x800 - w->offset)
+        memcpy(&game.ram.b[w->offset], w->bytes, w->len);
+    else
+        helper.live = 0;
+    return DJ_PENDING;
 }

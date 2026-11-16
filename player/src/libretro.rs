@@ -1169,9 +1169,8 @@ impl Core {
         self.run_frame_with(capture, || unsafe { run() }).0
     }
 
-    /// Runs one frame through `tick` instead of `retro_run` (a connector's `dj_run`, which
-    /// calls it itself), capturing the picture as `run_frame` does.
-    pub fn run_frame_with<T>(&mut self, capture: bool, tick: impl FnOnce() -> T) -> (Option<Frame>, T) {
+    /// Runs one frame through `tick`, which calls `retro_run`, capturing the picture.
+    fn run_frame_with<T>(&mut self, capture: bool, tick: impl FnOnce() -> T) -> (Option<Frame>, T) {
         let _call = CallGuard::enter(self.slot, 1);
         // A new frame: the cap counts from nothing, and what it switched off is back on.
         let rearm = BREAKS.with(|b| {

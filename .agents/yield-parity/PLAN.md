@@ -2,9 +2,10 @@
 
 Written 2026-11-15 15:20 EST, from a conversation with the developer that day. The
 developer asked for the design to be looked at afresh, with the comparison core doing
-more and dj less. Build steps 1 to 6 are done: the two connector spikes ("Spike results"),
-and the new connector API, the comparison core in dj's process, writes at an instruction
-and events ("Built so far"). The rest is not built.
+more and dj less. Build steps 1 to 9 are done: the two connector spikes ("Spike results"),
+and the new connector API, the comparison core in dj's process, writes at an instruction,
+events, the helper header, the Tetris decomp on events, and pre-roll ("Built so far").
+The rest is not built.
 
 Revisions, all 2026-11-15:
 
@@ -29,6 +30,11 @@ Revisions, all 2026-11-15:
   counting ticks itself.
 - 22:54 EST: build step 4 is built: the comparison core runs in dj's process.
 - 23:20 EST: build steps 5 and 6 are built: writes at an instruction, and events.
+- 23:58 EST: build steps 7 and 8 are built: the helper header, the Tetris decomp on
+  events (at its wait, and at frame ends), and the older comparison functions removed
+  from dj. Tetris's 15 "lag frames" turned out to be long work with NMIs off, all judged.
+- 2026-11-16 08:27 EST: build step 9 is built: pre-roll, in `dj parity`, in re-running a
+  failure, and in the GUI's seek inside a segment.
 
 How to read it:
 
@@ -554,7 +560,7 @@ gets today's "rebuild the core" warning.
 | --- | --- | --- |
 | Baseline connector | `dj_set_tick_exec`, `dj_get_tick_count`, the tick count in `dj_clear` | One function to set the breakpoint addresses and the function to call at each. One function to read registers |
 | Comparison core | `dj_sync`, `DJ_SYNC_BOOT`, `dj_write`, `dj_run`, `dj_check_parity`, `get_proc` in the handle | `dj_breakpoints`, `dj_handle_event`, and the optional `dj_handle_write`. `dj_parity_diffs` stays, for what differed |
-| `[[compare]]` in `config.toml` | The value `sync = "dj_sync"`, which names a function that goes | `preroll = N`, 0 if left out. Thread: the default value of `sync` becomes `"events"` |
+| `[[compare]]` in `config.toml` | The value `sync = "dj_sync"`, which names a function that goes | `preroll = N`, 0 if left out. The default value of `sync` is `"events"` (built in step 7) |
 | Segment format | | `[WRITE]` with `@REGION:0xOFFSET` |
 
 - **All three connectors change:** Mesen, Mupen64Plus and mGBA. mGBA's exports the tick
@@ -569,7 +575,8 @@ gets today's "rebuild the core" warning.
 - **Each struct starts with its own size,** so a field such as "parity checking is on"
   can be added later.
 
-**A helper header, shipped with dj and not part of the API** (Thread). Every core now
+**A helper header, shipped with dj and not part of the API** (Thread; built in step 7 as
+`connectors/include/dj_compare.h`). Every core now
 writes its own "copy the baseline after a jump, answer unjudged, then compare" logic. For
 a core that keeps the original's RAM layout, as the Tetris decomp does, that is the same
 few lines each time. The header does it, and copies on the jump event when the core
@@ -592,7 +599,9 @@ These belong in `docs/connectors.md` when this is built.
   middle of a tick, on whichever instruction was running. A port is the same logic
   compiled for another CPU and cannot place it. Where the handler changes something the
   interrupted logic reads afterwards, a port can differ without being wrong, and the
-  core answers "unjudged". Thwaite had 7 such frames and Tetris 15.
+  core answers "unjudged". Thwaite had 7 frames with no game wait. Tetris had 15, and step
+  8 showed none of them is such a frame: all are long work with NMIs off, where no handler
+  runs, and they are judged in full at the wait that follows ("Built so far").
 - **State that follows emulator timing cannot be reproduced.** No Mercy's idle thread
   advances the random number generator. That needs a patch to the ROM, which is a
   separate feature: see the roadmap, "Pin timing-dependent randomness".
@@ -664,8 +673,8 @@ Checked:
 - **`dj_breakpoints`, `dj_handle_event` and `dj_handle_write`** are read from a comparison
   core, with the version 2 handle (`memory`, `registers`), as sections 1 to 3 give them.
   A core with `dj_handle_event` is driven by events; any other is driven as before.
-- **The older functions are still read** (`dj_sync`, `dj_write`, `dj_run`,
-  `dj_check_parity`). The Tetris decomp uses them until step 7 moves it; they go then.
+- **The older functions were still read** (`dj_sync`, `dj_write`, `dj_run`,
+  `dj_check_parity`) until step 7, which removed them.
 - **`parity::Checker`** has the state STATES.md lists: the jump owed, halted, the last
   verdict, the pile, the frame's claim. `Checker::begin` is new and is called before the
   baseline's frame; it sets a hook that `libretro.rs` calls at the frame's start, at each
@@ -708,7 +717,7 @@ What this turned up:
 
 Not done, or not checked:
 
-- **Pre-roll** (step 9): the flag is always off.
+- **Pre-roll** (step 9): the flag was always off then. Built since: see step 9 below.
 - **A failure does not record the breakpoint's name** in a column of its own (step 11). It
   is in the failure's message.
 - **`--explain` still searches to the frame's end** (step 11).
@@ -741,7 +750,8 @@ changed. Events and verdicts come with step 6.
   was current before it, when that was another core's. macOS already did this; the EGL
   code now does too.
 - **`RemoteComparison` and the `compare` worker stay in the code,** used only by the tests,
-  so going back is cheap. The GUI's "Restart comparison core" is gone.
+  so going back is cheap. The GUI's "Restart comparison core" is gone. Since step 7 the
+  worker serves `sync = "state"` only: a core that takes events is refused there.
 
 Checked:
 
@@ -762,6 +772,114 @@ Not checked:
   test exercises through a real crash.
 - **`dj parity --rerun` and `--explain`** do not handle a comparison core that dies: the
   second death ends the command with an error.
+
+**Steps 7 and 8, 2026-11-15: the helper header, and the Tetris decomp on events.**
+
+- **`connectors/include/dj_compare.h`** (MIT, like the decoder header; packaged with the
+  connectors). It declares the API, and has the helper: `struct dj_helper` with `copy`,
+  `run`, `compare` and an optional `reset`, and `dj_helper_event`. `judge_at` is 0 for
+  frame ends or a breakpoint's id. Judging at frame ends it copies on the jump; judging at
+  a breakpoint it waits for it, but offers a power-on jump to `copy`, so a core can boot
+  itself. Described in `docs/connectors.md`, "The helper".
+- **The Tetris decomp takes events** (`examples/tetris/.decomp/libretro/tetris_libretro.c`),
+  on the helper. Its core option `tetris_judge` picks where it judges.
+  - **At its wait** (the default). Breakpoints at `PRG:0x2A36` and `PRG:0x2A4C`, the NOP in
+    each wait routine after `verticalBlankingInterval` is cleared and before the loop that
+    polls it. Both carry the same id. Each is reached once per wait, so the cap never
+    matters. The decomp runs one tick there and every byte it keeps is compared.
+  - **A third breakpoint at the NMI** (`PRG:0x0005`) takes the controllers. A tick that
+    draws a screen with NMIs off reaches its wait a frame or two after its NMI, when dj
+    has set later frames' input. It also counts NMIs per tick, which is how a real lag
+    frame would be seen.
+  - **At frame ends.** One tick per frame, as before.
+- **The older comparison functions are gone from dj:** `dj_sync`, `DJ_SYNC_BOOT`,
+  `dj_write`, `dj_run`, `dj_check_parity` and the handle with `get_proc`. `sync` in a
+  `[[compare]]` entry is `"events"` (the default; the core must have `dj_handle_event`) or
+  `"state"`. `"dj_sync"` is no longer a value: a config that has it does not open.
+  `Checked::NeedsSync` went with them. The test core takes events in every build.
+- **Docs changed with it:** `docs/connectors.md` ("Comparison cores" rewritten around
+  events), `docs/config.md`, `docs/gui.md` (the lines that named the old functions), the
+  connectors README and the Tetris decomp's README.
+
+Checked:
+
+| Check | Result |
+| --- | --- |
+| Tetris, judging at frame ends | 30 segments, 24,392 frames, all passed, 0 failed. The first frame after each jump is checked |
+| Tetris, judging at its wait | 30 segments, 0 failed. 24,362 frames counted: each segment's last frame is its tail. 29 frames unjudged, the first of each segment that is not a root (the copy). In the report: 4,101 instructions with parity, 0 not checked |
+| The 15 frames with no wait | 11 ticks that draw a screen with NMIs off and lose one frame, and 2 frames at each of the 2 power-ons. Each tick had at most one NMI. All are compared in full at the wait that follows; none is unjudged |
+| The decomp broken on purpose (the pad at the NMI set to zero) | a failure at frame 31 of "Cycle through game types", named at the breakpoint, with the bytes that differ |
+| Segments with `[WRITE]` and `[RESET]` lines | pass in both modes; a write between frames did not cost a copy |
+| `tests/compare.rs` and `tests/events.rs` on the event-only API, the whole suite, the GUI's build | pass |
+
+Not checked, and what this leaves:
+
+- **No real lag frame exists in Tetris,** so "unjudged on a lag frame" has only been seen
+  in the test core. The decomp's path for one (more than one NMI in a tick: copy at that
+  wait, answer unjudged) has never run.
+- **Frame 0 of a segment that is not a root is unjudged when judging at the wait.** That
+  is what pre-roll (step 9) is for.
+- **Judging at the wait is no faster or slower:** about 51 s for the 30 segments either way.
+- **The GUI was not run** with the decomp in either mode.
+- **The Thwaite decomp keeps its own copy of the API** (`examples/thwaite/.decomp/src/dj_api.h`),
+  written to be replaced by dj's header. Not changed here.
+
+**Step 9, 2026-11-16: pre-roll** (section 6).
+
+- **`preroll = N` in a `[[compare]]` entry,** 0 if left out, and only for a core that takes
+  events. Described in `docs/config.md`, `docs/connectors.md` ("Pre-roll"), `docs/cli.md`
+  and `docs/gui.md`.
+- **`parity::preroll_route`** gives the frames to pre-roll before a place: up to N, back
+  through the segments above, stopping at a root's start.
+- **`Checker::set_preroll(frames, for_segment)`** marks the next frames as pre-roll. It is
+  called before the sync that owes the jump. In those frames every event carries
+  `DJ_PREROLL`; only a halt counts; the frame's coverage is taken and dropped, never piled
+  or counted; and when the last one ends the last verdict is "none" and the pile is empty.
+  The checker keeps how many frames from the jump were pre-roll.
+- **`dj parity`** seeks to the first pre-roll frame (the nearest stored snapshot at or
+  before it in that segment, or the segment's start), plays the route with the checker in
+  pre-roll, goes on into the segment as playback goes from a parent into its child, and
+  checks it. A halt in pre-roll: the segment is "FAILED, not checked: in pre-roll", the
+  failure is at the frame it happened in, and its run row is marked failed.
+- **A failure records its pre-roll:** a new column, `parity_failures.preroll` (added to an
+  older database when it is opened). `--rerun`, `--explain` and the GUI's re-run mark the
+  same frames. Reports and JSON show it.
+- **A comparison core that dies in pre-roll** is reported against the segment the pre-roll
+  is for, at frame 0, so the supervisor doesn't blame the parent. The next child then
+  checks nothing of that segment and runs no pre-roll for it.
+- **In the GUI,** a seek with Check parity on, for a core with `preroll`, restarts from a
+  snapshot at or before the frame the jump goes at, sends the jump there, and runs the
+  frames up to the one shown in pre-roll.
+- **The Tetris example sets `preroll = 3`.** Its longest stretch with no wait is two
+  frames.
+
+Checked:
+
+| Check | Result |
+| --- | --- |
+| Tetris, judging at its wait, `preroll = 3` | 30 segments, 0 failed, no frame skipped: frame 0 of all 29 segments that are not roots is judged. 24,362 frames counted (each segment's last frame is its tail). 4,101 instructions with parity, 0 not checked |
+| Tetris, judging at frame ends, `preroll = 3` | 30 segments, 24,392 frames, 0 failed: nothing changes for a core that needs none |
+| A failure after a pre-roll, with the decomp broken on purpose | found at frame 28 of "Cycle through music options", synced at frame 57 of its parent with 3 frames of pre-roll. `--rerun` fails again at the same frame; `--explain` traces it |
+| The same check in a copy of the project with an empty local database | the same failure: same frame, same place synced, same bytes |
+| The test core (`tests/events.rs`, `pre_roll`) | the route across one and two segments; frame 0 judged with pre-roll and not without; a mismatch in pre-roll ignored, and the first one after it kept as a failure, not as "drifting"; a halt in pre-roll a failure at its own frame |
+| `dj parity` end to end (`tests/compare.rs`) | a child passes after a pre-roll in its parent; a halt in pre-roll reports the child as not checked, with the failure at the parent's frame and its pre-roll in the JSON |
+| The whole test suite, and the GUI's build and tests | pass |
+
+Not checked, and what this leaves:
+
+- **The GUI's pre-roll was not run.** It builds; nothing drove it.
+- **In the GUI it stays inside the segment shown.** Selecting a segment gives frame 0 no
+  pre-roll, and a seek to a frame nearer the start than N gets fewer frames. `dj parity`
+  reaches into the parent; the GUI's playback holds one segment at a time.
+- **"Pre-roll" is not shown as a state** beside the comparison core's name.
+- **An ancestor's snapshot is not used** when the first pre-roll frame's segment has none
+  at or before it: dj plays from that segment's start. The jump is at the same frame
+  either way.
+- **Cost under `dj parity`:** about 56 s for Tetris's 30 segments against 51 s, most of it
+  getting the baseline to the frame before each segment.
+- **A lag frame inside the pre-roll can use it up.** In the test core, three frames of
+  pre-roll with a lag frame in the middle left the core stale at the place asked for. The
+  number has to cover the longest stretch with no tick, plus one.
 
 ## Spike results
 
@@ -934,6 +1052,9 @@ game's save storage ("Spike results", existing problem 1).
 8. **Two saves with no frame between them** ("Spike results", existing problem 3).
 9. **The guard against hits during a load** never fired in the spike, so it is untested.
 10. **`ROADMAP.md`, `ISOLATION_PLAN.md` and the docs** describe earlier designs.
+    `docs/connectors.md` was brought up to date in step 7; `docs/gui.md` only in part.
+11. **No real decomp has a lag frame to test with.** Tetris has none (step 8). The rule
+    for one rests on the test core.
 
 ## Build order
 
@@ -975,13 +1096,15 @@ protection.
    been resumed; and neither an unjudged stretch nor the frames between a jump and the
    copy have credited any coverage. The cases in STATES.md, sections 3 and 4, are the
    test list.
-7. **The helper header, and the Tetris decomp on it,** at the frame end. Done when its 30
+7. **The helper header, and the Tetris decomp on it,** *(done 2026-11-15: see "Built so
+   far")* at the frame end. Done when its 30
    segments pass as they do today, the first frame after a jump included.
-8. **The Tetris decomp at a breakpoint inside the frame,** at its game wait. It is the
+8. **The Tetris decomp at a breakpoint inside the frame,** *(done 2026-11-15: see "Built
+   so far"; the lag frames are explained, and none needs "unjudged")* at its game wait. It is the
    only real decomp at hand, and its 15 lag frames test where a core must answer
    "unjudged". Done when its 30 segments pass, with the lag frames unjudged or
    explained.
-9. **Pre-roll** (section 6), with the Tetris decomp from step 8 and `preroll` set on its
+9. **Pre-roll** (section 6), *(done 2026-11-16: see "Built so far")* with the Tetris decomp from step 8 and `preroll` set on its
    entry. Done when `dj parity` checks frame 0 of every segment that is not a root, and a
    failure found after a pre-roll re-runs to the same frame with the local database
    emptied.

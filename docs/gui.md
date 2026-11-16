@@ -118,12 +118,18 @@ transport.
   synced to the baseline before the next frame shown ([connectors.md](connectors.md#comparison-cores)):
   when you're paused, the frame shown is re-run so both pictures show it. **Sync now** tries
   again after a failed sync (in the menu, also after a stop at a failure).
-- **Check parity** (off when the app starts) checks after every frame both cores
-  run that they agree: with the core's `dj_check_parity`, or by comparing system RAM byte
-  for byte when it has none ([connectors.md](connectors.md#parity)). While it's on, every
+- **Check parity** (off when the app starts) checks that the cores agree: as the core
+  itself judges it, at the events it answers ([connectors.md](connectors.md#events)), or,
+  for the same emulator (`sync = "state"`), by comparing system RAM byte for byte after
+  every frame. While it's on, every
   frame is drawn, so a failure shows its own frame.
-- **Any failure stops playback**: a parity failure, a failed tick (`dj_run`), a failed or
-  declined sync. Both cores stop on that frame, and the comparison picture stays faded with
+- **Pre-roll.** When the comparison core's `[[compare]]` entry sets `preroll`
+  ([config.md](config.md#compare-optional-repeatable)) and Check parity is on, a seek
+  starts that many frames before the frame asked for and plays up to it unseen, so the
+  core has copied the baseline by then. It stays inside the segment shown: frame 0 of a
+  segment you select gets none (`dj parity` reaches into the parent for it).
+- **Any failure stops playback**: a parity failure, a core that says it can't go on (a
+  halt), a failed sync. Both cores stop on that frame, and the comparison picture stays faded with
   the reason over it, the state **stopped** and the frame the comparison core was last synced
   at (where its run started). Playing or stepping on syncs it again first, as after a jump;
   after a failed sync, playback carries on without the comparison until the next jump or
@@ -133,7 +139,7 @@ transport.
   one that hangs freezes it, as the baseline core does
   ([below](#if-dj-gui-crashes-or-hangs)). Your unsaved edits are kept, and the note shown
   on the next launch names the comparison core and the call it was in ("comparison core in:
-  dj_check_parity"). To debug a comparison core, attach a debugger to `dj-gui` itself.
+  dj_handle_event"). To debug a comparison core, attach a debugger to `dj-gui` itself.
 
 ### Parity
 

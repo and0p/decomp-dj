@@ -52,3 +52,10 @@ exec = "PRG:0x197"
 [[symbols]]
 file = "build/thwaite.dbg"
 format = "ca65-dbg"
+
+# The C reimplementation in .decomp/ (build it with .decomp/build.sh). It takes events
+# (docs/connectors.md#events): it sets its own breakpoints and copies the original itself.
+[[compare]]
+name = "decomp"
+path = ".decomp/build/thwaite_decomp_libretro"
+content = false

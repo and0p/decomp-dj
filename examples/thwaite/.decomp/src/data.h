@@ -8,4 +8,8 @@ extern const unsigned char thw_chr[8192];
 /* The NES master palette the baseline draws with (Mesen's default), as 0xRRGGBB. */
 extern const unsigned thw_master_palette[64];
 
+/* Screen texts as tile numbers: 0x0A ends a row, 0 ends the text (texts.txt). */
+extern const unsigned char thw_todo_txt[];
+extern const unsigned char thw_practice_txt[];
+
 #endif

@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "compare.h"
 #include "core.h"
 #include "gl.h"
 #include "libretro.h"
@@ -25,24 +26,20 @@ static double audio_owed;
 #define FPS 60.0988138974405  /* NTSC NES */
 #define RATE 48000.0
 
-static void logf(enum retro_log_level level, const char *msg) {
+static void core_log(enum retro_log_level level, const char *msg) {
     if (log_cb) log_cb(level, "[thwaite-decomp] %s\n", msg);
     else fprintf(stderr, "[thwaite-decomp] %s\n", msg);
 }
 
 const uint8_t *core_ram_view(void) { return ram_view; }
 
-static void refresh_ram_view(void) {
-    /* Milestone 0: only the NMI counter is mapped. compare.c will own this table. */
-    memset(ram_view, 0, sizeof ram_view);
-    ram_view[0x30] = thw_game.nmis;
-}
+static void refresh_ram_view(void) { compare_export(&thw_game, ram_view); }
 
 /* ---- Video ------------------------------------------------------------------------------ */
 
 static void context_reset(void) {
     gl_ready = gl_init((gl_get_proc)hw.get_proc_address);
-    if (!gl_ready) logf(RETRO_LOG_ERROR, gl_error() ? gl_error() : "OpenGL setup failed");
+    if (!gl_ready) core_log(RETRO_LOG_ERROR, gl_error() ? gl_error() : "OpenGL setup failed");
 }
 
 static void context_destroy(void) {
@@ -58,6 +55,7 @@ static bool video_wanted(void) {
 
 /* Draws the current screen and hands it to the frontend. */
 void core_present(void) {
+    refresh_ram_view();
     if (!video) return;
     if (gl_ready && video_wanted() && gl_draw(&thw_game.gfx, hw.get_current_framebuffer())) {
         video(RETRO_HW_FRAME_BUFFER_VALID, GFX_W, GFX_H, 0);
@@ -118,7 +116,7 @@ bool retro_load_game(const struct retro_game_info *game) {
     hw.context_destroy = context_destroy;
     hw.bottom_left_origin = true;
     if (!env(RETRO_ENVIRONMENT_SET_HW_RENDER, &hw)) {
-        logf(RETRO_LOG_ERROR, "this frontend can't give an OpenGL 3.2 core context, which the decomp draws with");
+        core_log(RETRO_LOG_ERROR, "this frontend can't give an OpenGL 3.2 core context, which the decomp draws with");
         return false;
     }
     game_power_on(&thw_game);
@@ -133,7 +131,37 @@ bool retro_load_game_special(unsigned type, const struct retro_game_info *info, 
 void retro_unload_game(void) {}
 unsigned retro_get_region(void) { return RETRO_REGION_NTSC; }
 
-static void read_input(struct pads *in) {
+static void read_input(void *out);
+
+/* ---- Plain play: the step's input from libretro ------------------------------------------ */
+
+/* The raw bits the original would read from a joypad: buttons in its bit order. */
+static bool lr_pads(void *ctx, uint8_t raw[2]) {
+    (void)ctx;
+    struct pads { uint8_t held[2]; } in;
+    read_input((void *)&in);
+    raw[0] = in.held[0];
+    raw[1] = in.held[1];
+    return true;
+}
+
+/* A joypad read past its 8 buttons gives 1s, so read_mouse sees $FF: no mouse. */
+static bool lr_mouse(void *ctx, int port, uint8_t raw[3]) {
+    (void)ctx;
+    (void)port;
+    raw[0] = raw[1] = raw[2] = 0xFF;
+    return true;
+}
+
+/* On its own the decomp never lags: the counter is the step count. */
+static bool lr_nmis(void *ctx, uint8_t *v) {
+    (void)ctx;
+    *v = thw_game.nmis;
+    return true;
+}
+
+static void read_input(void *out) {
+    struct pads { uint8_t held[2]; } *in = out;
     static const struct { unsigned id; uint8_t key; } MAP[] = {
         {RETRO_DEVICE_ID_JOYPAD_A, KEY_A}, {RETRO_DEVICE_ID_JOYPAD_B, KEY_B},
         {RETRO_DEVICE_ID_JOYPAD_SELECT, KEY_SELECT}, {RETRO_DEVICE_ID_JOYPAD_START, KEY_START},
@@ -156,11 +184,13 @@ static void silence(void) {
 }
 
 void retro_run(void) {
+    static const struct step_io LIBRETRO_IO = {NULL, lr_pads, lr_mouse, lr_nmis};
     if (input_poll) input_poll();
-    struct pads in;
-    read_input(&in);
-    game_step(&thw_game, &in);
-    refresh_ram_view();
+    if (thw_game.wait != W_NONE) {
+        thw_game.nmis++;
+        game_step(&thw_game, &LIBRETRO_IO);
+        if (thw_game.wait == W_NONE) core_log(RETRO_LOG_WARN, game_unwritten());
+    }
     core_present();
     silence();
 }

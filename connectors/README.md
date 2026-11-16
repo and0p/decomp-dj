@@ -28,7 +28,8 @@ void     dj_set_breakpoints(const struct dj_break *list, size_t n, dj_break_fn f
 - `dj_set_breakpoints` makes the core call the frontend, and wait, each time an
   instruction at one of those places is about to run. dj counts logic ticks this way.
 - The full API, with the optional functions (`dj_read_registers`, `dj_forced_options`, the trace hooks, and
-  `dj_sync`, `dj_write`, `dj_check_parity` and `dj_run` for comparison cores), is in
+  `dj_handle_event` and the rest for comparison cores, whose header is
+  [include/dj_compare.h](include/dj_compare.h)), is in
   [docs/connectors.md](../docs/connectors.md#the-api).
 - `flags` has one byte per byte of the region: `0x01` executed as an opcode
   (first byte of an instruction), `0x02` executed as an operand, `0x04`-`0x20`

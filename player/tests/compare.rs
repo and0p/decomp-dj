@@ -44,10 +44,10 @@ fn project(dir: &Path, core: &Path, nodj: &Path) -> Collection {
              [[compare]]\nname = \"dj\"\npath = \"{c}\"\n\
              [[compare]]\nname = \"dj-fail\"\npath = \"{c}\"\n[compare.options]\ntestcore_sync = \"fail\"\n\
              [[compare]]\nname = \"dj-mismatch\"\npath = \"{c}\"\n[compare.options]\ntestcore_break = \"mismatch\"\n\
-             [[compare]]\nname = \"dj-tick\"\npath = \"{c}\"\n[compare.options]\ntestcore_break = \"tick\"\n\
+             [[compare]]\nname = \"dj-pre\"\npath = \"{c}\"\npreroll = 5\n\
+             [[compare]]\nname = \"dj-halt-pre\"\npath = \"{c}\"\npreroll = 12\n[compare.options]\ntestcore_break = \"halt\"\n\
              [[compare]]\nname = \"dj-crash\"\npath = \"{c}\"\n[compare.options]\ntestcore_break = \"crash\"\n\
              [[compare]]\nname = \"dj-hang\"\npath = \"{c}\"\n[compare.options]\ntestcore_break = \"hang\"\n\
-             [[compare]]\nname = \"dj-crash-check\"\npath = \"{c}\"\n[compare.options]\ntestcore_break = \"crash-check\"\n\
              [[compare]]\nname = \"nodj\"\npath = \"{}\"\n",
             nodj.display().to_string().replace('\\', "/")
         ),
@@ -84,74 +84,35 @@ fn comparison_cores() {
         s.step(&col, "seg", f, false).unwrap();
     }
     assert_ne!(ram(&mut s.core), ram(&mut c.core));
-    assert_eq!(c.sync(&mut s.core, &col, "seg", 5, 5, false).unwrap(), SyncOutcome::Synced);
+    assert!(!c.takes_events());
+    assert_eq!(c.sync(&mut s.core, &col, "seg", 5).unwrap(), SyncOutcome::Synced);
     assert_eq!(ram(&mut s.core), ram(&mut c.core));
     for f in 5..20 {
         s.step(&col, "seg", f, false).unwrap();
-        let st = c.step(&s.core, &col, "seg", f, f == 19).unwrap();
-        assert!(!st.needs_sync);
+        c.step(&col, "seg", f, f == 19).unwrap();
         assert_eq!(ram(&mut s.core), ram(&mut c.core), "frame {f}");
+        assert_eq!(c.check(&mut s.core).unwrap(), Verdict::Match, "frame {f}");
     }
     assert_eq!(&ram(&mut c.core)[0x20..0x22], &[0xab, 0xcd]);
     drop(c);
 
-    // dj_sync: told it's a boot at frame 0, then follows inputs and writes (dj_write).
+    // The default, sync = "events": the core takes events and is not synced or run by dj
+    // (tests/events.rs drives it).
     let mut s2 = {
         drop(s);
         Session::open_with(&col, &rom, &core, false).unwrap()
     };
     s2.enter_replay(&col, "seg").unwrap();
     let mut c = Comparison::open(&col, "dj", &core, Some(&rom)).unwrap();
-    assert_eq!(c.sync(&mut s2.core, &col, "seg", 0, 0, true).unwrap(), SyncOutcome::Synced);
-    assert_eq!(ram(&mut c.core)[63], 1);
-    for f in 0..20 {
-        s2.step(&col, "seg", f, false).unwrap();
-        let st = c.step(&s2.core, &col, "seg", f, false).unwrap();
-        assert!(st.tick_failed.is_none());
-        assert_eq!(ram(&mut s2.core)[..63], ram(&mut c.core)[..63], "frame {f}");
-        assert_eq!(c.check(&mut s2.core, f).unwrap(), Verdict::Match, "frame {f}");
-    }
-    assert!(c.has_check());
+    assert!(c.takes_events() && c.handles_writes() && c.breakpoints().is_empty());
     assert_eq!(c.build.len(), 64);
+    assert!(c.sync(&mut s2.core, &col, "seg", 0).is_err());
+    assert!(c.step(&col, "seg", 0, false).is_err());
     drop(c);
 
-    // Parity fails on the frame where the core goes wrong (dj_run changes its RAM there),
-    // with the core's reason; and a tick can fail with its own reason.
-    for (name, tick) in [("dj-mismatch", false), ("dj-tick", true)] {
-        s2.enter_replay(&col, "seg").unwrap();
-        let mut c = Comparison::open(&col, name, &core, Some(&rom)).unwrap();
-        assert_eq!(c.sync(&mut s2.core, &col, "seg", 0, 0, true).unwrap(), SyncOutcome::Synced);
-        let mut first_bad = None;
-        for f in 0..20 {
-            s2.step(&col, "seg", f, false).unwrap();
-            let st = c.step(&s2.core, &col, "seg", f, false).unwrap();
-            if let Some(why) = st.tick_failed {
-                assert!(tick && why.contains("told to fail the tick"), "{why}");
-                first_bad = Some(f);
-                break;
-            }
-            if let Verdict::Mismatch(why, diffs) = c.check(&mut s2.core, f).unwrap() {
-                assert!(!tick && why.contains("RAM 0x02"), "{why}");
-                assert_diffs(&diffs);
-                first_bad = Some(f);
-                break;
-            }
-        }
-        assert_eq!(first_bad, Some(9), "{name}");
-        drop(c);
-    }
-
-    // A sync the core declines, with its reason.
-    let mut c = Comparison::open(&col, "dj-fail", &core, Some(&rom)).unwrap();
-    match c.sync(&mut s2.core, &col, "seg", 20, 20, false).unwrap() {
-        SyncOutcome::Failed(r) => assert!(r.contains("told to fail at frame 20"), "{r}"),
-        o => panic!("{o:?}"),
-    }
-    drop(c);
-
-    // sync = "dj_sync" (the default) needs the function.
-    let e = Comparison::open(&col, "nodj", &core, Some(&rom)).err().expect("loading without dj_sync must fail");
-    assert!(format!("{e:#}").contains("dj_sync"), "{e:#}");
+    // It needs dj_handle_event.
+    let e = Comparison::open(&col, "nodj", &core, Some(&rom)).err().expect("loading without dj_handle_event must fail");
+    assert!(format!("{e:#}").contains("dj_handle_event"), "{e:#}");
     // ...and the failed load left the slot free.
     let c = Comparison::open(&col, "state", &core, Some(&rom)).unwrap();
     drop(c);
@@ -159,8 +120,9 @@ fn comparison_cores() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
-/// The same comparisons with each comparison core in its own worker process, as the GUI
-/// runs them (.agents/ISOLATION_PLAN.md), and cores that crash or hang there.
+/// A `sync = "state"` comparison core in its own worker process (.agents/ISOLATION_PLAN.md).
+/// dj doesn't run them this way; the worker is kept so that going back is cheap. A core that
+/// takes events can't run in one.
 #[test]
 fn comparison_cores_in_workers() {
     let _slots = SLOTS.lock().unwrap_or_else(|e| e.into_inner());
@@ -182,12 +144,11 @@ fn comparison_cores_in_workers() {
     for f in 0..5 {
         s.step(&col, "seg", f, false).unwrap();
     }
-    assert_eq!(c.sync(&mut s.core, &col, "seg", 5, 5, false).unwrap(), SyncOutcome::Synced);
+    assert_eq!(c.sync(&mut s.core, &col, "seg", 5).unwrap(), SyncOutcome::Synced);
     for f in 5..20 {
         s.step(&col, "seg", f, false).unwrap();
-        let st = c.step(&mut s.core, &col, "seg", f, f == 19).unwrap();
-        assert!(!st.needs_sync);
-        assert_eq!(c.check(&mut s.core, f).unwrap(), Verdict::Match, "frame {f}");
+        let st = c.step(&col, "seg", f, f == 19).unwrap();
+        assert_eq!(c.check(&mut s.core).unwrap(), Verdict::Match, "frame {f}");
         if f == 19 {
             let fr = st.frame.expect("a captured frame");
             assert_eq!((fr.width, fr.height, fr.rgb.len()), (4, 4, 48));
@@ -195,77 +156,9 @@ fn comparison_cores_in_workers() {
     }
     drop(c);
 
-    // dj_sync through the worker's copy of the baseline; dj_write with the baseline's state.
-    s.enter_replay(&col, "seg").unwrap();
-    let mut c = RemoteComparison::open(&col, "dj", &core, Some(&rom)).unwrap();
-    assert!(c.has_check() && c.has_write() && c.build.len() == 64);
-    assert_eq!(c.sync(&mut s.core, &col, "seg", 0, 0, true).unwrap(), SyncOutcome::Synced);
-    for f in 0..20 {
-        s.step(&col, "seg", f, false).unwrap();
-        let st = c.step(&mut s.core, &col, "seg", f, false).unwrap();
-        assert!(st.tick_failed.is_none());
-        assert_eq!(c.check(&mut s.core, f).unwrap(), Verdict::Match, "frame {f}");
-    }
-    drop(c);
-
-    // A mismatch and a failed tick, with the core's reasons, on the same frame as in process.
-    for (name, tick) in [("dj-mismatch", false), ("dj-tick", true)] {
-        s.enter_replay(&col, "seg").unwrap();
-        let mut c = RemoteComparison::open(&col, name, &core, Some(&rom)).unwrap();
-        assert_eq!(c.sync(&mut s.core, &col, "seg", 0, 0, true).unwrap(), SyncOutcome::Synced);
-        let mut first_bad = None;
-        for f in 0..20 {
-            s.step(&col, "seg", f, false).unwrap();
-            let st = c.step(&mut s.core, &col, "seg", f, false).unwrap();
-            if let Some(why) = st.tick_failed {
-                assert!(tick && why.contains("told to fail the tick"), "{why}");
-                first_bad = Some(f);
-                break;
-            }
-            if let Verdict::Mismatch(why, diffs) = c.check(&mut s.core, f).unwrap() {
-                assert!(!tick && why.contains("RAM 0x02"), "{why}");
-                assert_diffs(&diffs);
-                first_bad = Some(f);
-                break;
-            }
-        }
-        assert_eq!(first_bad, Some(9), "{name}");
-    }
-
-    // A declined sync, and a load error, come back as before.
-    let mut c = RemoteComparison::open(&col, "dj-fail", &core, Some(&rom)).unwrap();
-    assert!(matches!(c.sync(&mut s.core, &col, "seg", 20, 20, false).unwrap(), SyncOutcome::Failed(r) if r.contains("told to fail at frame 20")));
-    let e = RemoteComparison::open(&col, "nodj", &core, Some(&rom)).err().expect("loading without dj_sync must fail");
-    assert!(format!("{e:#}").contains("dj_sync"), "{e:#}");
-
-    // A core that crashes on frame 9, one that hangs there, and one that crashes in
-    // dj_check_parity: each ends its worker with a message saying where, and dj goes on.
-    std::env::set_var("DJ_WORKER_TIMEOUT_SCALE", "0.2"); // 2 s instead of 10
-    for (name, expect) in [("dj-crash", "crashed"), ("dj-hang", "didn't finish"), ("dj-crash-check", "crashed")] {
-        s.enter_replay(&col, "seg").unwrap();
-        let mut c = RemoteComparison::open(&col, name, &core, Some(&rom)).unwrap();
-        assert_eq!(c.sync(&mut s.core, &col, "seg", 0, 0, true).unwrap(), SyncOutcome::Synced);
-        let started = std::time::Instant::now();
-        let mut err = None;
-        for f in 0..20 {
-            s.step(&col, "seg", f, false).unwrap();
-            if let Err(e) = c.step(&mut s.core, &col, "seg", f, false).and_then(|_| c.check(&mut s.core, f)) {
-                err = Some((f, format!("{e:#}")));
-                break;
-            }
-        }
-        let (f, e) = err.unwrap_or_else(|| panic!("{name} ran to the end"));
-        assert_eq!(f, 9, "{name}: {e}");
-        assert!(e.contains(expect) && e.contains("Restart comparison core"), "{name}: {e}");
-        let place = if name == "dj-crash-check" { "dj_check_parity" } else { "running frame 9" };
-        assert!(e.contains(place), "{name}: {e}");
-        assert!(c.dead().is_some());
-        assert!(started.elapsed() < std::time::Duration::from_secs(8), "{name}: {:?}", started.elapsed());
-        // Once stopped, it says so; the baseline plays on.
-        let again = format!("{:#}", c.sync(&mut s.core, &col, "seg", 0, 0, true).unwrap_err());
-        assert!(again.contains("has stopped"), "{again}");
-        s.step(&col, "seg", 10, false).unwrap();
-    }
+    // A core that takes events is refused, and so is one with no dj_handle_event.
+    let e = RemoteComparison::open(&col, "dj", &core, Some(&rom)).err().expect("an event core in a worker must be refused");
+    assert!(format!("{e:#}").contains("takes events"), "{e:#}");
     drop(s);
     let _ = std::fs::remove_dir_all(&tmp);
 }
@@ -286,7 +179,7 @@ fn checking_spans() {
     let rom = dir.join("rom.bin");
     let mut s = Session::open_with(&col, &rom, &core, false).unwrap();
 
-    // Every frame passes, [WRITE] included (dj_write).
+    // Every frame passes, [WRITE] included (dj_handle_write).
     s.enter_replay(&col, "seg").unwrap();
     let mut c = Comparison::open(&col, "dj", &core, Some(&rom)).unwrap();
     let span = check_span(&mut s, &mut c, &mut Checker::default(), &col, "seg", 0, 20, 0).unwrap();
@@ -317,14 +210,12 @@ fn checking_spans() {
     assert_eq!(span.passed, 9);
     drop(c);
 
-    // A sync the core declines is a failure at the frame it was tried.
+    // A core that can't copy the baseline judges nothing: no failure, and no frame passes.
     s.enter_replay(&col, "seg").unwrap();
     let mut c = Comparison::open(&col, "dj-fail", &core, Some(&rom)).unwrap();
     let span = check_span(&mut s, &mut c, &mut Checker::default(), &col, "seg", 0, 20, 0).unwrap();
-    let f = span.failure.expect("a failed sync");
-    assert_eq!(f.frame, 0);
-    assert!(f.reason.contains("Couldn't sync at frame 0") && f.reason.contains("told to fail"), "{}", f.reason);
-    assert_eq!(span.passed, 0);
+    assert!(span.failure.is_none(), "{:?}", span.failure);
+    assert_eq!((span.passed, span.skipped), (0, 20));
     drop(c);
 
     drop(s);
@@ -429,6 +320,24 @@ fn dj_parity_command() {
     assert_eq!(code, 1, "{out}{err}");
     assert!(out.contains("FAILED") && out.contains("crashed"), "{out}");
 
+    // Pre-roll ([[compare]] preroll): a child is checked after playing the parent's last
+    // frames, which count as nothing. A core that halts in them leaves the child not checked,
+    // with the failure at the parent's frame.
+    std::fs::write(dir.join("segments/kid.segment"), "dj-segment 1\nid: kid\nparent: seg\nframes: 10\n---\n3 P1 JOYPAD A 1\n").unwrap();
+    let (code, out, err) = dj(&["clean"]);
+    assert_eq!(code, 0, "{out}{err}");
+    let (code, out, err) = dj(&["parity", "kid", "--compare", "dj-pre"]);
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("10 passed") && out.contains("(10 frames"), "{out}");
+    let (code, out, err) = dj(&["parity", "kid", "--compare", "dj-halt-pre"]);
+    assert_eq!(code, 1, "{out}{err}");
+    assert!(out.contains("FAILED") && out.contains("not checked: in pre-roll, frame 9 of seg") && out.contains("told to halt"), "{out}");
+    assert!(out.contains("synced at frame 8, 12 frames of pre-roll"), "{out}");
+    let (code, out, _) = dj(&["parity", "--compare", "dj-halt-pre", "--report", "--json"]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!((v["failures"][0]["segment"].as_str(), v["failures"][0]["frame"].as_u64(), v["failures"][0]["preroll"].as_u64()), (Some("seg"), Some(9), Some(12)), "{out}");
+
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
@@ -456,7 +365,7 @@ fn a_comparison_core_that_dies_under_dj_parity() {
     assert_eq!(code, 0, "{out}{err}");
 
     // The test core goes wrong on the frame where its counter reaches 10: frame 9 of `seg`.
-    for (name, how, call) in [("dj-crash", "crashed", "dj_run"), ("dj-crash-check", "crashed", "dj_check_parity"), ("dj-hang", "made no progress", "dj_run")] {
+    for (name, how, call) in [("dj-crash", "crashed", "dj_handle_event"), ("dj-hang", "made no progress", "dj_handle_event")] {
         let (code, out, err) = dj(&["parity", "--compare", name]);
         assert_eq!(code, 1, "{name}: {out}{err}");
         // The supervisor says which core it was, and where.

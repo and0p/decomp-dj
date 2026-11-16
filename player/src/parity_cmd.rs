@@ -183,7 +183,40 @@ fn check(col: &Collection, local: &Local, name: &str, a: &Args) -> Result<i32> {
         // and record the failure at that frame.
         let died = decomp_dj::isolate::batch_compare_died(id);
         let mut ck = Checker::default();
-        let mut span = check_span(&mut s, &mut cmp, &mut ck, col, id, 0, died.as_ref().map_or(n, |d| d.0.min(n)), start_frame)?;
+        let to = died.as_ref().map_or(n, |d| d.0.min(n));
+        // Pre-roll ([[compare]] preroll): the baseline goes back that many frames, into the
+        // segments above, and plays up to this segment's start, so that the comparison core
+        // has copied it by frame 0. Not when nothing of the segment is to be checked.
+        let route = if to > 0 { store::preroll_route(col, id, 0, cmp.preroll)? } else { vec![] };
+        let mut halted: Option<Failure> = None;
+        if let Some((first, from, _)) = route.first() {
+            let mut at = seek(&mut s, col, first, *from)?;
+            ck.set_preroll(route.iter().map(|(_, a, b)| b - a).sum(), id);
+            for (i, (seg, from, to)) in route.iter().enumerate() {
+                if i > 0 {
+                    at += col.replays[&route[i - 1].0].frames().unwrap_or(0);
+                    ck.enter(&mut cmp, col, &route[i - 1].0, seg);
+                    s.core.coverage_clear();
+                    s.restore_inputs(col, seg, 0)?;
+                }
+                halted = check_span(&mut s, &mut cmp, &mut ck, col, seg, *from, *to, at)?.failure;
+                if halted.is_some() {
+                    break;
+                }
+            }
+            if halted.is_none() {
+                // Straight on into the segment, as playback goes from a parent into its child.
+                ck.enter(&mut cmp, col, &route[route.len() - 1].0, id);
+                s.core.coverage_clear();
+                s.restore_inputs(col, id, 0)?;
+            }
+        }
+        let mut span = match halted {
+            // The core stopped in pre-roll: the segment is not checked.
+            Some(f) => Span { failure: Some(f), ..Default::default() },
+            None => check_span(&mut s, &mut cmp, &mut ck, col, id, 0, to, start_frame)?,
+        };
+        let in_preroll = span.failure.as_ref().is_some_and(|f| f.segment != *id);
         // Frames a core that takes events hadn't judged when the segment ended.
         span.unchecked += ck.finish();
         if let (Some((frame, what)), None) = (&died, &span.failure) {
@@ -194,7 +227,7 @@ fn check(col: &Collection, local: &Local, name: &str, a: &Args) -> Result<i32> {
         frames += ran;
         let conn = s.cache.as_ref().unwrap().conn();
         keep(conn, &cmp, &span)?;
-        let row = RunRow { segment: id.clone(), frames: n, passed: span.passed, skipped: span.skipped, unchecked: span.unchecked, failed_at: span.failure.as_ref().map(|f| f.frame), created: store::now() };
+        let row = RunRow { segment: id.clone(), frames: n, passed: span.passed, skipped: span.skipped, unchecked: span.unchecked, failed_at: span.failure.as_ref().map(|f| if in_preroll { 0 } else { f.frame }), created: store::now() };
         store::record_run(conn, &cmp.name, &cmp.build, &key, &row)?;
         let mut detail = format!("{} passed", span.passed);
         if span.skipped > 0 {
@@ -204,6 +237,10 @@ fn check(col: &Collection, local: &Local, name: &str, a: &Args) -> Result<i32> {
             detail += &format!(", {} not checked", span.unchecked);
         }
         match &span.failure {
+            Some(f) if in_preroll => {
+                line("FAILED", format!("not checked: in pre-roll, frame {} of {}: {}", f.frame, short(&f.segment), f.reason.lines().next().unwrap_or("")), ran, &mut rows);
+                failures.push(f.clone());
+            }
             Some(f) => {
                 line("FAILED", format!("{detail}; frame {}: {}", f.frame, f.reason.lines().next().unwrap_or("")), ran, &mut rows);
                 failures.push(f.clone());
@@ -229,7 +266,7 @@ fn failure_json<'a>(col: &'a Collection, build: &'a str) -> impl Fn(&Failure) ->
     move |f| {
         json!({
             "id": f.id, "segment": f.segment, "title": col.replays.get(&f.segment).map(|r| r.title()).unwrap_or(""),
-            "frame": f.frame, "synced": {"segment": f.synced.0, "frame": f.synced.1}, "reason": f.reason,
+            "frame": f.frame, "synced": {"segment": f.synced.0, "frame": f.synced.1}, "preroll": f.preroll, "reason": f.reason,
             "build": f.build, "current_build": f.build == build, "created": f.created,
             "diffs": f.diffs.list.iter().take(decomp_dj::query::FAILURE_DIFFS).map(decomp_dj::query::DiffRow::of).collect::<Vec<_>>(),
             "diffs_total": f.diffs.total,
@@ -241,6 +278,7 @@ fn print_failures(col: &Collection, build: &str, fs: &[Failure]) {
     for f in fs {
         let title = col.replays.get(&f.segment).map(|r| r.title()).unwrap_or("(segment gone)");
         let from = if f.synced.0 == f.segment { format!("frame {}", f.synced.1) } else { format!("frame {} of {}", f.synced.1, short(&f.synced.0)) };
+        let from = if f.preroll > 0 { format!("{from}, {} of pre-roll", if f.preroll == 1 { "1 frame".to_string() } else { format!("{} frames", f.preroll) }) } else { from };
         let old = if f.build == build { "" } else { ", older build" };
         let id = if f.id > 0 { format!("#{} ", f.id) } else { String::new() };
         println!("  {id}{} {title}, frame {} (synced at {from}{old}): {}", short(&f.segment), f.frame, f.reason.lines().next().unwrap_or(""));
@@ -353,6 +391,10 @@ fn rerun_one(s: &mut Session, cmp: &mut Comparison, col: &Collection, f: &Failur
     };
     let mut start_frame = seek(s, col, &route[0], f.synced.1)?;
     let mut ck = Checker::default();
+    // The frames that were pre-roll when it was found are pre-roll again.
+    if f.preroll > 0 && cmp.takes_events() {
+        ck.set_preroll(f.preroll, &f.segment);
+    }
     let mut total = Span::default();
     for (i, id) in route.iter().enumerate() {
         let n = col.replays[id].frames().unwrap_or(0);
@@ -409,6 +451,10 @@ fn replay_traced(s: &mut Session, cmp: &mut Comparison, col: &Collection, f: &Fa
     };
     let mut start_frame = seek(s, col, &route[0], f.synced.1)?;
     let mut ck = Checker::default();
+    // The frames that were pre-roll when it was found are pre-roll again.
+    if f.preroll > 0 && cmp.takes_events() {
+        ck.set_preroll(f.preroll, &f.segment);
+    }
     let mut total = Span::default();
     let mut out = Replayed { span: Span::default(), traced: None, events: vec![], frame_starts: vec![], dropped: 0, no_trace: None };
     let add = |total: &mut Span, span: Span| {
@@ -564,6 +610,7 @@ fn explain(dir: &Path, col: &Collection, local: &Local, name: &str, id: i64, fra
         "id": f.id, "compare": name, "build": cmp.build, "current_build": f.build == cmp.build,
         "segment": at_frame.0, "frame": at_frame.1,
         "synced": {"segment": f.synced.0, "frame": f.synced.1},
+        "preroll": f.preroll,
         "outcome": outcome,
         "reason": if reason.is_empty() { f.reason.clone() } else { reason },
         "traced": r.traced.map(|(a, b)| json!({"from": a, "to": b, "events": r.events.len(), "dropped": r.dropped})),
@@ -641,6 +688,7 @@ fn report(dir: &Path, col: &Collection, local: &Local, name: &str, a: &Args) -> 
         println!("failures, newest first (`--rerun ID` plays one again, `--clear ID` forgets it):");
         for f in &r.failures {
             let from = if f.synced_segment == f.segment { format!("frame {}", f.synced_frame) } else { format!("frame {} of {}", f.synced_frame, short(&f.synced_segment)) };
+            let from = if f.preroll > 0 { format!("{from}, {} of pre-roll", if f.preroll == 1 { "1 frame".to_string() } else { format!("{} frames", f.preroll) }) } else { from };
             let old = if f.current_build { "" } else { ", older build" };
             println!("  #{} {} {}, frame {} (synced at {from}{old}): {}", f.id, f.short, f.title, f.frame, f.reason.lines().next().unwrap_or(""));
             for d in f.diffs.iter().take(5) {

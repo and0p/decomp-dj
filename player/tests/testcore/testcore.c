@@ -1,18 +1,16 @@
 /* A tiny libretro core for decomp-dj's tests: 64 bytes of "RAM" that change each frame
- * with the held buttons, save states, and the comparison-core API (dj_sync, dj_write)
- * from docs/connectors.md. Built by player/tests/compare.rs; -DNO_DJ leaves the
- * comparison API out.
+ * with the held buttons, save states, and the comparison-core API (dj_handle_event,
+ * dj_handle_write, dj_breakpoints) from docs/connectors.md. Built by
+ * player/tests/compare.rs and events.rs; -DNO_DJ leaves the comparison API out.
  *
- * The core option `testcore_sync` makes dj_sync succeed (ok), decline (fail) or report
- * an error (error).
+ * The core option `testcore_sync` set to "fail" makes it refuse to copy the baseline.
  *
  * -DCONNECTOR gives it a dj connector (API 3), for use as a baseline: a 256-byte "PRG"
  * region whose "instructions" a frame runs in a fixed pattern (see retro_run), with
  * coverage flags, breakpoints and registers.
  *
- * -DEVENTS makes it a comparison core that takes events (dj_handle_event, dj_handle_write,
- * dj_breakpoints) in place of dj_sync and the rest. -DNO_WRITE_HANDLER leaves
- * dj_handle_write out. The core option `testcore_judge` picks how it judges: "frame" (at
+ * As a comparison core it takes events. -DNO_WRITE_HANDLER leaves dj_handle_write out.
+ * The core option `testcore_judge` picks how it judges: "frame" (at
  * each frame end), "tick" (at its breakpoint where the baseline's tick ends) or "copy"
  * (copies the baseline at every event and answers match). */
 #include <stdbool.h>
@@ -54,7 +52,7 @@ static uint8_t ram[64];
 static uint16_t pixels[4 * 4];
 
 void retro_set_environment(env_t cb) {
-    static const struct retro_variable vars[] = {{"testcore_sync", "Sync result; ok|fail|error"}, {NULL, NULL}};
+    static const struct retro_variable vars[] = {{"testcore_sync", "Copying the baseline; ok|fail"}, {NULL, NULL}};
     bool yes = true;
     env = cb;
     cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void *)vars);
@@ -203,9 +201,6 @@ static void conn_register(env_t cb) {
 #endif
 
 #ifndef NO_DJ
-struct dj_baseline { uint32_t version; void *ctx; void *(*get_proc)(void *ctx, const char *name); };
-#define DJ_SYNC_BOOT 1u
-
 static const char *sync_setting(void) {
     struct retro_variable v = {"testcore_sync", NULL};
     if (env && env(RETRO_ENVIRONMENT_GET_VARIABLE, &v) && v.value) return v.value;
@@ -218,92 +213,23 @@ static const char *break_setting(void) {
     return "off";
 }
 
-#ifndef EVENTS
-/* Copies the baseline's RAM (the baseline is another testcore). ram[63] counts boots. */
-int dj_sync(const struct dj_baseline *b, uint64_t frame, uint32_t flags, char *reason, size_t len) {
-    const char *s = sync_setting();
-    if (strcmp(s, "fail") == 0) { snprintf(reason, len, "told to fail at frame %llu", (unsigned long long)frame); return 1; }
-    if (strcmp(s, "error") == 0) { snprintf(reason, len, "told to report an error"); return 2; }
-    void *(*mem)(unsigned) = (void *(*)(unsigned))b->get_proc(b->ctx, "retro_get_memory_data");
-    size_t (*size)(unsigned) = (size_t (*)(unsigned))b->get_proc(b->ctx, "retro_get_memory_size");
-    if (!mem || !size || size(RETRO_MEMORY_SYSTEM_RAM) != sizeof ram) { snprintf(reason, len, "the baseline isn't a testcore"); return 1; }
-    uint8_t boots = ram[63];
-    memcpy(ram, mem(RETRO_MEMORY_SYSTEM_RAM), sizeof ram);
-    ram[63] = (uint8_t)(boots + ((flags & DJ_SYNC_BOOT) ? 1 : 0));
-    return 0;
-}
-
-#endif /* !EVENTS */
-
 struct dj_parity_diff {
     const char *label; const char *region; uint64_t address; const char *symbol;
     const uint8_t *expected; const uint8_t *actual; size_t len;
 };
 
-/* The differences the last dj_check_parity found: one per differing byte, then one with a
+/* The differences the last compare found: one per differing byte, then one with a
  * label alone (a value kept in no one place), to test diffs without an address. */
 static struct dj_parity_diff diffs[64];
 static size_t ndiffs;
 static uint8_t base_copy[64];
 static const char *labels[] = {"frame counter", "buttons held", "mixed state"};
 
-#ifndef EVENTS
-/* Parity: the first 63 bytes of RAM match the baseline's (ram[63] counts boots). */
-int dj_check_parity(const struct dj_baseline *b, uint64_t frame, char *reason, size_t len) {
-    void *(*mem)(unsigned) = (void *(*)(unsigned))b->get_proc(b->ctx, "retro_get_memory_data");
-    ndiffs = 0;
-    if (!mem) { snprintf(reason, len, "no baseline RAM"); return 2; }
-    const uint8_t *base = mem(RETRO_MEMORY_SYSTEM_RAM);
-    memcpy(base_copy, base, sizeof base_copy);
-    if (ram[0] == 10 && strcmp(break_setting(), "crash-check") == 0) *(volatile int *)0 = 1;
-    for (unsigned i = 0; i < 63; i++)
-        if (base[i] != ram[i]) {
-            struct dj_parity_diff d = {i < 3 ? labels[i] : NULL, "RAM", i, NULL, base_copy + i, ram + i, 1};
-            diffs[ndiffs++] = d;
-        }
-    if (ndiffs) {
-        struct dj_parity_diff d = {"checksum of the state", NULL, 0, NULL, NULL, NULL, 0};
-        diffs[ndiffs++] = d;
-        unsigned i = (unsigned)diffs[0].address;
-        snprintf(reason, len, "RAM 0x%02X is 0x%02X here, 0x%02X in the baseline (frame %llu)", i, ram[i], base[i], (unsigned long long)frame);
-        return 1;
-    }
-    return 0;
-}
-
-#endif /* !EVENTS */
-
 size_t dj_parity_diffs(struct dj_parity_diff *out, size_t cap) {
     for (size_t i = 0; i < ndiffs && i < cap; i++) out[i] = diffs[i];
     return ndiffs;
 }
 
-#ifndef EVENTS
-/* The core option `testcore_break` makes the frame where ram[0] becomes 10 go wrong:
- * "mismatch" changes RAM there (a parity failure), "tick" fails the tick with a reason,
- * "crash" crashes the core, "hang" never returns, and "crash-check" crashes in
- * dj_check_parity on that frame. */
-int dj_run(char *reason, size_t len) {
-    retro_run();
-    if (ram[0] != 10) return 0;
-    const char *s = break_setting();
-    if (strcmp(s, "mismatch") == 0) ram[2] ^= 0x55;
-    if (strcmp(s, "tick") == 0) { snprintf(reason, len, "told to fail the tick"); return 1; }
-    if (strcmp(s, "crash") == 0) *(volatile int *)0 = 1;
-    if (strcmp(s, "hang") == 0) for (volatile int spin = 1; spin;) {}
-    return 0;
-}
-
-int dj_write(const struct dj_baseline *b, const char *region, uint64_t address, const uint8_t *bytes, size_t n, char *reason, size_t len) {
-    (void)b;
-    if (strcmp(region, "RAM") != 0) return 1;
-    if (address + n > sizeof ram) { snprintf(reason, len, "past the end"); return 2; }
-    memcpy(ram + address, bytes, n);
-    return 0;
-}
-#endif /* !EVENTS */
-
-#ifdef EVENTS
 /* ---- a comparison core that takes events (docs/connectors.md) ---- */
 struct dj_baseline2 {
     uint32_t version; void *ctx;
@@ -352,6 +278,7 @@ static const uint8_t *base_ram(const struct dj_baseline2 *b) {
 static int copy(const struct dj_baseline2 *b, char *reason, size_t len) {
     const uint8_t *base = base_ram(b);
     if (!base) { snprintf(reason, len, "the baseline has no RAM like mine"); return HALT; }
+    if (!strcmp(sync_setting(), "fail")) { live = false; snprintf(reason, len, "told not to copy the baseline"); return UNJUDGED; }
     memcpy(ram, base, sizeof ram);
     live = true;
     write_waiting = false;
@@ -370,6 +297,8 @@ static int compare(const struct dj_baseline2 *b, char *reason, size_t len) {
             diffs[ndiffs++] = d;
         }
     if (!ndiffs) return MATCH;
+    struct dj_parity_diff d = {"checksum of the state", NULL, 0, NULL, NULL, NULL, 0};
+    diffs[ndiffs++] = d;
     unsigned i = (unsigned)diffs[0].address;
     snprintf(reason, len, "RAM 0x%02X is 0x%02X here, 0x%02X in the baseline", i, ram[i], base[i]);
     return MISMATCH;
@@ -385,11 +314,13 @@ static uint8_t held_now(void) {
 /* The core option `testcore_break` makes it go wrong once its frame counter reaches 10:
  * "mismatch" changes its RAM there, for good; "heal" does the same and copies the baseline
  * again when the counter reaches 14; "halt" answers halt, once; "unjudged" answers
- * unjudged, and goes stale, while the counter is 7, 8 or 9. Returns a verdict, or -1 to go
- * on and compare. */
+ * unjudged, and goes stale, while the counter is 7, 8 or 9; "crash" crashes there and
+ * "hang" never returns. Returns a verdict, or -1 to go on and compare. */
 static int go_wrong(char *reason, size_t len) {
     const char *s = break_setting();
     if (ram[0] == 10 && (!strcmp(s, "mismatch") || !strcmp(s, "heal"))) ram[2] ^= 0x55;
+    if (ram[0] == 10 && !strcmp(s, "crash")) *(volatile int *)0 = 1;
+    if (ram[0] == 10 && !strcmp(s, "hang")) for (volatile int spin = 1; spin;) {}
     if (ram[0] == 14 && !strcmp(s, "heal")) { live = false; snprintf(reason, len, "starting again"); return UNJUDGED; }
     if (ram[0] == 10 && !strcmp(s, "halt") && !halted_once) { halted_once = true; snprintf(reason, len, "told to halt"); return HALT; }
     if (ram[0] >= 7 && ram[0] <= 9 && !strcmp(s, "unjudged")) { live = false; snprintf(reason, len, "an overlay I don't know"); return UNJUDGED; }
@@ -465,5 +396,4 @@ size_t dj_breakpoints(const struct dj_breakpoint **out) {
     *out = list;
     return 2;
 }
-#endif /* EVENTS */
 #endif

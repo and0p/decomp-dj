@@ -50,5 +50,5 @@ regions = ["RAM"]
 
 [[compare]]
 name = "decomp (3D)"
-sync = "dj_sync"
 content = false
+preroll = 3

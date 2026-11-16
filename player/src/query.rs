@@ -1059,6 +1059,8 @@ pub struct FailureRow {
     /// Where the comparison core was synced: the run to reproduce starts there.
     pub synced_segment: String,
     pub synced_frame: u64,
+    /// How many frames from there on were pre-roll, not judged.
+    pub preroll: u64,
     pub reason: String,
     pub build: String,
     /// It failed with the build there is now (else an older one).
@@ -1148,6 +1150,7 @@ impl Project {
             frame: f.frame,
             synced_segment: f.synced.0.clone(),
             synced_frame: f.synced.1,
+            preroll: f.preroll,
             reason: f.reason.clone(),
             build: f.build.clone(),
             current_build: r.is_current(f),

@@ -147,8 +147,82 @@ impl DjRegionC {
 }
 
 /// The connector API version the player speaks. No compatibility with older connectors:
-/// rebuild them (connectors/README.md).
-pub const DJ_API_VERSION: u32 = 2;
+/// rebuild them (connectors/README.md). Version 3: breakpoints (`dj_set_breakpoints`) in
+/// place of the tick counter, and `dj_read_registers`.
+pub const DJ_API_VERSION: u32 = 3;
+
+/// `struct dj_break` (docs/connectors.md): where a breakpoint is.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct DjBreakC {
+    region: i32,
+    offset: i64,
+}
+
+/// `dj_break_fn`: called by the connector when an instruction at a breakpoint is about to
+/// run, inside `retro_run`. Returning non-zero switches that breakpoint off until the list
+/// is set again.
+type BreakFn = unsafe extern "C" fn(*mut c_void, i32, i64) -> i32;
+
+/// A breakpoint hit more often than this in one frame is in a loop (a wait that spins, or
+/// other code at that address): it is switched off until the frame ends, with a warning.
+pub const BREAK_CAP: u32 = 1024;
+
+/// dj's side of a slot's breakpoints. The connector only calls back; the counting is here,
+/// so nothing that clears coverage flags touches it.
+struct Breaks {
+    /// The project's `[tick]`: (region index, offset).
+    tick: Option<(i32, i64)>,
+    ticks: u64,
+    /// Hits in the frame being run, per breakpoint.
+    hits: Vec<((i32, i64), u32)>,
+    /// Breakpoints the cap switched off this frame.
+    capped: Vec<(i32, i64)>,
+    /// A state is being saved or loaded: a core may run instructions meanwhile (Mupen64Plus
+    /// does before a load), and those are not the game's play.
+    busy: bool,
+}
+
+impl Breaks {
+    const fn new() -> Breaks {
+        Breaks { tick: None, ticks: 0, hits: Vec::new(), capped: Vec::new(), busy: false }
+    }
+}
+
+thread_local! {
+    static BREAKS: RefCell<[Breaks; SLOTS]> = const { RefCell::new([Breaks::new(), Breaks::new()]) };
+}
+
+unsafe extern "C" fn break_cb<const S: usize>(_user: *mut c_void, region: i32, offset: i64) -> i32 {
+    BREAKS.with(|b| {
+        let mut b = b.borrow_mut();
+        let b = &mut b[S];
+        if b.busy {
+            return 0;
+        }
+        let at = (region, offset);
+        let n = match b.hits.iter_mut().find(|(k, _)| *k == at) {
+            Some((_, n)) => {
+                *n += 1;
+                *n
+            }
+            None => {
+                b.hits.push((at, 1));
+                1
+            }
+        };
+        if n > BREAK_CAP {
+            b.capped.push(at);
+            let what = if b.tick == Some(at) { "the [tick] address" } else { "a breakpoint" };
+            crate::console::warn("dj", &format!("{what} (region {region}, offset {offset:#X}) ran more than {BREAK_CAP} times in one frame, so it is in a loop: it is off until the frame ends, and those runs aren't counted"));
+            return 1;
+        }
+        if b.tick == Some(at) {
+            b.ticks += 1;
+        }
+        0
+    })
+}
 
 type HwResetFn = unsafe extern "C" fn();
 
@@ -574,8 +648,9 @@ pub struct Connector {
     region_count: unsafe extern "C" fn() -> usize,
     get_region: unsafe extern "C" fn(usize, *mut DjRegionC) -> bool,
     clear: unsafe extern "C" fn(),
-    set_tick_exec: unsafe extern "C" fn(i32, i64),
-    get_tick_count: unsafe extern "C" fn() -> u64,
+    set_breakpoints: unsafe extern "C" fn(*const DjBreakC, usize, Option<BreakFn>, *mut c_void),
+    /// `dj_read_registers` (optional).
+    registers: Option<unsafe extern "C" fn(*mut c_void, usize) -> usize>,
     /// The optional trace part of the API (dj_trace_*).
     trace: Option<TraceFns>,
 }
@@ -803,8 +878,8 @@ impl Core {
                     region_count: std::mem::transmute(get("dj_region_count")?),
                     get_region: std::mem::transmute(get("dj_get_region")?),
                     clear: std::mem::transmute(get("dj_clear")?),
-                    set_tick_exec: std::mem::transmute(get("dj_set_tick_exec")?),
-                    get_tick_count: std::mem::transmute(get("dj_get_tick_count")?),
+                    set_breakpoints: std::mem::transmute(get("dj_set_breakpoints")?),
+                    registers: get("dj_read_registers").map(|f| std::mem::transmute(f)),
                     trace: (|| {
                         Some(TraceFns {
                             start: std::mem::transmute(get("dj_trace_start")?),
@@ -953,6 +1028,15 @@ impl Core {
     /// calls it itself), capturing the picture as `run_frame` does.
     pub fn run_frame_with<T>(&mut self, capture: bool, tick: impl FnOnce() -> T) -> (Option<Frame>, T) {
         let _call = CallGuard::enter(1);
+        // A new frame: the cap counts from nothing, and what it switched off is back on.
+        let rearm = BREAKS.with(|b| {
+            let b = &mut b.borrow_mut()[self.slot];
+            b.hits.clear();
+            !std::mem::take(&mut b.capped).is_empty()
+        });
+        if rearm {
+            self.arm_breakpoints();
+        }
         with_host(self.slot, |h| {
             h.capture_next_frame = capture;
             if capture {
@@ -1002,9 +1086,41 @@ impl Core {
     pub fn serialize(&mut self) -> Result<Vec<u8>> {
         let _call = CallGuard::enter(2);
         self.gl_enter();
+        self.breaks_busy(true);
         let r = self.serialize_inner();
+        self.breaks_busy(false);
         self.gl_leave();
         r
+    }
+
+    /// While a state is saved or loaded, breakpoints that fire are ignored.
+    fn breaks_busy(&self, busy: bool) {
+        BREAKS.with(|b| b.borrow_mut()[self.slot].busy = busy);
+    }
+
+    /// Gives the connector dj's breakpoints: the `[tick]` address, if there is one.
+    fn arm_breakpoints(&mut self) {
+        let Some(c) = &self.connector else { return };
+        let list: Vec<DjBreakC> = BREAKS.with(|b| b.borrow()[self.slot].tick.iter().map(|(region, offset)| DjBreakC { region: *region, offset: *offset }).collect());
+        let cb: BreakFn = match self.slot {
+            BASELINE => break_cb::<0>,
+            _ => break_cb::<1>,
+        };
+        unsafe { (c.set_breakpoints)(list.as_ptr(), list.len(), if list.is_empty() { None } else { Some(cb) }, std::ptr::null_mut()) }
+    }
+
+    /// The CPU's registers as the connector hands them out (`dj_read_registers`,
+    /// docs/connectors.md has the layout per instruction set). None: no connector, or it
+    /// can't say.
+    pub fn registers(&self) -> Option<Vec<u8>> {
+        let f = self.connector.as_ref()?.registers?;
+        let mut buf = vec![0u8; 512];
+        let n = unsafe { f(buf.as_mut_ptr() as *mut c_void, buf.len()) };
+        if n == 0 || n > buf.len() {
+            return None;
+        }
+        buf.truncate(n);
+        Some(buf)
     }
 
     fn serialize_inner(&mut self) -> Result<Vec<u8>> {
@@ -1024,7 +1140,9 @@ impl Core {
     pub fn unserialize(&mut self, state: &[u8]) -> Result<()> {
         let _call = CallGuard::enter(3);
         self.gl_enter();
+        self.breaks_busy(true);
         let ok = unsafe { (self.api.unserialize)(state.as_ptr() as *const c_void, state.len()) };
+        self.breaks_busy(false);
         self.gl_leave();
         if !ok {
             bail!("core failed to load state");
@@ -1157,10 +1275,20 @@ impl Core {
         None
     }
 
+    /// Sets (or, with no region, turns off) the place whose runs count as logic ticks, and
+    /// starts the count again. dj counts them itself, at a breakpoint.
     pub fn set_tick_exec(&mut self, region: Option<usize>, offset: u64) {
-        if let Some(c) = &self.connector {
-            unsafe { (c.set_tick_exec)(region.map(|r| r as i32).unwrap_or(-1), offset as i64) }
-        }
+        BREAKS.with(|b| {
+            let b = &mut b.borrow_mut()[self.slot];
+            b.tick = region.map(|r| (r as i32, offset as i64));
+            b.ticks = 0;
+        });
+        self.arm_breakpoints();
+    }
+
+    /// Starts the tick count again (a segment starts).
+    pub fn tick_reset(&mut self) {
+        BREAKS.with(|b| b.borrow_mut()[self.slot].ticks = 0);
     }
 
     pub fn can_trace(&self) -> bool {
@@ -1207,8 +1335,9 @@ impl Core {
         }
     }
 
+    /// Ticks since the count was last started. Clearing coverage flags doesn't touch it.
     pub fn tick_count(&mut self) -> Option<u64> {
-        self.connector.as_ref().map(|c| unsafe { (c.get_tick_count)() })
+        self.connector.as_ref().map(|_| BREAKS.with(|b| b.borrow()[self.slot].ticks))
     }
 }
 
@@ -1231,6 +1360,7 @@ impl Drop for Core {
         let ctx = with_host(self.slot, |h| h.hw.as_mut().and_then(|hw| hw.ctx.take())).flatten();
         drop(ctx);
         HOST.with(|h| h.borrow_mut()[self.slot] = None);
+        BREAKS.with(|b| b.borrow_mut()[self.slot] = Breaks::new());
         CORE_LOADED[self.slot].store(false, Ordering::SeqCst);
         CORE_RUN[self.slot].store(0, Ordering::SeqCst);
     }

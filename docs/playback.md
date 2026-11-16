@@ -46,6 +46,9 @@ each region in `[hash].regions` in order:
 region name (ASCII) | 0x00 | size as u64 little-endian | region bytes
 ```
 
+Bytes that `[hash].exclude` names ([config.md](config.md#hash)) are hashed as zero.
+The region's size and the other bytes' positions stay as they are.
+
 Only memory the core exposes through `retro_get_memory_data` (or the
 memory maps, for `BUS:<start>-<end>` ranges) can be hashed. System RAM is
 the usual choice. Snapshot blobs themselves are not hashed for this
@@ -69,7 +72,8 @@ exec = "PRG:0x1F3A"       # a tick is each execution of this ROM location
 # or (reserved): write = "RAM:0x0021"  # each write to this address
 ```
 
-The coverage connector counts ticks while the core runs. Tools report ticks
+dj counts ticks while the core runs: the location is a breakpoint in the coverage
+connector, which calls dj each time it is reached. Tools report ticks
 next to frames (`frame 812, tick 790`), so events and parity checks can be
 lined up by tick. In the Thwaite example, the tick is `doStateAction`: menus
 run 0 ticks, and a 300-frame segment that pauses the game runs 130.

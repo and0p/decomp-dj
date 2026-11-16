@@ -44,10 +44,10 @@ index 0b92d7f55..212cd535c 100644
  	instruction(cpu, opcode);
 diff --git a/src/platform/libretro/dj_connector.c b/src/platform/libretro/dj_connector.c
 new file mode 100644
-index 000000000..98632a300
+index 000000000..711dbebe3
 --- /dev/null
 +++ b/src/platform/libretro/dj_connector.c
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,230 @@
 +/* decomp-dj coverage connector for mGBA's libretro core (docs/connectors.md in decomp-dj,
 + * API version 2). MIT-licensed new file; see connectors/mgba/README.md.
 + *
@@ -92,9 +92,12 @@ index 000000000..98632a300
 +static struct GBA* djGBA;
 +static uint8_t* djFlags[DJ_REGIONS];
 +static size_t djSize[DJ_REGIONS];
-+static int djTickRegion = -1;
-+static uint32_t djTickOffset;
-+static uint64_t djTicks;
++/* Breakpoints: one bit per byte of each region, apart from the coverage flags (the player
++ * stores those and tests them for "did anything run"). */
++static uint8_t* djBrk[DJ_REGIONS];
++static int djBrkLeft;
++static dj_break_fn djBrkFn;
++static void* djBrkUser;
 +
 +static void djExec(uint32_t address, uint32_t opcode, bool thumb) {
 +	int region;
@@ -139,8 +142,12 @@ index 000000000..98632a300
 +	for (i = 1; i < len; ++i) {
 +		flags[off + i] |= DJ_FLAG_OPERAND;
 +	}
-+	if (region == djTickRegion && off == djTickOffset) {
-+		++djTicks;
++	if (djBrkLeft > 0 && djBrk[region] && (djBrk[region][off >> 3] & (1 << (off & 7)))) {
++		/* The frontend is called here, before the instruction runs. */
++		if (djBrkFn(djBrkUser, region, off)) {
++			djBrk[region][off >> 3] &= (uint8_t) ~(1 << (off & 7));
++			--djBrkLeft;
++		}
 +	}
 +}
 +
@@ -150,8 +157,12 @@ index 000000000..98632a300
 +	for (i = 0; i < DJ_REGIONS; ++i) {
 +		free(djFlags[i]);
 +		djFlags[i] = NULL;
++		free(djBrk[i]);
++		djBrk[i] = NULL;
 +		djSize[i] = 0;
 +	}
++	/* The regions are sized afresh: the frontend sets its breakpoints again. */
++	djBrkLeft = 0;
 +	if (!djGBA) {
 +		return;
 +	}
@@ -162,8 +173,8 @@ index 000000000..98632a300
 +		if (!djFlags[i]) {
 +			djSize[i] = 0;
 +		}
++		djBrk[i] = djSize[i] ? calloc((djSize[i] + 7) / 8, 1) : NULL;
 +	}
-+	djTicks = 0;
 +}
 +
 +static unsigned djApiVersion(void) {
@@ -210,17 +221,50 @@ index 000000000..98632a300
 +			memset(djFlags[i], 0, djSize[i]);
 +		}
 +	}
-+	djTicks = 0;
 +}
 +
-+static void djSetTickExec(int region, int64_t offset) {
-+	djTickRegion = (region >= 0 && region < DJ_REGIONS && offset >= 0) ? region : -1;
-+	djTickOffset = (uint32_t) offset;
-+	djTicks = 0;
++/* Replaces the breakpoints. n = 0, or no function, turns them off. Places outside the
++ * regions are left out. */
++static void djSetBreakpoints(const struct dj_break* list, size_t n, dj_break_fn fn, void* user) {
++	size_t i;
++	for (i = 0; i < DJ_REGIONS; ++i) {
++		if (djBrk[i]) {
++			memset(djBrk[i], 0, (djSize[i] + 7) / 8);
++		}
++	}
++	djBrkLeft = 0;
++	djBrkFn = fn;
++	djBrkUser = user;
++	if (!fn || !list) {
++		return;
++	}
++	for (i = 0; i < n; ++i) {
++		int region = list[i].region;
++		int64_t off = list[i].offset;
++		if (region < 0 || region >= DJ_REGIONS || !djBrk[region] || off < 0 || (size_t) off >= djSize[region]) {
++			continue;
++		}
++		if (!(djBrk[region][off >> 3] & (1 << (off & 7)))) {
++			djBrk[region][off >> 3] |= (uint8_t) (1 << (off & 7));
++			++djBrkLeft;
++		}
++	}
 +}
 +
-+static uint64_t djGetTickCount(void) {
-+	return djTicks;
++/* The ARM7TDMI's registers as the CPU holds them: r0 to r15, then the CPSR, each a 32-bit
++ * value in the host's byte order (68 bytes). r15 is two instructions past the one about to
++ * run. Returns the bytes written, 0 if `out` is too small or no game is loaded. */
++static size_t djReadRegisters(void* out, size_t cap) {
++	uint32_t* o = out;
++	int i;
++	if (!out || !djGBA || !djGBA->cpu || cap < 17 * sizeof(uint32_t)) {
++		return 0;
++	}
++	for (i = 0; i < 16; ++i) {
++		o[i] = (uint32_t) djGBA->cpu->gprs[i];
++	}
++	o[16] = (uint32_t) djGBA->cpu->cpsr.packed;
++	return 17 * sizeof(uint32_t);
 +}
 +
 +void* dj_get_proc_address(const char* sym) {
@@ -230,18 +274,18 @@ index 000000000..98632a300
 +	if (!strcmp(sym, "dj_region_count")) return (void*) &djRegionCount;
 +	if (!strcmp(sym, "dj_get_region")) return (void*) &djGetRegion;
 +	if (!strcmp(sym, "dj_clear")) return (void*) &djClear;
-+	if (!strcmp(sym, "dj_set_tick_exec")) return (void*) &djSetTickExec;
-+	if (!strcmp(sym, "dj_get_tick_count")) return (void*) &djGetTickCount;
++	if (!strcmp(sym, "dj_set_breakpoints")) return (void*) &djSetBreakpoints;
++	if (!strcmp(sym, "dj_read_registers")) return (void*) &djReadRegisters;
 +	return NULL;
 +}
 diff --git a/src/platform/libretro/dj_connector.h b/src/platform/libretro/dj_connector.h
 new file mode 100644
-index 000000000..4bf02c945
+index 000000000..97398798c
 --- /dev/null
 +++ b/src/platform/libretro/dj_connector.h
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,42 @@
 +/* decomp-dj coverage connector for mGBA's libretro core (docs/connectors.md in decomp-dj,
-+ * API version 2). MIT-licensed new file; see connectors/mgba/README.md. */
++ * API version 3). MIT-licensed new file; see connectors/mgba/README.md. */
 +#ifndef DJ_CONNECTOR_H
 +#define DJ_CONNECTOR_H
 +
@@ -249,11 +293,22 @@ index 000000000..4bf02c945
 +#include <stddef.h>
 +#include <stdint.h>
 +
-+#define DJ_API_VERSION   2
++#define DJ_API_VERSION   3
 +#define DJ_FLAG_OPCODE   0x01 /* executed as the first byte of an instruction */
 +#define DJ_FLAG_OPERAND  0x02 /* executed as another byte of an instruction */
 +#define DJ_FLAG_THUMB    0x04 /* armv4t mode bit: the opcode ran in Thumb state */
 +#define DJ_FLAG_ARM      0x08 /* armv4t mode bit: the opcode ran in ARM state */
++
++/* A breakpoint: an offset into a region (index as in dj_get_region). */
++struct dj_break {
++	int32_t region;
++	int64_t offset;
++};
++
++/* Called when the instruction at a breakpoint is about to run, inside retro_run. The core
++ * waits for it to return. Non-zero switches that breakpoint off until the list is set
++ * again. */
++typedef int (*dj_break_fn)(void* user, int region, int64_t offset);
 +
 +struct dj_region {
 +	const char* name;     /* "ROM", "IWRAM", "EWRAM", "BIOS" */

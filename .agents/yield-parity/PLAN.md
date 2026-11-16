@@ -2,7 +2,8 @@
 
 Written 2026-11-15 15:20 EST, from a conversation with the developer that day. The
 developer asked for the design to be looked at afresh, with the comparison core doing
-more and dj less. Nothing here is built.
+more and dj less. Build steps 1 to 3 are done: the two connector spikes ("Spike results")
+and the new connector API ("Built so far"). The rest is not built.
 
 Revisions, all 2026-11-15:
 
@@ -19,6 +20,12 @@ Revisions, all 2026-11-15:
   `dj_handle_write` (section 3). Playback pauses only at the first mismatch of a run.
   Pre-roll is zero unless the `[[compare]]` entry sets it. "Unjudged" carries a reason.
   The tail of a segment expects no verdict. The worker is turned down.
+- 19:36 EST: the Mesen and Mupen64Plus spikes were run and both pass. Their results
+  are under "Spike results"; the open problems and the build order are updated.
+- 20:46 EST: the N64 save-storage problem the spike exposed is fixed in the connector
+  patch.
+- 22:40 EST: build step 3 is built: connector API 3 in all three connectors, with dj
+  counting ticks itself.
 
 How to read it:
 
@@ -301,7 +308,8 @@ What it costs:
   what an older tool should do. dj is not released, so this is the time.
 - **dj writes the baseline's memory in the middle of a frame,** which it has not done
   before. It should be safe for RAM on Mesen, and on Mupen64Plus's interpreter, which dj
-  already forces. Each connector needs checking (open problem 8).
+  already forces. The spikes checked both: the write took effect in its own frame,
+  repeated exactly, and survived a snapshot taken after it. mGBA is not checked.
 - **On the N64, other code at that address in another overlay triggers the write.** The
   same caveat as `[tick]`.
 
@@ -606,6 +614,154 @@ On dj's own connectors, before this design.
 - **A spin loop is a bad place for a breakpoint.** In Thwaite's boot one loop ran its
   compare 2,693 times in a frame.
 
+## Built so far
+
+**Step 3, 2026-11-15: connector API 3.** In `player/src/libretro.rs` and the three
+connector patches; described in `docs/connectors.md`.
+
+- **`dj_set_breakpoints`** takes a list of places and one function. The connector calls it,
+  and waits, when an instruction at one is about to run. Returning non-zero switches that
+  breakpoint off until the list is set again.
+- **`dj_set_tick_exec` and `dj_get_tick_count` are gone.** `[tick]` is a breakpoint and dj
+  counts the calls. `dj_clear` no longer touches a count.
+- **The cap is 1,024 calls in one frame** (`BREAK_CAP`). Past it dj switches the breakpoint
+  off, warns once, and sets the list again at the next frame.
+- **Hits while a state is saved or loaded are ignored** by dj, and held back by the
+  Mupen64Plus connector.
+- **Each connector keeps a bit per byte for breakpoints,** apart from the coverage flags.
+- **`dj_read_registers`** exists in all three, with a first layout per instruction set.
+  Nothing in dj reads it yet.
+- **The N64 has ticks now.** Its connector's tick functions were stubs.
+
+Checked:
+
+| Check | Result |
+| --- | --- |
+| Thwaite and Tetris, every segment's hashes and ticks against the old cores | identical |
+| gba-test against the old core | identical |
+| Ticks with the coverage flags cleared after every frame, as the GUI and a parity check do | the same as played straight: 845 (Thwaite), 35 (gba-test), 588 (No Mercy) |
+| The cap, with `[tick]` in Thwaite's boot spin loop | switched off at 1,024 in the frame, warned, back on the next frame |
+| The test suite, and the GUI's build | pass |
+
+- **Thwaite, Tetris and gba-test are repinned** to the new builds. No Mercy is not: its ROM
+  is outside what the thread could read.
+- **`player/examples/tick_check.rs`** is the tool that made the tick comparison.
+- **Only dj's own `[tick]` breakpoint is armed so far.** A comparison core's breakpoints
+  come with step 6.
+- **The spike cores no longer load their connector:** they speak API 2. The commands under
+  "Where the spike code is" need the spike patches carried over to API 3 to run again.
+
+## Spike results
+
+Run 2026-11-15, as build steps 1 and 2. Each spike is a patched copy of a connector that
+adds a few breakpoints and one function to call at each, and a harness that plays a
+segment many times and compares the runs. Neither changes dj or the shipped connectors.
+
+### Mesen (NES)
+
+Thwaite, three segments: "Defend" (2,400 frames), "Idle" (3,600) and "Boot" (120).
+Breakpoints at the tick, `doStateAction` (`PRG:0x197`), and the top of the game loop
+(`PRG:0xA9`).
+
+| Question | Result |
+| --- | --- |
+| The same hits across two runs? | Yes: frame, RAM hash and registers at every hit, up to 5,812 compared |
+| The same state hashes with and without breakpoints? | Yes, after every frame. Each segment's recorded end-hash is reached |
+| The same after loading a snapshot taken mid-segment? | Yes |
+| Calls while saving or loading? | None |
+| A save state taken with breakpoints armed | 0 of 35,840 bytes differ |
+| A write to RAM inside the call | Reads back, takes effect in its own frame, repeats exactly, survives a snapshot |
+| Registers | Read. PC is the breakpoint's address at every hit |
+| Cost | About 720 frames a second not armed, 717 armed where nothing runs, 711 with 8.4 million calls (3,500 a frame). A call that returns at once: 3 to 4 ns. All within about 1%, near run-to-run noise |
+
+- **The call arrives in the opcode fetch,** before the instruction runs.
+- **A spin loop is as bad as feared.** A breakpoint in the boot's `vwait1` loop was hit
+  3,891 times in one frame. The cap is needed.
+- **No lag frame occurred** in these segments, so lag frames are still untested.
+- **Only internal RAM on one game without bank switching** was tried.
+
+### Mupen64Plus-Next (N64)
+
+WWF No Mercy, two segments: "CPU vs CPU exhibition" (2,136 frames) and the four-CPU tag
+match (1,800). Breakpoints at `match_tick` (`RDRAM:0x114514`) and at its one call site
+(`RDRAM:0xD9DFC`). Run with GPU copies to RDRAM off; see "Existing problems" for why.
+
+| Question | Result |
+| --- | --- |
+| Can the call be made on the game's coroutine? | Yes. Its stack is 8 MB (`co_create` in `libretro.c`), so its size is not a concern |
+| Can it be made from `retro_run`, after a switch to the frontend's coroutine? | Yes. Nothing treats the switch as the end of the frame |
+| The same hits from power-on and from a loaded state? | Yes: frame, RDRAM hash and registers at every hit |
+| The same RDRAM with and without breakpoints? | Yes, after every frame |
+| The same after loading a snapshot taken mid-segment? | Yes, with either way of calling |
+| Calls while saving or loading? | None delivered |
+| A write inside the call | Zeroing `jal rng_main` at RDRAM 0x570 took effect in that frame, repeated exactly, and survived a snapshot |
+| Byte order of memory | 32-bit words in the host's order. On this machine the byte at address A is at A ^ 3 |
+| Registers | Read. PC is the breakpoint's address at every hit |
+| Cost | About 7 ns a call direct and 16 ns through `retro_run`, over 20 million calls. Playback speed is within noise either way |
+
+- **Either way of calling works, so the direct call is enough.** The switch to the
+  frontend's coroutine is not needed.
+- **Other code at a breakpoint's address can be told apart by the registers.** In the
+  exhibition segment `match_tick`'s address ran 588 times; 502 were the real function.
+  The other 86, before the match was loaded, had another stack pointer (0x8008CFC8
+  against 0x8008D118) and never reached the call site's breakpoint.
+- **Two hits in one frame happen:** twice in each segment.
+
+Not covered:
+
+- The connector held back no hit during a load in these runs, so that guard never fired
+  and is untested.
+- One game, and only the pure interpreter, which dj forces.
+- Finding the running thread. Only the stack pointer was read.
+
+### Existing problems the N64 spike exposed
+
+None is about breakpoints. Each affects dj as it is today.
+
+1. **Save states on this core did not restore SRAM, and dj hashes SRAM.** *Fixed 2026-11-15
+   in the connector patch.* "SRAM" is dj's name for libretro's save RAM, which on this
+   core is every kind of save storage: EEPROM, Controller Paks, SRAM and Flash RAM. The
+   game writes it at about frame 665 of the exhibition segment. A state loaded after that
+   kept the later save until the game wrote it again: 665 frames of state hashes differed
+   while RDRAM was identical.
+   - **The fix:** a save state now carries the save storage after the core's own state,
+     and a load puts it back. The reasoning is in `connectors/mupen64plus/README.md`.
+   - **Checked** with a core built from the new patch on a clean copy of the pinned
+     commit: no frame's state hash differs. A state cut to the old length still loads and
+     behaves as before.
+   - **Still to do by hand:** build the core (`connectors/mupen64plus/build.sh`) and
+     `dj repin` the No Mercy project. The patch's id is now `4343e0a2`.
+2. **`mupen64plus-EnableCopyColorToRDRAM = "Async"` makes RDRAM depend on what ran
+   before.** With the project's own settings RDRAM differed for 1,138 frames between a
+   run from power-on and one from a loaded state, and two runs from the same loaded state
+   disagreed. The GPU's buffers are not in a save state and the copy is asynchronous. A
+   comparison core that reads the picture's bytes from RAM would see the same noise. The
+   roadmap already questions this default.
+3. **Two saves with no frame between them.** The second runs the game on to its next
+   interrupt before it saves, so it holds a state from inside the frame, and that state
+   did not load back identically. dj saves at a segment's end and may save again at the
+   next segment's frame 0.
+
+### Where the spike code is
+
+- `player/examples/mesen_spike.rs` and `player/examples/n64_spike.rs`: the harnesses.
+- `build/mesen-spike-src` and `build/mupen64plus-spike-src`: the patched copies. `build/`
+  is not in git, so the connector changes exist only there. They add
+  `dj_spike_set_breaks` and `dj_spike_registers` (and `dj_spike_suppressed` on the N64).
+- `build/cores-spike/`: the two cores.
+
+To run them again, from `player/`:
+
+```bash
+cargo run --release --example mesen_spike -- ../examples/thwaite ../examples/thwaite/build/thwaite.nes ../build/cores-spike/mesen_libretro d27cab3c "PRG:0x197,PRG:0xA9" 0x3DA
+```
+
+and from `examples/nomercy/`:
+
+```bash
+SPIKE_NO_FB=1 ../../player/target/release/examples/n64_spike . "WWF No Mercy (USA) (Rev 1).z64" ../../build/cores-spike/mupen64plus_next_libretro 38ac3eba "0x114514,0xD9DFC"
+```
+
 ## Not in this plan
 
 - **Patches to the ROM.** A separate feature, in the roadmap.
@@ -638,40 +794,51 @@ breakpoint to the core. The developer chose the new form on 2026-11-15.
 
 ## Open problems
 
-Decided since the last revision, and no longer open: the names, the default pre-roll,
+Decided since the 16:57 revision, and no longer open: the names, the default pre-roll,
 the tail of a segment, a reason on "unjudged", a dropped write, and the worker.
 
-1. **The N64 connector has no breakpoints.** The game runs on a coroutine whose stack may
-   be too small for the call. The connector can switch to the main coroutine to make it.
-   Not checked: whether anything treats that switch as the end of the frame.
-2. **The layout of the registers** for each instruction set. An N64 core needs them to
-   find the running thread.
-3. **What the handle's memory looks like on the N64.** Mupen64Plus keeps RDRAM as
-   host-order 32-bit words. The handle must say, or hand out bytes in the CPU's order.
-4. **OpenGL contexts nesting** (section 11). Not tried.
-5. **A core that corrupts memory before it crashes,** dj's or the baseline's. No answer.
-6. **dj's own tick count on the N64** counts other code at the `[tick]` address in
-   another overlay. A project should pick an address in code that is always loaded.
-7. **A fixed list of breakpoints and overlays** (section 1): whether "pending" is enough.
-8. **Writing the baseline's memory inside a frame** (section 3). Not tried on any
-   connector. To check on each: that the write takes effect at once, and that state
-   hashes and save states stay repeatable.
-9. **`ROADMAP.md`, `ISOLATION_PLAN.md` and the docs** describe earlier designs.
+Answered by the spikes, and no longer open: whether the N64 can make a blocking call
+inside a frame, the byte order of N64 memory, and whether memory can be written inside a
+frame.
+
+Fixed since the spikes, and no longer open: save states on Mupen64Plus not restoring the
+game's save storage ("Spike results", existing problem 1).
+
+1. **The layout of the registers** has a first version for each instruction set
+   (`docs/connectors.md`), and nothing reads it yet. Finding the running N64 thread was
+   not tried.
+2. **How the handle hands out N64 memory.** It is host-order 32-bit words. Either the
+   handle says so, or it hands out bytes in the console's order.
+3. **OpenGL contexts nesting** (section 11). Not tried.
+4. **A core that corrupts memory before it crashes,** dj's or the baseline's. No answer.
+5. **dj's own tick count on the N64** counts other code at the `[tick]` address in
+   another overlay: 86 of 588 hits in the spike. A project should pick an address in
+   code that is always loaded.
+6. **A fixed list of breakpoints and overlays** (section 1): whether "pending" is enough.
+   The spike shows a core can tell the other code apart by the stack pointer.
+7. **GPU copies into RDRAM** ("Spike results", existing problem 2). An N64 project used
+   for parity needs them off, or the picture's bytes left out of what is compared.
+8. **Two saves with no frame between them** ("Spike results", existing problem 3).
+9. **The guard against hits during a load** never fired in the spike, so it is untested.
+10. **`ROADMAP.md`, `ISOLATION_PLAN.md` and the docs** describe earlier designs.
 
 ## Build order
 
 Thread. Both spikes come before the move into dj's process, which gives up a shipped
 protection.
 
-1. **A spike in the Mesen connector.** One breakpoint at Thwaite's game wait and the
+1. **A spike in the Mesen connector.** *Done 2026-11-15, and it passes: see "Spike
+   results".* One breakpoint at Thwaite's game wait and the
    blocking call, with no comparison core. Done when the hits and RAM hashes are the
    same across two runs and after loading a snapshot, state hashes are the same as
    without the breakpoint, and the cost per hit is measured.
-2. **A spike in the Mupen64Plus connector.** One breakpoint at No Mercy's `match_tick`.
+2. **A spike in the Mupen64Plus connector.** *Done 2026-11-15, and it passes, with GPU
+   copies to RDRAM off: see "Spike results".* One breakpoint at No Mercy's `match_tick`.
    Done when the hit count is the same from power-on and from a snapshot, a load fires
    none, and state hashes are unchanged. If this cannot be made to work, stop and
    rethink.
 3. **The new connector API in all three connectors,** with dj counting ticks itself.
+   *Done 2026-11-15: see "Built so far".*
    Done when Thwaite's tick counts equal those of a
    plain `dj run` today, with the GUI and a parity check running, and mGBA still reports
    coverage.

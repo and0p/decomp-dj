@@ -3,7 +3,7 @@
 Patches the [libretro Mupen64Plus-Next core](https://github.com/libretro/mupen64plus-libretro-nx)
 (Nintendo 64) so it reports which code ran, and so its save states line up with frames,
 for decomp-dj. First version: built and tried with WWF No Mercy (below); provenance of RAM
-code, ticks and the trace hook are still to come
+code and the trace hook are still to come
 ([.agents/CONNECTOR_PLAN.md](../../.agents/CONNECTOR_PLAN.md), N64).
 
 - **Pinned upstream:** `15bada85906593376e8fd697f1b0b3af3a20f512` (2026-10-22).
@@ -33,6 +33,28 @@ code, ticks and the trace hook are still to come
   `n64StateCallback`: the core calls it before clearing the job, and twice for a save, so
   a job set meanwhile would be lost.) If the job had to wait for a safe point and frames ran first, the
   call returns false (and logs it), so dj doesn't number frames wrong.
+- **A save state carries the game's save storage.** The core keeps a game's saved data in
+  one block, `saved_memory`: EEPROM, the four Controller Paks, SRAM and Flash RAM, 296,960
+  bytes in all. libretro hands that block out as save RAM, which dj's `[hash] regions`
+  calls `SRAM` whatever chip is behind it. The core's own state holds the storage devices'
+  registers but not the block's bytes. So when dj loaded an earlier state, main memory went
+  back in time and the save did not: it kept whatever the game had written since.
+  - **What that broke.** A project that hashes `SRAM` got other state hashes after a jump
+    than from a straight run, until the game next wrote its save, with nothing wrong in
+    the game. And a game that reads its save after a jump would read data from its own
+    future.
+  - **The change.** `retro_serialize_size` reports the core's state plus the block.
+    `retro_serialize` copies the block in after the core's state, and `retro_unserialize`
+    copies it back once the load has run. The storage devices point into `saved_memory`,
+    so nothing else needs telling.
+  - **Why here and not in dj.** dj could keep the save beside each snapshot and write it
+    back, as it does at power-on. But then every tool that loads a state would have to
+    remember to, and a state file on its own would still be incomplete. In the connector,
+    a state is whole wherever it goes.
+  - **What it costs.** A state is 17,090,372 bytes, up from 16,793,412 (under 2%). The
+    build id changes, so a project needs `dj repin`; state hashes from power-on are the
+    same as before. A state made before the change is shorter: it loads, and leaves the
+    save as it is, which is the old behaviour.
 - **Options dj needs are forced** once dj has asked for `dj_api_version`, with a warning
   when they differ from the core options: GLideN64 video, the HLE RSP, no threaded renderer
   (angrylion keeps state outside the save state, so loads don't reproduce), and the pure
@@ -47,7 +69,7 @@ code, ticks and the trace hook are still to come
   rectangles. The patch enables the attribute only with coverage. It doesn't touch what
   dj hashes.
 
-Regions, in index order (connector API version 2):
+Regions, in index order (connector API version 3):
 
 | Region | `cpu` | `data` | `file_offset` | Flags |
 | --- | --- | --- | --- | --- |
@@ -55,8 +77,15 @@ Regions, in index order (connector API version 2):
 | `ROM` (the cartridge) | none | the ROM in `.z64` (big-endian) order, from the core's ROM buffer | 0 | not set yet |
 
 Code runs from RDRAM on the N64, so that's where coverage lands. Telling which ROM bytes
-ran needs the provenance of RAM code (`dj_origin`, later). Ticks aren't counted yet
-(`dj_set_tick_exec` is accepted and ignored).
+ran needs the provenance of RAM code (`dj_origin`, later).
+
+**Breakpoints** (`dj_set_breakpoints`) are in `RDRAM` only, on a word boundary. `dj_exec`
+tests each instruction's place against them and calls dj at a hit, before the instruction
+runs, on the game's coroutine (its stack is 8 MB). No call is made while a save or load
+that dj asked for is in progress: the core runs instructions before a load, and those are
+not the game's play. dj counts logic ticks at a breakpoint, so `[tick]` works on the N64
+now. Other code can sit at the same address in another overlay and is counted too; pick an
+address in code that is always loaded. `dj_read_registers` hands out the PC and r0 to r31.
 
 The core can't save a state before its first frame (it sets up its devices then), so dj
 runs one frame at power-on for it, and frame 0 of a root segment starts after that.
@@ -67,3 +96,26 @@ and 200 frames, and twice in a row); a 300-frame segment's ending hash reproduce
 empty database; RDRAM flags are word-aligned with `0x02` on the three bytes after each
 opcode. Not checked yet: whether state hashes are identical with and without the patch
 (unpatched saves run an extra frame, so it takes a run without snapshots).
+
+Tried 2026-11-15, for the save storage, with No Mercy's "CPU vs CPU exhibition" segment
+(2,136 frames, where the game writes its Flash RAM at about frame 665). The segment was
+played from power-on, then again from a state loaded at its start, and the project's state
+hash (`RAM` and `SRAM`) was compared after every frame:
+
+| Core | Frames whose state hash differs | RDRAM alone |
+| --- | --- | --- |
+| Before the change | 665, frames 0 to 664 | none |
+| After | none | none |
+| After, loading a state cut to the old length | 665, as before the change | none |
+
+That was with the GPU's copies to RDRAM off. With the project's own settings the recorded
+end hash is still reached from power-on, so `dj repin` should pass.
+
+**The GPU's copies to RDRAM are a separate problem, not fixed here.** With
+`mupen64plus-EnableCopyColorToRDRAM = "Async"`, RDRAM itself differed on 1,138 frames
+between the run from power-on and the run from a loaded state: the GPU's buffers are not in
+a save state and the copy is asynchronous. For hashes that hold after a jump, turn
+`EnableCopyColorToRDRAM` and `EnableCopyDepthToRDRAM` off.
+
+**Two saves with no frame between them** are also still a problem: the second runs the
+game on to its next interrupt before it saves, so it holds a state from inside the frame.

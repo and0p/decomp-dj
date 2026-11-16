@@ -382,7 +382,10 @@ and the GUI:
 
 Not built yet:
 
-- `exclude` is parsed but not applied when hashing or storing.
+- `exclude`: built 2026-11-15 for storing (`Session::state_to_store`, docs/config.md,
+  "Cache exclude"). It takes memory regions (`RAM:0x38F000-0x3FFFFF`), not the
+  connector's code regions as in the example above, and each range must also be in
+  `[hash] exclude`.
 - Pages are stored whole; zstd `--patch-from` against the previous page isn't done.
 - `code` and `coverage_sum` (the report recomputes from `coverage` each time, which
   is fast enough at NES sizes), and `parity` (waits on comparison cores).

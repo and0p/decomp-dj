@@ -110,6 +110,13 @@ pub struct Session {
     pub cache: Option<Cache>,
     /// The core's reported version, which the setup id leaves out (a warning only).
     pub core_version: String,
+    /// `[cache] exclude`, checked: parts of memory regions zeroed in the states this session
+    /// stores (region, first offset, last offset).
+    cache_exclude: Vec<(String, u64, u64)>,
+    /// Where each of those regions was last found inside a save state.
+    exclude_at: HashMap<String, usize>,
+    /// Regions that couldn't be found in a save state (said once each).
+    exclude_missed: BTreeSet<String>,
 }
 
 impl Session {
@@ -198,7 +205,25 @@ impl Session {
         if let Some(note) = &build_note {
             crate::console::push(crate::console::Level::Warn, "dj", note);
         }
-        Ok(Session { core, boot_state, boot_sram, setup_id, rom_path: rom.to_path_buf(), cache, core_version, build: reported, build_note })
+        // A stored state with bytes zeroed gives other state hashes when it is loaded, unless
+        // the hash leaves those bytes out too.
+        let cache_exclude = match &cache {
+            Some(c) => {
+                let ranges = crate::collection::parse_exclude(&c.settings.exclude, "[cache] exclude")?;
+                let hashed_out = col.config.hash.excluded()?;
+                for r in &ranges {
+                    if !crate::collection::exclude_covers(&hashed_out, r) {
+                        bail!(
+                            "[cache] exclude {}:{:#X}-{:#X} isn't covered by [hash] exclude: a snapshot stored without those bytes would give other state hashes when it's loaded. Add the range to [hash] exclude in config.toml too (docs/config.md#cache)",
+                            r.0, r.1, r.2
+                        );
+                    }
+                }
+                ranges
+            }
+            None => vec![],
+        };
+        Ok(Session { core, boot_state, boot_sram, setup_id, rom_path: rom.to_path_buf(), cache, core_version, build: reported, build_note, cache_exclude, exclude_at: HashMap::new(), exclude_missed: BTreeSet::new() })
     }
 
     pub fn devices_at_start(&self, col: &Collection, id: &str) -> Result<BTreeMap<u32, u32>> {
@@ -234,9 +259,12 @@ impl Session {
 
     pub fn state_hash(&mut self, col: &Collection) -> Result<String> {
         let mut h = blake3::Hasher::new();
+        let excluded = col.config.hash.excluded()?;
         for region in col.config.hash.regions.clone() {
             let bytes: Vec<u8> = if let Some(mid) = region_memory_id(&region) {
-                self.core.memory(mid).map(|m| m.to_vec()).unwrap_or_default()
+                let mut bytes = self.core.memory(mid).map(|m| m.to_vec()).unwrap_or_default();
+                mask_excluded(&region, &mut bytes, &excluded)?;
+                bytes
             } else if let Some(range) = region.strip_prefix("BUS:") {
                 let (a, b) = range.split_once('-').ok_or_else(|| anyhow!("BUS hash ranges look like BUS:0x0000-0x07FF"))?;
                 let (a, b) = (parse_hex(a)? as usize, parse_hex(b)? as usize);
@@ -298,6 +326,7 @@ impl Session {
         }
         self.core.clear_inputs();
         self.core.coverage_clear();
+        self.core.tick_reset();
         let start_hash = self.state_hash(col)?;
         let wanted_checkpoints: Vec<u64> = r.checkpoints()?.into_iter().map(|(f, _)| f).collect();
         let mut shots_wanted: Vec<u64> = opts.extra_shots.clone();
@@ -370,7 +399,7 @@ impl Session {
         }
         if rec.record && rec.store_at.contains(&f) {
             let h = self.state_hash(col)?;
-            let s = self.core.serialize()?;
+            let s = self.state_to_store()?;
             rec.rec.snapshots.push((f, h, s));
         }
         let want_shot = rec.shots_wanted.contains(&f);
@@ -425,7 +454,7 @@ impl Session {
         } else {
             self.core.coverage_regions()
         };
-        let end_state = self.core.serialize()?;
+        let end_state = self.state_to_store()?;
         let has_children = !col.children(Some(&rec.id)).is_empty();
         let poked = col.replays[&rec.id].is_poked();
         if let Some(c) = &mut self.cache {
@@ -469,6 +498,35 @@ impl Session {
 
     pub fn write(&mut self, region: &str, address: u64, bytes: &[u8]) -> Result<()> {
         write_memory(&mut self.core, region, address, bytes)
+    }
+
+    /// The core's save state as the local database keeps it: with the bytes `[cache] exclude`
+    /// names zeroed, so states that differ only there share their pages. A save state is the
+    /// core's own format, so each region is found in it by its contents; a core that
+    /// doesn't keep the region whole and uncompressed in its state gets it stored as it is.
+    pub fn state_to_store(&mut self) -> Result<Vec<u8>> {
+        let mut state = self.core.serialize()?;
+        if self.cache_exclude.is_empty() {
+            return Ok(state);
+        }
+        let regions: BTreeSet<String> = self.cache_exclude.iter().map(|(r, _, _)| r.clone()).collect();
+        for region in regions {
+            let Some(mem) = region_memory_id(&region).and_then(|id| self.core.memory(id)).map(|m| m.to_vec()) else { continue };
+            let Some(at) = locate_region(&state, &mem, self.exclude_at.get(&region).copied()) else {
+                if self.exclude_missed.insert(region.clone()) {
+                    crate::console::warn("dj", &format!("[cache] exclude: {region} isn't in this core's save state as it is in memory (the state may be compressed), so snapshots are stored whole"));
+                }
+                continue;
+            };
+            self.exclude_at.insert(region.clone(), at);
+            for (_, start, end) in self.cache_exclude.iter().filter(|(r, _, _)| *r == region) {
+                if *end >= mem.len() as u64 {
+                    bail!("[cache] exclude {region}:{start:#X}-{end:#X} runs past the end of {region} ({} bytes)", mem.len());
+                }
+                state[at + *start as usize..=at + *end as usize].fill(0);
+            }
+        }
+        Ok(state)
     }
 
     /// Plays every replay in tree order. `from_scratch` replays each chain from its
@@ -567,6 +625,7 @@ impl Session {
             }
         }
         self.core.coverage_clear();
+        self.core.tick_reset();
         self.restore_inputs(col, id, 0)?;
         Ok(start_frame)
     }
@@ -622,6 +681,54 @@ impl Session {
             None => Ok(None),
         }
     }
+}
+
+/// Zeroes the bytes of `region` that `[hash] exclude` leaves out of state hashes (`excluded`:
+/// region, first offset, last offset). The region keeps its size, so a hash still says how
+/// much memory it covers. A region the core doesn't expose (no bytes) has nothing to leave out.
+pub fn mask_excluded(region: &str, bytes: &mut [u8], excluded: &[(String, u64, u64)]) -> Result<()> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    for (r, start, end) in excluded.iter().filter(|(r, _, _)| r.eq_ignore_ascii_case(region.trim())) {
+        if *end >= bytes.len() as u64 {
+            bail!("[hash] exclude {r}:{start:#X}-{end:#X} runs past the end of {r} ({} bytes)", bytes.len());
+        }
+        bytes[*start as usize..=*end as usize].fill(0);
+    }
+    Ok(())
+}
+
+/// Where the bytes of a memory region (`mem`) lie inside a save state, if they are there
+/// whole. `hint` is where they were last time, tried first.
+pub fn locate_region(state: &[u8], mem: &[u8], hint: Option<usize>) -> Option<usize> {
+    let fits = |at: usize| at.checked_add(mem.len()).is_some_and(|end| end <= state.len()) && state[at..at + mem.len()] == *mem;
+    if mem.is_empty() {
+        return None;
+    }
+    if let Some(h) = hint.filter(|h| fits(*h)) {
+        return Some(h);
+    }
+    // Search for a short stretch of the region that isn't all one value (a run of zeros
+    // would match all over the state), then check the whole region there.
+    const PROBE: usize = 16;
+    if mem.len() < PROBE {
+        return None;
+    }
+    let p = (0..=mem.len() - PROBE).find(|p| {
+        let w = &mem[*p..*p + PROBE];
+        let mut seen = [false; 256];
+        w.iter().filter(|b| !std::mem::replace(&mut seen[**b as usize], true)).count() >= 4
+    })?;
+    let probe = &mem[p..p + PROBE];
+    let mut i = p;
+    while i + PROBE <= state.len() {
+        if state[i] == probe[0] && state[i..i + PROBE] == *probe && fits(i - p) {
+            return Some(i - p);
+        }
+        i += 1;
+    }
+    None
 }
 
 /// `[WRITE]`: writes `bytes` into a core's memory region (or its bus, for `BUS`).
@@ -681,4 +788,81 @@ fn parse_hex(s: &str) -> Result<u64> {
 pub fn parse_region_offset(s: &str) -> Result<(String, u64)> {
     let (r, o) = s.split_once(':').ok_or_else(|| anyhow!("expected REGION:0xOFFSET, got {s}"))?;
     Ok((r.trim().to_ascii_uppercase(), parse_hex(o)?))
+}
+
+#[cfg(test)]
+mod hash_exclude_tests {
+    use super::mask_excluded;
+    use crate::collection::HashConfig;
+
+    fn cfg(regions: &[&str], exclude: &[&str]) -> HashConfig {
+        HashConfig { algorithm: "blake3".into(), regions: regions.iter().map(|s| s.to_string()).collect(), exclude: exclude.iter().map(|s| s.to_string()).collect() }
+    }
+
+    #[test]
+    fn exclude_entries_are_parsed_and_checked() {
+        let ok = cfg(&["RAM", "SRAM"], &["RAM:0x38F000-0x3FFFFF", "sram:0x10"]).excluded().unwrap();
+        assert_eq!(ok, vec![("RAM".to_string(), 0x38F000, 0x3FFFFF), ("SRAM".to_string(), 0x10, 0x10)]);
+        assert!(cfg(&["RAM"], &[]).excluded().unwrap().is_empty());
+        for (bad, why) in [
+            ("0x10-0x20", "REGION:"),
+            ("PRG:0x10-0x20", "not a memory region"),
+            ("SRAM:0x10-0x20", "not in [hash] regions"),
+            ("RAM:0x20-0x10", "ends before it starts"),
+            ("RAM:zz-0x10", "not a hex offset"),
+        ] {
+            let e = cfg(&["RAM"], &[bad]).excluded().unwrap_err().to_string();
+            assert!(e.contains(why), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn a_region_is_found_inside_a_save_state() {
+        use super::locate_region;
+        let mem: Vec<u8> = (0..64u32).map(|i| if i < 20 { 0 } else { (i * 7 % 251) as u8 }).collect();
+        let mut state = vec![0u8; 40];
+        state.extend_from_slice(&mem);
+        state.extend_from_slice(&[0xAA; 30]);
+        assert_eq!(locate_region(&state, &mem, None), Some(40));
+        assert_eq!(locate_region(&state, &mem, Some(40)), Some(40));
+        // A stale hint falls back to the search.
+        assert_eq!(locate_region(&state, &mem, Some(3)), Some(40));
+        // Not there whole (one byte off), all one value, or longer than the state.
+        let mut other = mem.clone();
+        other[60] ^= 1;
+        assert_eq!(locate_region(&state, &other, None), None);
+        assert_eq!(locate_region(&state, &[0u8; 64], None), None);
+        assert_eq!(locate_region(&mem[..32], &mem, None), None);
+    }
+
+    #[test]
+    fn a_cache_range_must_lie_inside_what_the_hash_leaves_out() {
+        use crate::collection::exclude_covers;
+        let r = |a: u64, b: u64| ("RAM".to_string(), a, b);
+        let hashed_out = vec![r(0x100, 0x1FF), r(0x200, 0x2FF), r(0x400, 0x4FF), ("SRAM".to_string(), 0, 0xFFFF)];
+        assert!(exclude_covers(&hashed_out, &r(0x100, 0x1FF)));
+        assert!(exclude_covers(&hashed_out, &r(0x180, 0x280)), "two ranges that touch cover a range across them");
+        assert!(!exclude_covers(&hashed_out, &r(0x280, 0x420)), "a gap between ranges isn't covered");
+        assert!(!exclude_covers(&hashed_out, &r(0xFF, 0x110)));
+        assert!(!exclude_covers(&hashed_out, &r(0x4F0, 0x500)));
+        assert!(!exclude_covers(&hashed_out, &("VRAM".to_string(), 0, 1)), "another region's ranges don't count");
+        assert!(!exclude_covers(&[], &r(0, 0)));
+    }
+
+    #[test]
+    fn excluded_bytes_are_zeroed_and_the_size_kept() {
+        let excluded = vec![("RAM".to_string(), 2, 4), ("SRAM".to_string(), 0, 0)];
+        let mut ram = vec![1u8, 2, 3, 4, 5, 6];
+        mask_excluded("RAM", &mut ram, &excluded).unwrap();
+        assert_eq!(ram, vec![1, 2, 0, 0, 0, 6]);
+        // Another region's ranges don't touch this one.
+        let mut vram = vec![9u8; 4];
+        mask_excluded("VRAM", &mut vram, &excluded).unwrap();
+        assert_eq!(vram, vec![9; 4]);
+        // Past the end is an error, not a silent clamp.
+        let mut short = vec![1u8; 4];
+        assert!(mask_excluded("RAM", &mut short, &excluded).unwrap_err().to_string().contains("past the end"));
+        // A region the core doesn't expose has nothing to leave out.
+        mask_excluded("RAM", &mut [], &excluded).unwrap();
+    }
 }

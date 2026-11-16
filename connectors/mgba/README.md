@@ -22,13 +22,13 @@ reports which code ran, for decomp-dj.
   `ThumbStep` reach, with its address, opcode and state, before its condition is checked.
   The hook is NULL, and costs one test per instruction, until dj asks for the API version.
 - `src/platform/libretro/dj_connector.c` (new) maps the address to a region and offset and
-  sets the flags, counts ticks, and holds the `dj_*` functions; `libretro.c` registers
+  sets the flags, calls dj at a breakpoint, and holds the `dj_*` functions; `libretro.c` registers
   `RETRO_ENVIRONMENT_SET_PROC_ADDRESS_CALLBACK` for them and hands the connector the GBA
   on load.
 - Nothing about emulation changes, and no options are forced. Save states are mGBA's own,
   which line up with frames.
 
-Regions, in index order (connector API version 2), all `cpu` `armv4t`:
+Regions, in index order (connector API version 3), all `cpu` `armv4t`:
 
 | Region | Addresses | Size | `data` | `file_offset` |
 | --- | --- | --- | --- | --- |
@@ -40,8 +40,9 @@ Regions, in index order (connector API version 2), all `cpu` `armv4t`:
 Flags: `0x01` on an opcode's first byte, `0x02` on the rest, and the `armv4t` mode bits on
 the first byte: `0x04` ran in Thumb state, `0x08` in ARM state. Thumb's `BL` is two
 halfwords the CPU runs one after the other; the second gets operand flags, so the pair reads
-as one 4-byte instruction, as dj's decoder reads it. Ticks are counted at an opcode's
-address in any region.
+as one 4-byte instruction, as dj's decoder reads it. A breakpoint can be at an opcode's
+address in any region, and dj counts logic ticks at one. `dj_read_registers` hands out r0
+to r15 and the CPSR.
 
 The BIOS is mGBA's own (its HLE BIOS, real ARM code) unless a `gba_bios.bin` is in the
 system directory; dj gives every core an empty one of its own, so it's always mGBA's and

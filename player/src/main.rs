@@ -510,7 +510,7 @@ fn init(dir: &Path, name: &str, rom: &Path, core_path: &Path, core_build: Option
         rom: RomConfig { sha256: sha256_file(rom)?, file: rom.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default() },
         core: CoreConfig { name: lib_name.to_lowercase(), build: core_build.unwrap_or(build_id), sha256: String::new(), options: effective },
         ports: vec![PortConfig { port: 1, device: "JOYPAD".into() }],
-        hash: HashConfig { algorithm: "blake3".into(), regions },
+        hash: HashConfig { algorithm: "blake3".into(), regions, exclude: vec![] },
         tick: None,
         symbols: syms,
         cache: None,
@@ -842,7 +842,15 @@ fn annotations(dir: &Path, local: &Local) -> Result<()> {
 
 /// `dj repin`: checks the whole tree with the core as it is now, then records its build.
 fn repin(dir: &Path, local: &Local) -> Result<()> {
-    run(dir, local, true, false, false).context("not repinned: some segments don't reproduce their hashes with this core")?;
+    // `run`'s own error tells the reader to "use --accept", which is `dj run`'s flag: repin
+    // has none, since its job is to record the build only when nothing changed.
+    if let Err(e) = run(dir, local, true, false, false) {
+        let what = format!("{e:#}").replace(" (use --accept to record the new ones)", "");
+        bail!(
+            "not repinned: some segments don't reproduce their hashes with this core: {what}. If the new hashes are the right ones, record them with `dj run {} --from-scratch --accept`, then run `dj repin` again",
+            dir.display()
+        );
+    }
     let mut col = Collection::open(dir)?;
     let (_, core) = resolve_local(&col, local)?;
     let build = open_session(&col, local)?.build.clone();

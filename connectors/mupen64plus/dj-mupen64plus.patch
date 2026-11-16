@@ -30,11 +30,11 @@ index 72aef3a..3936839 100644
  	$(ROOT_DIR)/custom/mupen64plus-core/plugin/emulate_game_controller_via_libretro.c \
 diff --git a/libretro/dj_connector.c b/libretro/dj_connector.c
 new file mode 100644
-index 0000000..a176900
+index 0000000..f467994
 --- /dev/null
 +++ b/libretro/dj_connector.c
-@@ -0,0 +1,156 @@
-+/* decomp-dj coverage connector for mupen64plus-libretro-nx (docs/connectors.md, API 2).
+@@ -0,0 +1,208 @@
++/* decomp-dj coverage connector for mupen64plus-libretro-nx (docs/connectors.md, API 3).
 + *
 + * Regions:
 + *   RDRAM  coverage of code as it runs from RAM, by physical address (cpu "mips3"). Its
@@ -74,6 +74,13 @@ index 0000000..a176900
 +bool dj_active = false;
 +
 +static uint8_t dj_rdram_flags[RDRAM_MAX_SIZE];
++
++/* Breakpoints: one bit per byte of RDRAM, apart from the coverage flags (the player stores
++ * those and tests them for "did anything run"). */
++static uint8_t dj_brk[RDRAM_MAX_SIZE / 8];
++static int dj_brk_left = 0;
++static dj_break_fn dj_brk_fn = NULL;
++static void *dj_brk_user = NULL;
 +static uint8_t *dj_rom_flags;
 +static uint8_t *dj_rom_data;
 +static size_t dj_rom_size;
@@ -116,6 +123,16 @@ index 0000000..a176900
 +   dj_rdram_flags[off + 1] |= DJ_FLAG_OPERAND;
 +   dj_rdram_flags[off + 2] |= DJ_FLAG_OPERAND;
 +   dj_rdram_flags[off + 3] |= DJ_FLAG_OPERAND;
++   if (dj_brk_left > 0 && (dj_brk[off >> 3] & (1 << (off & 7))) && !dj_state_job_active())
++   {
++      /* The frontend is called here, before the instruction runs, on the game's coroutine
++       * (its stack is 8 MB). */
++      if (dj_brk_fn(dj_brk_user, 0, (int64_t)off))
++      {
++         dj_brk[off >> 3] &= (uint8_t)~(1 << (off & 7));
++         dj_brk_left--;
++      }
++   }
 +}
 +
 +static unsigned dj_api_version(void)
@@ -173,9 +190,44 @@ index 0000000..a176900
 +          CORE_NAME "-ThreadedRenderer=False\n";
 +}
 +
-+/* Ticks aren't counted yet. */
-+static void dj_set_tick_exec(int region, int64_t offset) { (void)region; (void)offset; }
-+static uint64_t dj_get_tick_count(void) { return 0; }
++/* Replaces the breakpoints. n = 0, or no function, turns them off. Only RDRAM (region 0)
++ * runs code; places elsewhere, or not on a word, are left out. */
++static void dj_set_breakpoints(const struct dj_break *list, size_t n, dj_break_fn fn, void *user)
++{
++   size_t i;
++   memset(dj_brk, 0, sizeof(dj_brk));
++   dj_brk_left = 0;
++   dj_brk_fn = fn;
++   dj_brk_user = user;
++   if (!fn || !list)
++      return;
++   for (i = 0; i < n; i++)
++   {
++      int64_t off = list[i].offset;
++      if (list[i].region != 0 || off < 0 || off + 4 > RDRAM_MAX_SIZE || (off & 3))
++         continue;
++      if (!(dj_brk[off >> 3] & (1 << (off & 7))))
++      {
++         dj_brk[off >> 3] |= (uint8_t)(1 << (off & 7));
++         dj_brk_left++;
++      }
++   }
++}
++
++/* The R4300's registers: the PC, then r0 to r31, each a 64-bit value in the host's byte
++ * order (264 bytes). Returns the bytes written, 0 if `out` is too small. */
++static size_t dj_read_registers(void *out, size_t cap)
++{
++   const int64_t *r = r4300_regs(&g_dev.r4300);
++   uint64_t *o = (uint64_t *)out;
++   int i;
++   if (!out || !r || cap < 33 * sizeof(uint64_t))
++      return 0;
++   o[0] = *r4300_pc(&g_dev.r4300);
++   for (i = 0; i < 32; i++)
++      o[1 + i] = (uint64_t)r[i];
++   return 33 * sizeof(uint64_t);
++}
 +
 +void *dj_get_proc_address(const char *sym)
 +{
@@ -184,19 +236,19 @@ index 0000000..a176900
 +   if (!strcmp(sym, "dj_region_count")) return (void *)&dj_region_count;
 +   if (!strcmp(sym, "dj_get_region")) return (void *)&dj_get_region;
 +   if (!strcmp(sym, "dj_clear")) return (void *)&dj_clear;
-+   if (!strcmp(sym, "dj_set_tick_exec")) return (void *)&dj_set_tick_exec;
-+   if (!strcmp(sym, "dj_get_tick_count")) return (void *)&dj_get_tick_count;
++   if (!strcmp(sym, "dj_set_breakpoints")) return (void *)&dj_set_breakpoints;
++   if (!strcmp(sym, "dj_read_registers")) return (void *)&dj_read_registers;
 +   if (!strcmp(sym, "dj_forced_options")) return (void *)&dj_forced_options;
 +   if (!strcmp(sym, "dj_build_id")) return (void *)&dj_build_id;
 +   return NULL;
 +}
 diff --git a/libretro/dj_connector.h b/libretro/dj_connector.h
 new file mode 100644
-index 0000000..c3c3921
+index 0000000..93d23e5
 --- /dev/null
 +++ b/libretro/dj_connector.h
-@@ -0,0 +1,37 @@
-+/* decomp-dj coverage connector (docs/connectors.md in decomp-dj, API version 2). */
+@@ -0,0 +1,53 @@
++/* decomp-dj coverage connector (docs/connectors.md in decomp-dj, API version 3). */
 +#ifndef DJ_CONNECTOR_H
 +#define DJ_CONNECTOR_H
 +
@@ -204,7 +256,7 @@ index 0000000..c3c3921
 +#include <stddef.h>
 +#include <stdint.h>
 +
-+#define DJ_API_VERSION  2
++#define DJ_API_VERSION  3
 +#define DJ_FLAG_OPCODE  0x01 /* executed as the first byte of an instruction */
 +#define DJ_FLAG_OPERAND 0x02 /* executed as another byte of an instruction */
 +
@@ -217,6 +269,22 @@ index 0000000..c3c3921
 +   const uint8_t *data;       /* the region's bytes in the CPU's (big-endian) order, or NULL */
 +   int64_t file_offset;       /* where offset 0 lies in the ROM file (.z64 order), or -1 */
 +};
++
++/* A breakpoint: an offset into a region (index as in dj_get_region). */
++struct dj_break
++{
++   int32_t region;
++   int64_t offset;
++};
++
++/* Called when the instruction at a breakpoint is about to run, inside retro_run, on the
++ * game's coroutine. The core waits for it to return. Non-zero switches that breakpoint off
++ * until the list is set again. */
++typedef int (*dj_break_fn)(void *user, int region, int64_t offset);
++
++/* True while a save or load that dj asked for is in progress (libretro.c). The core runs
++ * instructions before a load, and those are not the game's play. */
++bool dj_state_job_active(void);
 +
 +/* True once dj has asked for the API version: the core is driven by decomp-dj, and
 + * libretro.c pins the options dj needs (see dj_connector.c). */
@@ -234,10 +302,10 @@ index 0000000..c3c3921
 +
 +#endif
 diff --git a/libretro/libretro.c b/libretro/libretro.c
-index 4a9f129..278244f 100644
+index 4a9f129..c715c44 100644
 --- a/libretro/libretro.c
 +++ b/libretro/libretro.c
-@@ -56,6 +56,13 @@
+@@ -56,6 +56,14 @@
  #include "device/rcp/pi/pi_controller.h"
  #include "device/pif/pif.h"
  #include "libretro_memory.h"
@@ -246,12 +314,13 @@ index 4a9f129..278244f 100644
 +/* A save or load dj asked for is in progress: n64StateCallback hands control back as soon
 + * as it's done, and retro_return counts the frames that ran meanwhile (normally none). */
 +static bool dj_state_job_pending = false;
++bool dj_state_job_active(void) { return dj_state_job_pending; }
 +static unsigned dj_state_job_frames = 0;
 +#endif
  
  #include "audio_plugin.h"
  
-@@ -616,6 +623,15 @@ void retro_set_environment(retro_environment_t cb)
+@@ -616,6 +624,15 @@ void retro_set_environment(retro_environment_t cb)
  {
      environ_cb = cb;
  
@@ -267,7 +336,7 @@ index 4a9f129..278244f 100644
      static const struct retro_subsystem_memory_info memory_info_dd[] = {
          { "srm", RETRO_MEMORY_DD },
          {}
-@@ -1024,6 +1040,20 @@ static void update_variables(bool startup)
+@@ -1024,6 +1041,20 @@ static void update_variables(bool startup)
         {
            EnableThreadedRenderer = !strcmp(var.value, "True") ? 1 : 0;
         }
@@ -288,7 +357,7 @@ index 4a9f129..278244f 100644
  	    
         if(current_rdp_type == RDP_PLUGIN_GLIDEN64 && EnableThreadedRenderer)
         {
-@@ -1401,6 +1431,14 @@ static void update_variables(bool startup)
+@@ -1401,6 +1432,14 @@ static void update_variables(bool startup)
            else if (!strcmp(var.value, "dynamic_recompiler"))
               r4300_emumode = EMUMODE_DYNAREC;
         }
@@ -303,7 +372,28 @@ index 4a9f129..278244f 100644
  
         var.key = CORE_NAME "-aspect";
         var.value = NULL;
-@@ -2144,6 +2182,10 @@ bool retro_serialize(void *data, size_t size)
+@@ -2130,9 +2169,19 @@ size_t retro_get_memory_size(unsigned type)
+     return 0;
+ }
+ 
++/* decomp-dj: a save state is the core's own state, then the game's save storage (EEPROM,
++ * Controller Paks, SRAM, Flash RAM). The core's state holds the storage devices' registers
++ * but not the storage's bytes, so a loaded state kept whatever the game had saved since:
++ * memory went back in time and the save did not (connectors/mupen64plus/README.md). */
++#define DJ_CORE_STATE_SIZE (16788288 + 1024 + 4 + 4096)
++
+ size_t retro_serialize_size (void)
+ {
+-    return 16788288 + 1024 + 4 + 4096;
++#ifdef DECOMP_DJ
++    return DJ_CORE_STATE_SIZE + sizeof(saved_memory);
++#else
++    return DJ_CORE_STATE_SIZE;
++#endif
+ }
+ 
+ bool retro_serialize(void *data, size_t size)
+@@ -2144,6 +2193,10 @@ bool retro_serialize(void *data, size_t size)
     retro_savestate_result = 0;
  
     savestates_set_job(savestates_job_save, savestates_type_m64p, data);
@@ -314,7 +404,7 @@ index 4a9f129..278244f 100644
  
     if (current_rdp_type == RDP_PLUGIN_GLIDEN64)
     {
-@@ -2165,6 +2207,16 @@ bool retro_serialize(void *data, size_t size)
+@@ -2165,6 +2218,19 @@ bool retro_serialize(void *data, size_t size)
        glsm_ctl(GLSM_CTL_STATE_UNBIND, NULL);
     }
  
@@ -327,11 +417,14 @@ index 4a9f129..278244f 100644
 +      log_cb(RETRO_LOG_WARN, "decomp-dj: the save state was taken %u frame(s) late; refusing it\n", dj_state_job_frames);
 +      return false;
 +   }
++   /* The save storage goes after the core's state. */
++   if (retro_savestate_result && size >= DJ_CORE_STATE_SIZE + sizeof(saved_memory))
++      memcpy((uint8_t *)data + DJ_CORE_STATE_SIZE, &saved_memory, sizeof(saved_memory));
 +#endif
     return !!retro_savestate_result;
  }
  
-@@ -2177,6 +2229,10 @@ bool retro_unserialize(const void *data, size_t size)
+@@ -2177,6 +2243,10 @@ bool retro_unserialize(const void *data, size_t size)
     retro_savestate_result = 0;
  
     savestates_set_job(savestates_job_load, savestates_type_m64p, data);
@@ -342,7 +435,7 @@ index 4a9f129..278244f 100644
  
     if (current_rdp_type == RDP_PLUGIN_GLIDEN64)
     {
-@@ -2198,6 +2254,15 @@ bool retro_unserialize(const void *data, size_t size)
+@@ -2198,6 +2268,19 @@ bool retro_unserialize(const void *data, size_t size)
        glsm_ctl(GLSM_CTL_STATE_UNBIND, NULL);
     }
  
@@ -354,11 +447,15 @@ index 4a9f129..278244f 100644
 +      log_cb(RETRO_LOG_WARN, "decomp-dj: the state was loaded %u frame(s) late\n", dj_state_job_frames);
 +      return false;
 +   }
++   /* Put the save storage back too: the game's storage devices point into saved_memory. A
++    * state made before this change is shorter and leaves the storage as it is. */
++   if (size >= DJ_CORE_STATE_SIZE + sizeof(saved_memory))
++      memcpy(&saved_memory, (const uint8_t *)data + DJ_CORE_STATE_SIZE, sizeof(saved_memory));
 +#endif
     return true;
  }
  
-@@ -2277,8 +2342,25 @@ void retro_cheat_set(unsigned index, bool enabled, const char* codeLine)
+@@ -2277,8 +2360,25 @@ void retro_cheat_set(unsigned index, bool enabled, const char* codeLine)
      cheat_set_enabled(&g_cheat_ctx, name, enabled);
  }
  

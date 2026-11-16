@@ -29,8 +29,9 @@ pub struct CacheConfig {
     /// Store a snapshot at each marker ([EVENT], [WRITE], [DEVICE], [RESET] lines).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff_at_markers: Option<bool>,
-    /// Address ranges that churn every frame (framebuffers and so on). Recorded for
-    /// later use; not applied to snapshots yet.
+    /// Parts of memory regions that change every frame and aren't game state (framebuffers
+    /// and so on), as in `[hash] exclude`: `REGION:0xSTART-0xEND`. Zeroed in the snapshots
+    /// the session stores, so they share pages (docs/config.md#cache).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude: Vec<String>,
     /// thumb (half width and height) | full | off

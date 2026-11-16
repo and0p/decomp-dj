@@ -15,15 +15,19 @@ struct dj_region {
     int64_t        file_offset; /* where offset 0 lies in the ROM file, or -1 */
 };
 
-uint32_t dj_api_version(void);                         /* 2 */
+struct dj_break { int32_t region; int64_t offset; };   /* a breakpoint */
+typedef int (*dj_break_fn)(void *user, int region, int64_t offset);
+
+uint32_t dj_api_version(void);                         /* 3 */
 size_t   dj_region_count(void);
 bool     dj_get_region(size_t index, struct dj_region *out);
-void     dj_clear(void);                               /* zero all flags and the tick count */
-void     dj_set_tick_exec(int region, int64_t offset); /* -1 disables */
-uint64_t dj_get_tick_count(void);
+void     dj_clear(void);                               /* zero all flags */
+void     dj_set_breakpoints(const struct dj_break *list, size_t n, dj_break_fn fn, void *user);
 ```
 
-- The full API, with the optional functions (`dj_forced_options`, the trace hooks, and
+- `dj_set_breakpoints` makes the core call the frontend, and wait, each time an
+  instruction at one of those places is about to run. dj counts logic ticks this way.
+- The full API, with the optional functions (`dj_read_registers`, `dj_forced_options`, the trace hooks, and
   `dj_sync`, `dj_write`, `dj_check_parity` and `dj_run` for comparison cores), is in
   [docs/connectors.md](../docs/connectors.md#the-api).
 - `flags` has one byte per byte of the region: `0x01` executed as an opcode
@@ -38,6 +42,6 @@ uint64_t dj_get_tick_count(void);
 
 | Connector | System | Upstream | Status |
 | --- | --- | --- | --- |
-| [mesen](mesen/) | NES / Famicom | libretro/Mesen | API 2 |
-| [mupen64plus](mupen64plus/) | Nintendo 64 | libretro/mupen64plus-libretro-nx | API 2, first version: RDRAM coverage, no ticks or trace hook yet |
-| [mgba](mgba/) | Game Boy Advance | libretro/mgba | API 2: ROM, IWRAM, EWRAM and BIOS, ARM/Thumb mode bits, ticks; no trace hook |
+| [mesen](mesen/) | NES / Famicom | libretro/Mesen | API 3 |
+| [mupen64plus](mupen64plus/) | Nintendo 64 | libretro/mupen64plus-libretro-nx | API 3, first version: RDRAM coverage and breakpoints; no trace hook yet |
+| [mgba](mgba/) | Game Boy Advance | libretro/mgba | API 3: ROM, IWRAM, EWRAM and BIOS, ARM/Thumb mode bits, breakpoints; no trace hook |

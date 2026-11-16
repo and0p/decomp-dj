@@ -72,6 +72,75 @@ pub struct PortConfig {
 pub struct HashConfig {
     pub algorithm: String,
     pub regions: Vec<String>,
+    /// Byte ranges of the regions above that state hashes leave out, as `REGION:0xA-0xB`
+    /// (inclusive offsets into the region) or `REGION:0xA`: memory that isn't game state, such
+    /// as a framebuffer an emulator's GPU writes into RAM (docs/config.md#hash).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<String>,
+}
+
+/// Parses the entries of an `exclude` list (`[hash] exclude`, `[cache] exclude`; `what` names
+/// it in errors): `REGION:0xSTART-0xEND`, offsets into a memory region with both ends
+/// included, or `REGION:0xOFFSET` for one byte. Returns (region, first offset, last offset).
+pub fn parse_exclude(list: &[String], what: &str) -> Result<Vec<(String, u64, u64)>> {
+    let hex = |t: &str| {
+        let t = t.trim();
+        u64::from_str_radix(t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t), 16).ok()
+    };
+    let mut out = vec![];
+    for e in list {
+        let (region, rest) = e.split_once(':').ok_or_else(|| anyhow!("{what} {e:?}: expected REGION:0xSTART-0xEND"))?;
+        let region = region.trim().to_ascii_uppercase();
+        if crate::libretro::region_memory_id(&region).is_none() {
+            bail!("{what} {e:?}: {region} is not a memory region (RAM, SRAM, VRAM or RTC)");
+        }
+        let (a, b) = match rest.split_once('-') {
+            Some((a, b)) => (a, b),
+            None => (rest, rest),
+        };
+        let start = hex(a).ok_or_else(|| anyhow!("{what} {e:?}: {:?} is not a hex offset", a.trim()))?;
+        let end = hex(b).ok_or_else(|| anyhow!("{what} {e:?}: {:?} is not a hex offset", b.trim()))?;
+        if end < start {
+            bail!("{what} {e:?}: the range ends before it starts");
+        }
+        out.push((region, start, end));
+    }
+    Ok(out)
+}
+
+/// Whether `range` lies wholly inside the ranges of `within` for its region (which may
+/// overlap or touch each other).
+pub fn exclude_covers(within: &[(String, u64, u64)], range: &(String, u64, u64)) -> bool {
+    let mut spans: Vec<(u64, u64)> = within.iter().filter(|(r, _, _)| *r == range.0).map(|(_, a, b)| (*a, *b)).collect();
+    spans.sort();
+    // Walk the range from its start, through spans that reach where we have got to.
+    let mut at = range.1;
+    for (a, b) in spans {
+        if a > at {
+            break;
+        }
+        if b >= at {
+            if b >= range.2 {
+                return true;
+            }
+            at = b + 1;
+        }
+    }
+    false
+}
+
+impl HashConfig {
+    /// The `exclude` entries as (region, first offset, last offset), checked: each names a
+    /// region that `regions` hashes whole, and doesn't end before it starts.
+    pub fn excluded(&self) -> Result<Vec<(String, u64, u64)>> {
+        let out = parse_exclude(&self.exclude, "[hash] exclude")?;
+        for (region, start, end) in &out {
+            if !self.regions.iter().any(|r| r.trim().eq_ignore_ascii_case(region)) {
+                bail!("[hash] exclude \"{region}:{start:#X}-{end:#X}\": {region} is not in [hash] regions, so nothing of it is hashed");
+            }
+        }
+        Ok(out)
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -363,6 +432,7 @@ impl Collection {
         let table = layered_table(root)?;
         let warnings = check_versions(&table)?;
         let config: Config = toml::Value::Table(table).try_into().with_context(|| format!("reading the settings in {} and .local/local.toml", cfg_path.display()))?;
+        config.hash.excluded().with_context(|| format!("reading the settings in {} and .local/local.toml", cfg_path.display()))?;
         let mut replays = BTreeMap::new();
         let mut paths = HashMap::new();
         if dir.is_dir() {

@@ -26,6 +26,10 @@ debugger, so the patch adds a small hook instead of reusing it.
 - `retro_set_environment` registers `RETRO_ENVIRONMENT_SET_PROC_ADDRESS_CALLBACK`,
   which exposes the functions below.
 
+- `OnExec` also tests the fetched opcode's place against the breakpoints dj set
+  (`dj_set_breakpoints`, a bit per byte kept apart from the flags) and calls dj at a hit,
+  in the fetch, before the instruction runs. dj counts logic ticks this way. `CPU::MemoryRead`
+  also notes where the CPU's registers are, for `dj_read_registers`.
 - `retro_load_game` sizes the regions for the loaded game (`DjCoverage::OnLoad`), so
   they can be read right after loading.
 - Adds the core option `mesen_allow_invalid_input` (default `disabled`). Enabled, it
@@ -34,7 +38,7 @@ debugger, so the patch adds a small hook instead of reusing it.
   on it ([docs/tas.md](../../docs/tas.md#sync)).
 
 Regions, in index order: `RAM` (2 KB internal), `PRG` (PRG ROM), `WRAM`, `SRAM`, all
-with `cpu` `"6502"` (connector API version 2). `PRG` hands out the mapper's PRG ROM as
+with `cpu` `"6502"` (connector API version 3). `PRG` hands out the mapper's PRG ROM as
 `data` and lies in the ROM file from byte 16 (after the iNES header; 528 with a trainer;
 -1 for UNIF and FDS images). `WRAM` and `SRAM` hand out their buffers when the board has
 them; `RAM` hands out none. Each byte holds flags: `0x01` executed as an opcode, `0x02`

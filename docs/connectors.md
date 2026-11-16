@@ -40,12 +40,11 @@ several systems reports different ones per game). A connector of another API ver
 ignored with a warning: rebuild it.
 
 ```c
-uint32_t dj_api_version(void);                       // 2
+uint32_t dj_api_version(void);                       // 3
 size_t   dj_region_count(void);
 bool     dj_get_region(size_t index, struct dj_region *out);
-void     dj_clear(void);                             // zero every flag and the tick count
-void     dj_set_tick_exec(int region, int64_t offset); // count executions here; region -1 turns it off; resets the count
-uint64_t dj_get_tick_count(void);
+void     dj_clear(void);                             // zero every flag
+void     dj_set_breakpoints(const struct dj_break *list, size_t n, dj_break_fn fn, void *user);
 
 struct dj_region {
     const char    *name;        // "PRG", "RAM", ...
@@ -55,14 +54,57 @@ struct dj_region {
     const uint8_t *data;        // the region's bytes in the CPU's byte order, or NULL
     int64_t        file_offset; // where offset 0 lies in the ROM file, or -1
 };
+
+struct dj_break {               // a breakpoint
+    int32_t region;             // index as in dj_get_region
+    int64_t offset;             // into that region
+};
+
+// Called when the instruction at a breakpoint is about to run. Non-zero switches that
+// breakpoint off until the list is set again.
+typedef int (*dj_break_fn)(void *user, int region, int64_t offset);
 ```
 
-Optional, in API 2:
+**Breakpoints.** `dj_set_breakpoints` replaces the list (`n` 0, or no function, turns them
+off). When the CPU is about to run an instruction at one, the connector calls `fn` and
+waits: the core is inside `retro_run`, and carries on when `fn` returns. The frontend may
+read the core's memory and registers meanwhile, and may write memory; it must not run,
+save, load or reset the core.
+
+- **This is how dj counts [logic ticks](playback.md#logic-ticks-draft):** the project's
+  `[tick]` address is a breakpoint, and dj counts the calls. `dj_clear` has nothing to do
+  with it.
+- **A connector keeps its breakpoints apart from the coverage flags** (a bit per byte of
+  its own), since the player stores the flags.
+- **Places a connector can't break at are left out,** not refused: outside a region, or,
+  on the N64, off a word boundary or outside `RDRAM`.
+- **No call while a state is saved or loaded.** Mupen64Plus-Next runs instructions before
+  it loads a state; its connector holds those back, and dj ignores any that arrive.
+- **A breakpoint in a loop** would call thousands of times a frame. Past 1,024 calls in
+  one frame dj returns non-zero, which switches it off, warns once, and sets the list
+  again when the next frame starts.
+
+Measured on the pinned cores: a call that returns at once costs a few nanoseconds, and
+playing with a breakpoint armed is within about 1% of playing without
+([.agents/yield-parity/PLAN.md](../.agents/yield-parity/PLAN.md), "Spike results").
+
+Optional:
 
 ```c
 const char *dj_forced_options(void);  // "key=value\n" lines: core options the connector needs
 const char *dj_build_id(void);        // which build this is, for [core] build
+size_t      dj_read_registers(void *out, size_t cap);  // the CPU's registers; returns the bytes written
 ```
+
+`dj_read_registers` fills `out` with the registers of the CPU that runs the code regions,
+and returns 0 if `cap` is too small or it can't say. The layout is fixed per instruction
+set (a first version: nothing in dj reads them yet):
+
+| `cpu` | Layout |
+| --- | --- |
+| `6502` | 7 bytes: A, X, Y, SP, P, then PC with its low byte first |
+| `mips3` | 33 values of 64 bits in the host's byte order: PC, then r0 to r31 |
+| `armv4t` | 17 values of 32 bits in the host's byte order: r0 to r15, then CPSR. r15 is as the CPU holds it, two instructions past the one about to run |
 
 `dj_build_id` names the build exactly and the same way on every platform: the upstream
 commit and the connector patch, as `<core>@<commit, 8 hex digits>+dj.<the patch's sha256
@@ -308,7 +350,7 @@ jobs:
 ## Writing one for another core
 
 1. Find where the core fetches an instruction byte, and where it can turn a CPU address into a ROM offset (Mesen's mappers already do: `BaseMapper::GetAbsoluteAddressAndType`).
-2. Set the opcode flag on the first byte of each instruction and the operand flag on the rest. Count a tick when the opcode fetch matches the tick location.
+2. Set the opcode flag on the first byte of each instruction and the operand flag on the rest. At the same place, test the breakpoints and call the frontend when one is hit.
 3. Expose the functions above through the proc address callback.
 4. Check that state hashes are identical with and without the patch, on every segment of a project, and measure the slowdown (about 5% for Mesen). With a symbol map, `dj check-connector` compares the flags with the decoder ([cli.md](cli.md)). A disagreement can also mean data inside a function that annotations.toml doesn't mark yet, such as inline arguments after a `JSR`.
 5. Pin the upstream commit and ship a `build.sh` and the patch under `connectors/<core>/`, like Mesen's.

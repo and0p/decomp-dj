@@ -123,7 +123,24 @@ What a state hash covers ([playback.md](playback.md#state-hashes)).
 | `algorithm` | `blake3`. The only value in format 1. |
 | `regions` | Memory to hash, in order. Named regions are `RAM`, `SRAM`, `VRAM` and `RTC` (whatever the core exposes through `retro_get_memory_data`). `BUS:0x0000-0x07FF` hashes a range of the CPU bus through the core's memory maps. |
 
-`dj init` picks `RAM`, plus `SRAM` when the game has it. Changing `regions` changes every hash, so all segments turn dirty until you accept new hashes.
+| `exclude` | Optional. Parts of the regions above to leave out, as `REGION:0xSTART-0xEND` (offsets into the region, both ends included) or `REGION:0xOFFSET` for one byte. For memory that isn't game state, such as a framebuffer an emulator's GPU writes into RAM. |
+
+`dj init` picks `RAM`, plus `SRAM` when the game has it. Changing `regions` or `exclude` changes every hash, so all segments turn dirty until you accept new hashes.
+
+```toml
+[hash]
+algorithm = "blake3"
+regions = ["RAM", "SRAM"]
+exclude = [
+    "RAM:0x38F000-0x3FFFFF",   # WWF No Mercy: three 320x240 framebuffers
+]
+```
+
+- An entry must name a region that `regions` lists whole (`RAM`, `SRAM`, `VRAM` or `RTC`, not a `BUS:` range), or the project doesn't open.
+- A range that runs past the end of the region stops the hash with an error; it isn't cut short.
+- Excluded bytes are hashed as zero, so the region keeps its size ([playback.md](playback.md#state-hashes)).
+- `exclude` hides bytes from dj, not from the game. If the game reads memory that differs from run to run, its play can still differ. Where an emulator option stops the difference at its source, prefer that: on the N64, turning off `mupen64plus-EnableCopyColorToRDRAM` and `mupen64plus-EnableCopyDepthToRDRAM` ([connectors/mupen64plus](../connectors/mupen64plus/README.md)).
+- It belongs in `config.toml`, not `local.toml`: everyone on a project must hash the same bytes.
 
 ### `[tick]` (optional)
 
@@ -204,7 +221,7 @@ Defaults for the local database (`.local/cache.db`) that everyone on the project
 | `previews` | from preset | `thumb` (half width and height), `full` or `off`. |
 | `preview_at` | `["start", "marker"]` | Where previews are taken. |
 | `budget_gb` | none | `dj cache stats` warns when the database is larger than this. |
-| `exclude` | `[]` | Address ranges that churn every frame (framebuffers). Recorded but not applied yet. |
+| `exclude` | `[]` | Parts of memory regions to zero in stored snapshots, as in [`[hash] exclude`](#hash): `REGION:0xSTART-0xEND`. For memory that changes every frame and isn't game state, such as framebuffers ([below](#cache-exclude)). |
 
 The presets:
 
@@ -218,6 +235,39 @@ The presets:
 All presets set `diff_at_markers = true` and `preview_at = ["start", "marker"]`.
 
 Values are resolved in this order, later winning: the preset (from `local.toml` if it names one, else `config.toml`, else `nes-sparse`), then each key set in `config.toml`, then each key set in `local.toml`.
+
+#### Cache exclude
+
+Large snapshots are stored in pages, and a page two snapshots share is kept once. Memory
+that changes every frame, such as a framebuffer, makes its pages new in every snapshot.
+`exclude` zeroes those bytes in the snapshots dj stores, so the pages are shared.
+
+```toml
+[hash]
+regions = ["RAM", "SRAM"]
+exclude = ["RAM:0x38F000-0x3FFFFF"]
+
+[cache]
+exclude = ["RAM:0x38F000-0x3FFFFF"]
+```
+
+- **Every range must also be left out by `[hash] exclude`,** or the project doesn't open
+  for playing. A snapshot loaded without those bytes puts zeros where the game had data. If
+  the hash covered them, a segment that starts from a stored state would get another start
+  hash than its parent's end.
+- **The game sees the zeros after a load,** until it writes that memory again. That is
+  right for a framebuffer the game only draws to. It is wrong for memory the game reads
+  back before it rewrites it.
+- **It needs the core to keep the region whole in its save state.** dj finds the region
+  in the state by its contents. A core that compresses its states, or keeps the region in
+  another byte order, gets its snapshots stored whole, with a note in the console.
+- **Snapshots already in the database stay as they are.** Only new ones are zeroed.
+- Unlike `[hash] exclude` it changes no hash, so it can be set per machine in
+  `local.toml`.
+
+Tried with WWF No Mercy (N64), a snapshot every 120 frames over 4,800 frames, with the
+GPU's copies to RDRAM on: the database was 70.6 MB without it and 35.4 MB with it, and
+every segment's hashes reproduced from the stored states.
 
 ## .local/local.toml
 

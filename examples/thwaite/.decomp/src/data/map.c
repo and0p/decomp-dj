@@ -127,5 +127,6 @@ const struct thw_bp thw_bps[] = {
     {16, THW_BP_NMIS_READ, "nmis:titleScreen", 0x1620, 0x0000, 0x0000}, /* title.s:296 */
     {17, THW_BP_INPUT, "input:read_pads", 0x4363, 0x0000, 0x0000}, /* pads.s:38 */
     {18, THW_BP_INPUT, "input:read_mouse", 0x43C2, 0x0000, 0x0000}, /* mouse.s:40 */
+    {19, THW_BP_INPUT, "sound:splitBalloon", 0x0DEB, 0x0000, 0x0000}, /* missiles.s:791 */
 };
-const unsigned thw_bp_count = 19;
+const unsigned thw_bp_count = 20;

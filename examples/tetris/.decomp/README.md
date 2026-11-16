@@ -122,6 +122,9 @@ tells it where the original has got to; it runs itself to the same place and com
   NMI runs in the middle of a tick, so judging at the wait compares all of them in full.
   If one ever did (a real lag frame), the decomp answers "unjudged" and takes the
   original's state from there.
+- **`dj_parity_diffs`**: after a mismatch, the bytes of RAM that differed (the first 32),
+  one difference each, so that `dj parity --explain` can name the instruction of the
+  original that wrote each.
 - **`dj_handle_write`**: a write to region `RAM` made between frames goes into the game's
   RAM. One made at an instruction can't be followed: the decomp copies the original again.
 - **It halts** where it can't follow the original: gameModeState 9 (the two-player game

@@ -541,7 +541,7 @@ impl App {
 
     /// Keeps the report current and reads the connector for live coverage. Runs every frame.
     pub(crate) fn coverage_update(&mut self, now: f64) {
-        if self.hydrating.is_some() || self.job.as_ref().is_some_and(|j| matches!(j, crate::Job::Enter { .. })) {
+        if self.hydrating.is_some() || self.job.as_ref().is_some_and(|j| matches!(j, crate::Job::Enter { .. } | crate::Job::Preroll { .. })) {
             return;
         }
         let (Some(col), Some(s)) = (&self.col, &mut self.session) else {

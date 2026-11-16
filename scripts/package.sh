@@ -61,7 +61,7 @@ done
 cp connectors/README.md "$out/connectors/"
 # The header for comparison cores.
 mkdir -p "$out/connectors/include"
-cp connectors/include/dj_compare.h "$out/connectors/include/"
+cp connectors/include/dj_compare.h connectors/include/dj_connector.h "$out/connectors/include/"
 
 # Linux: the desktop entry, so launchers and Wayland desktops show the icon.
 if [ "$os" = linux ]; then

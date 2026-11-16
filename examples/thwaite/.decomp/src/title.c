@@ -1,6 +1,7 @@
 /* The legal screen and the title screen (orig: title.s). */
 #include <string.h>
 
+#include "bg.h"
 #include "data.h"
 #include "game.h"
 
@@ -31,29 +32,13 @@ static const uint8_t MOUSE_ICON_X[2] = {92, 140};
 
 /* ---- Drawing ----------------------------------------------------------------------------- */
 
-/* orig: display_textfile. From (2, 3) on the left nametable, a row per line. */
-static void display_textfile(struct game *g, const unsigned char *txt) {
-    uint16_t dst = 0x2062;
-    while (*txt) {
-        uint16_t x = dst;
-        for (; *txt && *txt != 0x0A; txt++) gfx_poke(&g->gfx, x++, *txt);
-        if (*txt == 0x0A) txt++;
-        dst = (uint16_t)(dst + 32);
-        if (dst >= 0x23C0) break;
-    }
-}
-
-/* orig: bcd8bit, for a value under 200: the tens digit and the ones digit. */
-static void bcd8bit(uint8_t v, uint8_t *tens, uint8_t *ones) {
-    *tens = (uint8_t)(v / 10 % 10 | (v >= 100 ? 0x10 : 0) | (v >= 200 ? 0x20 : 0));
-    *ones = (uint8_t)(v % 10);
-}
-
 /* orig: title_draw_one_score. Four digits at $2300+y, leading zeros blank. */
 static void title_draw_one_score(struct game *g, uint8_t y, uint8_t hundreds, uint8_t ones) {
     uint8_t base = 0x00, digits[4];
-    bcd8bit(hundreds, &digits[0], &digits[1]);
-    bcd8bit(ones, &digits[2], &digits[3]);
+    digits[1] = bcd8bit(g, hundreds);
+    digits[0] = g->zp[0];
+    digits[3] = bcd8bit(g, ones);
+    digits[2] = g->zp[0];
     for (int i = 0; i < 4; i++) {
         if (digits[i]) base = 0x40;
         gfx_poke(&g->gfx, (uint16_t)(0x2300 + y + i), (uint8_t)(digits[i] | base));
@@ -100,14 +85,14 @@ void title_redraw(struct game *g) {
 }
 
 /* orig: ppu_clear_oam. Hides every sprite from byte x on (only the y bytes change). */
-static void ppu_clear_oam(struct game *g, unsigned x) {
+void ppu_clear_oam(struct game *g, unsigned x) {
     for (x &= 0xFC; x < 256; x += 4) g->gfx.oam[x / 4].y = 0xFF;
 }
 
 /* ---- Input on these screens -------------------------------------------------------------- */
 
 /* orig: read_mouse. Updates the buttons; returns the raw report. */
-static bool read_mouse(struct game *g, const struct step_io *io, int x, uint8_t raw[3]) {
+bool read_mouse(struct game *g, const struct step_io *io, int x, uint8_t raw[3]) {
     if (!io->mouse(io->ctx, x, raw)) {
         game_set_io_error("the decomp read a mouse where the original didn't");
         return false;
@@ -140,8 +125,8 @@ static bool title_detect_mice(struct game *g, const struct step_io *io) {
             g->mouse_enabled[x] = 0;
         }
     }
-    g->crosshair_y_hi[0] = clamp_add(dy, g->crosshair_y_hi[0], TITLE_MENU_TOP, TITLE_MENU_BOTTOM - 1);
-    g->crosshair_x_hi[0] = clamp_add(dx, g->crosshair_x_hi[0], TITLE_MENU_LEFT, TITLE_MENU_RIGHT - 1);
+    g->crosshairs[0].y_hi = clamp_add(dy, g->crosshairs[0].y_hi, TITLE_MENU_TOP, TITLE_MENU_BOTTOM - 1);
+    g->crosshairs[0].x_hi = clamp_add(dx, g->crosshairs[0].x_hi, TITLE_MENU_LEFT, TITLE_MENU_RIGHT - 1);
     return true;
 }
 
@@ -170,7 +155,7 @@ static void put_sprite(struct game *g, unsigned x, uint8_t y, uint8_t tile, uint
 static void title_draw_sprites(struct game *g) {
     unsigned x = 4;   /* sprite 0 is the split */
     if (g->mouse_enabled[0] | g->mouse_enabled[1]) {
-        put_sprite(g, x, (uint8_t)(g->crosshair_y_hi[0] - 5), 4, 0, (uint8_t)(g->crosshair_x_hi[0] - 4));
+        put_sprite(g, x, (uint8_t)(g->crosshairs[0].y_hi - 5), 4, 0, (uint8_t)(g->crosshairs[0].x_hi - 4));
         x += 4;
     }
     put_sprite(g, x, (uint8_t)((g->num_players << 4) + TITLE_MENU_TOP + 2), SELECTED_ARROW_TILE, 1, TITLE_ARROW_X);
@@ -198,8 +183,8 @@ static void title_draw_sprites(struct game *g) {
 
 /* titleScreen's start, up to display_todo's screen_off_title_palette. */
 void title_enter_legal(struct game *g) {
-    g->crosshair_y_hi[0] = 128;   /* PEDANTIC_RAM_INIT */
-    g->crosshair_x_hi[0] = 128;
+    g->crosshairs[0].y_hi = 128;   /* PEDANTIC_RAM_INIT */
+    g->crosshairs[0].x_hi = 128;
     g->screen_off_then = THEN_TODO;
     g->wait = W_SCREEN_OFF;
 }
@@ -222,8 +207,8 @@ static enum thw_wait title_setup(struct game *g) {
 /* After display_todo returns: titleScreen goes on to its own screen. */
 static enum thw_wait legal_done(struct game *g) {
     g->num_players = 1;
-    g->crosshair_y_hi[0] = 128;
-    g->crosshair_x_hi[0] = 128;
+    g->crosshairs[0].y_hi = 128;
+    g->crosshairs[0].x_hi = 128;
     g->screen_off_then = THEN_TITLE;
     return W_SCREEN_OFF;
 }
@@ -249,15 +234,16 @@ static enum thw_wait title_done(struct game *g, const struct step_io *io) {
     if (g->num_players >= 3) g->is_practice = g->num_players;
     g->debug_hex[0] = 0xC0;
     g->debug_hex[1] = 0xDE;
-    game_set_unwritten(g->is_practice ? "newGame and the practice menu (milestone 2)"
-                                      : "newGame and the opening cutscene (milestone 3)");
-    return W_NONE;
+    new_game(g);
+    if (g->is_practice) return practice_enter(g);
+    cut_choose_villagers(g, 1);
+    return load_cutscene(g, 15);   /* the message from Pino before the game starts */
 }
 
 /* orig: titleScreen's handleClick. True: a menu row was clicked and the title is done. */
 static bool title_handle_click(struct game *g, int x) {
     if (!(g->new_mbuttons[x] & MOUSE_L)) return false;
-    uint8_t row = (uint8_t)((uint8_t)(g->crosshair_y_hi[0] - TITLE_MENU_TOP) >> 4);
+    uint8_t row = (uint8_t)((uint8_t)(g->crosshairs[0].y_hi - TITLE_MENU_TOP) >> 4);
     if (row == 0) return false;   /* the speed row: mouse_change_sensitivity, outside RAM */
     if (row >= TITLE_NUM_OPTIONS + 1) return false;
     g->num_players = row;

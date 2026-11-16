@@ -2,10 +2,12 @@
 
 Written 2026-11-15 15:20 EST, from a conversation with the developer that day. The
 developer asked for the design to be looked at afresh, with the comparison core doing
-more and dj less. Build steps 1 to 9 are done: the two connector spikes ("Spike results"),
-and the new connector API, the comparison core in dj's process, writes at an instruction,
-events, the helper header, the Tetris decomp on events, and pre-roll ("Built so far").
-The rest is not built.
+more and dj less. All twelve build steps are done: the two connector spikes ("Spike
+results"), and the new connector API, the comparison core in dj's process, writes at an
+instruction, events, the helper header, the Tetris decomp on events, pre-roll, N64
+breakpoints with a stub core, failures and the tools, and the docs ("Built so far"). What
+is left is under "Open problems", and the test that proves the design, a real decomp of a
+game whose ticks cross frames, has not been made.
 
 Revisions, all 2026-11-15:
 
@@ -35,6 +37,14 @@ Revisions, all 2026-11-15:
   from dj. Tetris's 15 "lag frames" turned out to be long work with NMIs off, all judged.
 - 2026-11-16 08:27 EST: build step 9 is built: pre-roll, in `dj parity`, in re-running a
   failure, and in the GUI's seek inside a segment.
+- 2026-11-16 11:43 EST: the GUI's pre-roll reaches into the segments above, unseen
+  ("Built so far", step 9).
+- 2026-11-16 14:08 EST: build step 10 is built: a stub comparison core for No Mercy with
+  two breakpoints. It found that No Mercy's `[cache] exclude` breaks stored snapshots.
+- 2026-11-16 15:44 EST: the Mupen64Plus connector has a trace hook, and `--explain` names
+  writers on the N64 ("Built so far", after step 11).
+- 2026-11-16 14:55 EST: build steps 11 and 12 are built: a failure says which event it
+  answered, `--explain` stops its search there, and the docs are brought up to date.
 
 How to read it:
 
@@ -867,11 +877,10 @@ Checked:
 
 Not checked, and what this leaves:
 
-- **The GUI's pre-roll was not run.** It builds; nothing drove it.
-- **In the GUI it stays inside the segment shown.** Selecting a segment gives frame 0 no
-  pre-roll, and a seek to a frame nearer the start than N gets fewer frames. `dj parity`
-  reaches into the parent; the GUI's playback holds one segment at a time.
-- **"Pre-roll" is not shown as a state** beside the comparison core's name.
+- **The GUI's pre-roll was run without a window only** (see below). Nothing drove the
+  window itself.
+- **"Pre-roll" is not shown as a state** beside the comparison core's name. The status bar
+  shows "Pre-roll for frame N" while the frames above run.
 - **An ancestor's snapshot is not used** when the first pre-roll frame's segment has none
   at or before it: dj plays from that segment's start. The jump is at the same frame
   either way.
@@ -880,6 +889,245 @@ Not checked, and what this leaves:
 - **A lag frame inside the pre-roll can use it up.** In the test core, three frames of
   pre-roll with a lag frame in the middle left the core stale at the place asked for. The
   number has to cover the longest stretch with no tick, plus one.
+
+**The GUI's pre-roll in the segments above** (added 2026-11-16 11:43 EST, at the
+developer's request). The GUI's playback holds one segment, so a seek near a segment's
+start had too few frames before it. Now:
+
+- **When.** A seek that is a jump for the comparison core, to a frame nearer the start
+  than N, with Check parity on and no failure being re-run. Selecting a segment is one;
+  so are looping, stepping back to the start, and loading a comparison core while paused
+  there.
+- **What runs.** A job (`Job::Preroll`) takes `preroll_route`'s spans above the segment
+  shown. The baseline goes to the first span's segment, loads its nearest stored snapshot
+  at or before the jump frame, plays to the jump frame with nothing sent, then plays the
+  pre-roll frames through the checker as `dj parity` does, into each segment down
+  (`Checker::enter`), and comes out at frame 0 of the segment shown. The rest of the seek
+  is the ordinary one, with the checker in step.
+- **Nothing shown changes.** The playback, its snapshots, the roll and the picture are
+  left as they are. The frames above are not drawn and their coverage is dropped.
+- **The check at the boundary.** The state at the end of the parent must hash to the
+  state the playback started from. If not (an edit above), the pre-roll is given up.
+- **The snapshot that makes it cheap.** When reaching the jump frame took 30 frames or
+  more, the state there is stored under the parent's content key, like a `diff_every`
+  snapshot. The next pre-roll there loads it.
+- **Giving up.** The baseline loads the playback's snapshot again and the core copies at
+  the frame shown, as with no pre-roll. Cases: the parent's own start isn't stored, the
+  boundary check fails, an error. A seek while the job runs cancels it the same way.
+- **A halt in those frames** is recorded as a failure at the parent's frame and shown as
+  the problem; the frame asked for is shown with the core left out of step until the next
+  jump.
+
+| Check (Tetris, `preroll = 3`, the GUI's code driven without a window) | Result |
+|---|---|
+| Selecting a segment whose parent has 444 frames | jump at frame 441 of the parent; the core in step at frame 1 of the segment; no problem |
+| The same again | 44 ms against 652 ms (debug build): the parent's stored frames now have 441 |
+| 40 frames played on from there | no failure; the pass still records |
+| A seek back to frame 1 | jump at frame 442 of the parent |
+| A seek to frame 30 | jump at frame 27 of the segment, as before |
+| A pre-roll given up | synced at frame 0 of the segment |
+| A pre-roll cut off halfway, then a seek | the baseline is back at the state it had |
+
+The check was a test written for the purpose and removed: it needs a project and its ROM.
+Not checked: a halt in the frames above, the boundary check failing, a parent whose start
+isn't stored, and the window itself.
+
+**Step 10, 2026-11-16: N64 breakpoints in full.**
+
+Nothing in dj or the connector had to change: the breakpoints of step 3 and the events of
+step 6 were enough. What is new is the core that uses them.
+
+- **The stub core** is `connectors/mupen64plus/stub/nomercy_stub.c`, with a README. It is
+  a comparison core with the game left out, on the helper header, judging at a
+  breakpoint.
+- **The input routine.** `pads_read` is at `0x80005818`, in the main segment, which is
+  always loaded. It has one return, at `RDRAM:0x5BD0`, and the breakpoint is there: the
+  pad buffer (`g_pads`, 48 bytes at `0x8009EDA0`) is complete, and the stub copies it.
+  The addresses came from the No Mercy decomp's notes and a memory dump.
+- **The tick.** A breakpoint at `match_tick` (`RDRAM:0x114514`). The stub counts it and
+  answers "match" when the pads it copied are the ones in the game's memory.
+- **Other code at the tick's address** is told apart by the caller, not the stack
+  pointer: the return address must be the match's one call (`0x800D9E04`), and the
+  instruction at the call site must still be `jal match_tick`. That answers open problem
+  6 for this game: "pending" is enough.
+- **Byte order** (open problem 2). The stub reads bytes through whole host-order words.
+  It is a few lines in the core; the handle was left as it is.
+
+| Check (No Mercy, a project copy without `[cache] exclude`; see below) | Exhibition (2,136 frames) | Four-CPU tag match (1,800 frames) |
+|---|---|---|
+| Pad reads | 883 | 702 |
+| Real ticks | 502 | 340 |
+| Other code at the tick's address | 86 | 57 |
+| Pad reads between two ticks | always 1 | always 1 |
+| Ticks whose pad read was in an earlier frame | 0 | 1 |
+| The stub's log from power-on against from the stored snapshot | identical, 1,472 lines | identical, 1,100 lines |
+| `dj parity` | 1,013 passed, 1,121 skipped, 0 failed | 688 passed, 1,110 skipped, 0 failed |
+
+- **The log** has a line for every pad read (the 48 bytes and the return address), every
+  tick (its number and the pads) and every hit of other code (return address and stack
+  pointer). "From power-on" is an empty local database, where dj plays the root segment
+  first; "from the snapshot" is the run after it, which loads the root's stored end.
+- **The skipped frames** are the menus and the load before the match, where there is no
+  tick, and the frames up to the stub's first copy.
+- **A fault made on purpose** (`NM_STUB_FAULT=100`) is found: a failure at frame 1332, at
+  `match_tick`, with the 48 bytes of each side.
+
+**Found on the way: No Mercy's `[cache] exclude` breaks its stored snapshots.**
+`examples/nomercy/config.toml` has `[cache] exclude = ["RAM:0x38F000-0x3FFFFF"]`, the
+three framebuffers, zeroed in stored snapshots. With the core as built now:
+
+| Run of "start CPU vs CPU exhibition" | With the exclude | Without |
+|---|---|---|
+| From power-on | ok | ok |
+| From the root's stored end | **changed**: another end hash | ok |
+
+- **The zeroes are in the right place** in the state (checked by comparing states). The
+  game's memory outside the framebuffers differs by frame 2 all the same, and the match
+  never starts: no tick at all in 2,136 frames.
+- **So the game, or the emulator on its behalf, reads those bytes.** Which was not
+  found. The `[hash] exclude` of the same range is harmless: it only leaves bytes out of
+  a hash.
+- **Until it is understood, the project should not have `[cache] exclude`.** Done the
+  same day, at the developer's word: the section is removed from the project's config and
+  its local database, whose snapshots were stored with it, was deleted.
+- **The project is repinned** to the core as built now (`dj.60c9c35b`, from
+  `dj.4343e0a2`): all three segments reproduce their hashes from power-on.
+
+Not checked, and what this leaves:
+
+- **A failure's re-run and `--explain`** on the N64 are step 11.
+- **The GUI** with this core was not run.
+- **One game and two segments.** No segment here has a frame with two ticks.
+- **A lag frame is still untested on a real game.** One tick in the tag match took its
+  pads in an earlier frame, and it was judged like any other; the stub has no logic that
+  an interrupt could split.
+- **The guard against hits during a load** (open problem 9) still never fired.
+
+**Step 11, 2026-11-16: failures and the tools** (section 9).
+
+Re-running already worked at a breakpoint, on the NES and the N64, because a re-run sends
+the same events. Three things were missing or wrong.
+
+- **A failure says which event it answered.** `parity_failures` has a new column `at`:
+  the breakpoint's name, "the frame end", "a write" or "the jump". It is empty for what
+  was not a verdict (a failed sync, a core that died) and for rows kept before. `dj
+  parity --report --json`, `--explain --json` and the MCP `parity_failures` tool give it
+  as `at`. The reason's text already named it, so the GUI's list shows it unchanged.
+- **`--explain` stops its search at the event.** When a verdict fails, dj notes how many
+  trace events the baseline had made. The search for the last write to each differing
+  address looks no further, and the output says where it stopped.
+- **A diff with an address and a symbol is traced by its address.** It was reported as
+  "given by a data symbol" and not traced.
+- **The Tetris decomp has `dj_parity_diffs`:** one difference per differing byte of RAM
+  (the first 32), so `--explain` has addresses to trace. Before, it gave only text.
+
+| Check | Result |
+|---|---|
+| Tetris, a copy of the decomp broken on purpose (`player1_fallTimer` counts by 2), judged at its wait | 21 of 30 segments fail. Each failure is "at updateAudioWaitForNmiAndResetOamStaging, before its wait" |
+| `--rerun` of one (frame 1220 of "Watch demo", synced 3 frames up in its parent, as pre-roll) | fails again at the same frame |
+| `--explain` of it | 164,354 events traced over frames 1210 to 1220; the search stops 154,999 events in; `$0045` and `$0065` each get their writer in frame 1220 (`STA $40,X` at `$878A`, `STA $60,X` at `$87B2`) |
+| The N64 stub with its fault (`NM_STUB_FAULT=100`) | failure at frame 1332, `at` = "match_tick". `--rerun` with the fault fails again at the same frame; without it, it passes |
+| `--explain` on the N64 | plays it again and lists what differed. No writers: the Mupen64Plus connector has no trace hook |
+| The test core (`tests/events.rs`, `tests/compare.rs`) | a mismatch at a frame end records "the frame end"; a halt at its breakpoint records "tick_end"; the JSON of `--report` and `--explain` carries `at` |
+| Tetris with the real decomp, after it gained `dj_parity_diffs` | 30 segments, 0 failed, judged at its wait and at frame ends |
+| The player's test suite, and the GUI's build and tests | pass |
+
+Not checked, and what this leaves:
+
+- **Whether the stop changes an answer** was not shown with a case where the original
+  writes the same address again after the breakpoint. The position is right (it is
+  inside the failing frame's events); a test needs a core with a trace hook, and the
+  test core has none.
+- **No trace hook on the GBA,** so `--explain` names no writers there. The N64 got one
+  the same day (below).
+- **The GUI** shows the event in the failure's message only; it was not run.
+
+**After step 11, 2026-11-16 15:44 EST: a trace hook in the Mupen64Plus connector** (at the
+developer's request), so that `--explain` names writers on the N64.
+
+- **The connector** records an event per instruction (in `dj_exec`) and per byte the CPU
+  reads or writes (in the four aligned read and write functions of `r4300_core.c`). The
+  patch file is regenerated; its id is now `847c2e28`.
+- **The event keeps its 40 bytes.** It was made for the 6502. A 32-bit address has its
+  high half in two of the four reserved bytes (`addr_high`); an execute carries the whole
+  instruction word in `value` and `operands`; the registers are 0. Mesen writes 0 in the
+  reserved bytes, so its traces read the same as before.
+- **dj** reads the whole address, has a small MIPS disassembler (loads, stores, jumps,
+  branches, integer arithmetic; the rest as `.word`), and picks the instruction set from
+  the connector's region. The MCP `trace` tool uses the same.
+- **`--explain` traces frame by frame** and keeps the newest frames when they come to
+  more than 12 million events. Before, one buffer of 4 million was filled from the start
+  and the newest events were the ones dropped: on the N64, with ten frames back, it named
+  a write six frames too early.
+- **The stub's diff** is in region `RDRAM` now, the connector's name, so it is traced.
+
+| Check | Result |
+|---|---|
+| No Mercy, all three segments from power-on with the new core (`dj repin`) | hashes reproduce; 41 frames a second, as before |
+| `--explain` of the stub's fault (frame 1332, at `match_tick`) | 9,147,933 events over frames 1322 to 1332, none let go; the search stops 8,666,257 events in; the pads' last writer is `sb v0, 0xB(a1)` at `$80005B98`, inside `pads_read`, in frame 1332 |
+| The same with `--frames-back 2` | 2,542,244 events; the same writer |
+| Tetris `--explain` (Mesen) after the change | the same events, stop and writers as before |
+| The player's tests (a new one for the disassembler), the GUI's build | pass |
+
+Not checked: the MCP `trace` tool on the N64 (it shares the code, and was not called); a
+trace's reads and writes against memory, byte by byte; a trace long enough to let frames
+go. `calls` in the MCP server is still 6502 only. The No Mercy project is repinned to the
+new build.
+
+**Stepping back in the GUI, 2026-11-16** (after the developer ran the window with Tetris;
+the hidden pre-roll looked right there).
+
+- **What was seen:** stepping back, the comparison picture did not change until playback
+  started.
+- **The likely cause** (from the code, not confirmed in the window): the GUI used pre-roll
+  only with Check parity on. Without it the jump goes at the frame shown, and a core that
+  copies at a breakpoint draws nothing in the frame it copies in.
+- **Pre-roll now runs whenever the comparison core runs,** checking or not, in the segment
+  and above it.
+- **A step back holds the sync** for 0.6 seconds (`STEP_BACK_HOLD`), as a held mouse button
+  already did. Only the baseline runs meanwhile; the picture is faded with "waiting to
+  sync" and "Syncs when you stop stepping back". Then the idle check re-runs the frame
+  shown with a sync and its pre-roll. The developer suggested a second. 0.4 was tried
+  first and was too short: it ran out before the key's repeat began, so the core synced
+  once before the held steps started. It is 0.6 now.
+- **Checked without a window** (Tetris, `preroll = 3`, Check parity off and on; a test
+  written for it and removed): three steps back leave the core out of step with the
+  baseline on the right frame; after the hold, one sync 3 frames before the frame shown;
+  a step forward is not held; back at frame 0 the pre-roll goes into the parent; a
+  picture is there with Check parity off.
+- **Not checked:** the window, and the timing itself (the test's clock does not run).
+
+**Two things the Thwaite decomp's thread reported, fixed 2026-11-16 17:00 EST.**
+
+- **A diff with a symbol lost its address** when dj read it, so a core that gave both
+  could not be explained. dj keeps the address whenever a region is given and shows the
+  symbol beside it ("g_pads, RDRAM 0x9EDA0"). The No Mercy stub gives both again, and its
+  failure is still explained to the same writer. (Step 11 had only fixed the place the
+  explanation looked.)
+- **The connector API had no header.** `connectors/include/dj_connector.h` declares it:
+  the version, coverage regions, breakpoints, registers, the build id and the trace hook,
+  with the trace event as it is now. It is a file of its own, not part of
+  `dj_compare.h`: the Thwaite decomp has its own copy of these declarations
+  (`src/dj_api.h`), and adding them to the header it includes would have broken its
+  build. That thread can include the new header and drop its copy when it chooses. Its
+  copy of the trace event still calls the last four bytes `reserved`, which is the same
+  layout.
+
+**Step 12, 2026-11-16: the docs.**
+
+| File | What changed |
+|---|---|
+| `docs/cli.md` | `--explain` stops at the core's verdict; which connectors can trace; a failure's `at` |
+| `docs/connectors.md` | "On the N64": byte order, other code at a breakpoint's address, the registers, ticks and frames, framebuffers. A failure names the event it answered. Which cores have `dj_parity_diffs` |
+| `docs/gui.md` | How a verdict of a core that takes events counts frames; the hidden pre-roll (earlier the same day) |
+| `docs/config.md` | `[cache] exclude`: how to check it, and that it no longer holds for No Mercy |
+| `docs/database.md`, `docs/mcp.md` | `at` and pre-roll in a failure |
+| `docs/segments.md` | Read through; it was already right (writes at an instruction came with step 5) |
+| `.agents/ROADMAP.md` | A note at "Comparison and parity" that the API was replaced and which names are gone; the two rows of the release table; three places that named `DJ_SYNC_BOOT`; what is still to do after this work |
+| `.agents/ISOLATION_PLAN.md` | The worker serves only `sync = "state"` cores now |
+
+The roadmap's older entries still name the earlier functions. They are the record of what
+shipped then, and the note above them says so.
 
 ## Spike results
 
@@ -1035,10 +1283,12 @@ Fixed since the spikes, and no longer open: save states on Mupen64Plus not resto
 game's save storage ("Spike results", existing problem 1).
 
 1. **The layout of the registers** has a first version for each instruction set
-   (`docs/connectors.md`), and nothing reads it yet. Finding the running N64 thread was
-   not tried.
+   (`docs/connectors.md`). The No Mercy stub reads the N64's (step 10): the return
+   address, to tell a function's real call from other code. Finding the running N64
+   thread was not tried.
 2. **How the handle hands out N64 memory.** It is host-order 32-bit words. Either the
-   handle says so, or it hands out bytes in the console's order.
+   handle says so, or it hands out bytes in the console's order. For now the docs say so
+   (`docs/connectors.md`, "On the N64") and the core swaps.
 3. **OpenGL contexts nesting on Linux** (section 11). Built, and tested on macOS; the EGL
    code has only been type-checked.
 4. **A core that corrupts memory before it crashes,** dj's or the baseline's. No answer.
@@ -1046,15 +1296,18 @@ game's save storage ("Spike results", existing problem 1).
    another overlay: 86 of 588 hits in the spike. A project should pick an address in
    code that is always loaded.
 6. **A fixed list of breakpoints and overlays** (section 1): whether "pending" is enough.
-   The spike shows a core can tell the other code apart by the stack pointer.
+   The spike shows a core can tell the other code apart by the stack pointer. Step 10's
+   stub does it by the caller, and "pending" was enough for No Mercy.
 7. **GPU copies into RDRAM** ("Spike results", existing problem 2). An N64 project used
    for parity needs them off, or the picture's bytes left out of what is compared.
 8. **Two saves with no frame between them** ("Spike results", existing problem 3).
 9. **The guard against hits during a load** never fired in the spike, so it is untested.
-10. **`ROADMAP.md`, `ISOLATION_PLAN.md` and the docs** describe earlier designs.
-    `docs/connectors.md` was brought up to date in step 7; `docs/gui.md` only in part.
+10. *No longer open (step 12):* `ROADMAP.md` and `ISOLATION_PLAN.md` carry notes that say
+    which of their passages describe the earlier API, and the docs are up to date.
 11. **No real decomp has a lag frame to test with.** Tetris has none (step 8). The rule
     for one rests on the test core.
+12. **No Mercy's `[cache] exclude` of its framebuffers breaks stored snapshots** ("Built
+    so far", step 10). Why the game's run depends on those bytes is not known.
 
 ## Build order
 
@@ -1108,12 +1361,12 @@ protection.
    entry. Done when `dj parity` checks frame 0 of every segment that is not a root, and a
    failure found after a pre-roll re-runs to the same frame with the local database
    emptied.
-10. **N64 breakpoints in full,** `match_tick` and the input routine, with a stub core
+10. **N64 breakpoints in full,** *(done 2026-11-16: see "Built so far")* `match_tick` and the input routine, with a stub core
     that copies the pad buffer. Done when both count the same from power-on and from a
     snapshot.
-11. **Failures and the tools** (section 9). Done when a failure at a breakpoint inside a
+11. **Failures and the tools** *(done 2026-11-16: see "Built so far")* (section 9). Done when a failure at a breakpoint inside a
     frame can be re-run and explained from the command line.
-12. **The docs:** `connectors.md`, `segments.md`, `config.md`, `gui.md`, `cli.md`, and
+12. **The docs** *(done 2026-11-16: see "Built so far")*: `connectors.md`, `segments.md`, `config.md`, `gui.md`, `cli.md`, and
     the notes on `ROADMAP.md` and `ISOLATION_PLAN.md`.
 
 A real decomp of a game whose ticks cross frames is the last test, and the only one that

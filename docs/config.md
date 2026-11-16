@@ -266,9 +266,16 @@ exclude = ["RAM:0x38F000-0x3FFFFF"]
 - Unlike `[hash] exclude` it changes no hash, so it can be set per machine in
   `local.toml`.
 
+Check it before relying on it: play a segment that has a parent twice (`dj play <dir>
+<segment>`). The first time fills the database; the second starts from the parent's
+stored state and must report the same hashes.
+
 Tried with WWF No Mercy (N64), a snapshot every 120 frames over 4,800 frames, with the
-GPU's copies to RDRAM on: the database was 70.6 MB without it and 35.4 MB with it, and
-every segment's hashes reproduced from the stored states.
+GPU's copies to RDRAM on: the database was 70.6 MB without it and 35.4 MB with it. **It
+does not hold for that game any more.** On 2026-11-16, with the connector as it is now, a
+segment started from a stored state ended with other hashes than from power-on, and its
+match never began. The game, or the emulator on its behalf, reads the framebuffers back.
+The project no longer sets it.
 
 ## .local/local.toml
 

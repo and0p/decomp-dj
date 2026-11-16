@@ -325,6 +325,15 @@ struct App {
     preroll_to: Option<u64>,
     /// Re-running a failure: how many frames from where it was synced were pre-roll.
     rerun_preroll: Option<u64>,
+    /// When the playhead last stepped back (egui's clock, seconds). For a moment after it
+    /// the comparison core is not synced (`sync_held`), so that stepping back fast, or
+    /// holding the key, doesn't sync at every step.
+    stepped_back: Option<f64>,
+    /// The baseline is not where the playback says: a pre-roll put it in a segment above and
+    /// did not bring it back. The next seek loads a snapshot whatever frame it is for.
+    displaced: bool,
+    /// The next seek does no pre-roll in the segments above: the last one was given up.
+    preroll_skip: bool,
     /// Why the comparison core is out of sync (a failed sync or step).
     compare_problem: Option<String>,
     compare_texture: Option<egui::TextureHandle>,
@@ -410,6 +419,15 @@ enum Job {
     Seek { from: u64, to: u64 },
     /// Play ancestors (`queue`) without a cached state to reach the start of `id`.
     Enter { id: String, queue: Vec<String>, qi: usize, frame: u64, start_frame: u64, done: u64, total: u64, then_seek: Option<u64> },
+    /// Pre-roll in the segments above the one shown (docs/gui.md#comparison-cores), unseen:
+    /// the baseline plays the last frames of `above` (segment, from, to; in the order they
+    /// play) with the comparison core told of them as pre-roll, and comes out at frame 0 of
+    /// the segment shown, which then runs until `to` frames have. `frame`: the next frame of
+    /// `above[ri]`; before the first span's start, the baseline is catching up from a stored
+    /// snapshot, and the core is told nothing. `base`: frames since power-on at frame 0 of
+    /// `above[ri]`. `keep`: store the state the first span starts at under this content key,
+    /// so the next pre-roll here starts from it.
+    Preroll { above: Vec<(String, u64, u64)>, ri: usize, frame: u64, base: u64, to: u64, keep: Option<String>, done: u64, total: u64 },
 }
 
 /// Time spent on a job per screen refresh.
@@ -420,6 +438,11 @@ const REC_RED: Color32 = Color32::from_rgb(210, 45, 45);
 /// Holding commit or rewind repeats after this long, in seconds.
 const REC_HOLD_DELAY: f64 = 0.3;
 const JOB_SLICE: std::time::Duration = std::time::Duration::from_millis(25);
+/// A pre-roll in the segment above that has to play this many frames to reach its start
+/// stores the state there, for the next one.
+const PREROLL_KEEP: u64 = 30;
+/// After a step back, the comparison core syncs once this long has passed with no other.
+const STEP_BACK_HOLD: f64 = 0.6;
 
 /// One step of undo history: the affected segments as they were before the change
 /// (None: the segment did not exist), and where the user was.
@@ -576,6 +599,9 @@ impl Default for App {
             compare_need_sync: false,
             preroll_to: None,
             rerun_preroll: None,
+            stepped_back: None,
+            displaced: false,
+            preroll_skip: false,
             compare_problem: None,
             compare_texture: None,
             compare_split: 0.5,
@@ -1474,6 +1500,7 @@ impl App {
         let stored = s.stored_frames(col, id, &start_hash).unwrap_or_default();
         self.pb = Some(Playback { id: id.to_string(), start_frame, frames, ran: 0, snapshots: BTreeMap::from([(0, snap)]), checkpoints, checkpoint_miss: None, checkpoints_seen: BTreeMap::new(), end_hash: None, start_hash: Some(start_hash), stored, stale_from: None, picture_stale: false, rec: Some(rec) });
         self.base_next = None;
+        self.displaced = false;
         self.edit_from = None;
         self.coverage_restart_live();
         Ok(())
@@ -1486,10 +1513,18 @@ impl App {
             return;
         }
         let Some(job) = self.job.take() else { return };
+        let preroll_to = match &job {
+            Job::Preroll { to, .. } => Some(*to),
+            _ => None,
+        };
         if let Err(e) = self.try_work(job) {
             self.job = None;
             self.playing = false;
             self.error(e);
+            // The baseline is somewhere above the segment shown: put it back.
+            if let Some(to) = preroll_to {
+                self.preroll_abandon(to, None);
+            }
         }
     }
 
@@ -1531,6 +1566,159 @@ impl App {
                     }
                 }
             }
+            Job::Preroll { above, mut ri, mut frame, mut base, to, mut keep, mut done, total } => {
+                loop {
+                    let (Some(col), Some(s), Some(pb), Some(c)) = (&self.col, &mut self.session, &mut self.pb, &mut self.compare) else { return Ok(()) };
+                    let (seg, from, end) = &above[ri];
+                    if ri == 0 && frame < *from {
+                        // Catching up to where the pre-roll starts.
+                        s.step(col, seg, frame, false)?;
+                        frame += 1;
+                        done += 1;
+                        if frame == *from {
+                            if let Some(key) = keep.take() {
+                                let hash = s.state_hash(col)?;
+                                let state = s.state_to_store()?;
+                                if let Some(cache) = &mut s.cache {
+                                    cache.record_snapshots(&key, &decomp_dj::cache::Recording { snapshots: vec![(frame, hash, state)], ..Default::default() })?;
+                                }
+                            }
+                        }
+                    } else {
+                        if ri == 0 && frame == *from {
+                            // The jump: every frame from here to the one shown is pre-roll.
+                            if self.check_parity {
+                                let _ = decomp_dj::parity::take_code_flags(&mut s.core);
+                            }
+                            let frames = above.iter().map(|(_, a, b)| b - a).sum::<u64>() + (to - 1);
+                            self.checker.set_preroll(frames, &pb.id);
+                            if let Err(msg) = self.checker.sync(c, &mut s.core, col, seg, frame, base + frame) {
+                                self.info(format!("No pre-roll: {msg}"));
+                                self.preroll_abandon(to, None);
+                                return Ok(());
+                            }
+                        }
+                        self.checker.begin(c, &mut s.core, col, seg, frame, false, self.check_parity);
+                        s.step(col, seg, frame, false)?;
+                        if let Some(st) = self.checker.step(c, &mut s.core, col, seg, frame, base + frame, false, self.check_parity) {
+                            // Only a halt counts in pre-roll: the core can't go on.
+                            if let Checked::Failed(msg) = st.checked {
+                                if let Some(p) = &mut self.parity {
+                                    p.add_failure(self.checker.failure(c, seg, frame, &msg, st.blame, st.diffs), s.cache.as_ref());
+                                }
+                                let problem = format!("{msg}\n\nIn pre-roll, at frame {frame} of \"{}\": frame {} here was not checked. Seek, or Compare > Sync now, to try again.", col_title(Some(col), seg), to - 1);
+                                self.preroll_abandon(to, Some(problem));
+                                return Ok(());
+                            }
+                        }
+                        frame += 1;
+                        done += 1;
+                        if frame == *end && ri + 1 < above.len() {
+                            // Straight on into the next segment down.
+                            let next = &above[ri + 1].0;
+                            self.checker.enter(c, col, seg, next);
+                            s.core.coverage_clear();
+                            s.restore_inputs(col, next, 0)?;
+                            base += *end;
+                            ri += 1;
+                            frame = 0;
+                        } else if frame == *end {
+                            // At frame 0 of the segment shown, as playback comes into it
+                            // from its parent. It has to be the state the playback started
+                            // from: an edit above can have changed where the parent ends.
+                            let id = pb.id.clone();
+                            let rec = start_pass(s, col, &id, pb.start_frame)?;
+                            if pb.start_hash.as_ref() != Some(&rec.start_hash) {
+                                self.info("No pre-roll: the segment above no longer ends where this one starts.");
+                                self.preroll_abandon(to, None);
+                                return Ok(());
+                            }
+                            self.checker.enter(c, col, seg, &id);
+                            pb.rec = Some(rec);
+                            pb.ran = 0;
+                            pb.end_hash = None;
+                            self.displaced = false;
+                            self.compare_need_sync = false;
+                            self.base_next = Some((id, 0));
+                            self.seeking = true;
+                            let r = self.seek_slice(0, to, t0);
+                            self.seeking = false;
+                            return r;
+                        }
+                    }
+                    if t0.elapsed() > JOB_SLICE {
+                        self.job = Some(Job::Preroll { above, ri, frame, base, to, keep, done, total });
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Pre-roll in the segments above (`Job::Preroll`), for a seek that is going to run `to`
+    /// frames of the segment shown and is a jump. False: there is none to do, or its start
+    /// can't be reached without playing the tree from further up; the seek goes on as it is.
+    fn preroll_above(&mut self, to: u64) -> Result<bool> {
+        let (Some(col), Some(s), Some(pb), Some(c)) = (&self.col, &mut self.session, &mut self.pb, &self.compare) else { return Ok(false) };
+        let route = decomp_dj::parity::preroll_route(col, &pb.id, to - 1, c.preroll)?;
+        let above: Vec<(String, u64, u64)> = route.into_iter().filter(|(seg, _, _)| *seg != pb.id).collect();
+        let Some((first, from, _)) = above.first().cloned() else { return Ok(false) };
+        let chain = col.chain(&first)?;
+        if chain.len() > 1 && s.load_cached_state(col, chain[chain.len() - 2])?.is_none() {
+            return Ok(false);
+        }
+        if let Some(rec) = pb.rec.take() {
+            s.keep_snapshots(rec)?;
+        }
+        // From here the baseline is somewhere else than the playback says.
+        self.displaced = true;
+        self.base_next = None;
+        let base = s.enter_replay(col, &first)?;
+        let (mut at, mut keep) = (0, None);
+        if from > 0 {
+            let start = s.state_hash(col)?;
+            if let Some((f, state)) = s.nearest_stored(col, &first, &start, from)? {
+                if f > 0 {
+                    s.load_state(&state)?;
+                    s.restore_inputs(col, &first, f)?;
+                    at = f;
+                }
+            }
+            // Worth keeping when reaching it took a while.
+            if from - at >= PREROLL_KEEP {
+                keep = Some(s.content_key(col, &first, &start)?);
+            }
+        }
+        let total = (from - at) + above.iter().map(|(_, a, b)| b - a).sum::<u64>();
+        self.job = Some(Job::Preroll { above, ri: 0, frame: at, base, to, keep, done: 0, total });
+        self.work();
+        Ok(true)
+    }
+
+    /// Gives up a pre-roll in the segments above: the baseline goes back into the segment
+    /// shown and runs `to` frames of it, the comparison core syncing at the frame shown as it
+    /// would with no pre-roll. `halt`: the core stopped in the pre-roll; it is left out of
+    /// step, with this shown as the problem.
+    fn preroll_abandon(&mut self, to: u64, halt: Option<String>) {
+        self.job = None;
+        self.checker.lose_step();
+        self.displaced = true;
+        self.preroll_skip = true;
+        let run = self.compare_run;
+        if halt.is_some() {
+            self.compare_run = false;
+        }
+        self.seek(to - 1);
+        while halt.is_some() && matches!(self.job, Some(Job::Seek { .. })) {
+            self.work();
+        }
+        self.compare_run = run;
+        self.preroll_skip = false;
+        if let Some(msg) = halt {
+            self.compare_need_sync = false;
+            self.compare_failed = true;
+            self.compare_problem = Some(msg);
+            self.playing = false;
         }
     }
 
@@ -1562,6 +1750,7 @@ impl App {
                 let title = col_title(self.col.as_ref(), id);
                 Some((*done as f32 / (*total).max(1) as f32, format!("Playing up to \"{title}\"")))
             }
+            Job::Preroll { to, done, total, .. } => Some((*done as f32 / (*total).max(1) as f32, format!("Pre-roll for frame {}", to - 1))),
         }
     }
 
@@ -1589,6 +1778,8 @@ impl App {
         // falls out of step and syncs again before the next frame shown.
         if self.base_next.as_ref().is_none_or(|(i, f)| *i != id || *f != k) {
             self.checker.lose_step();
+            // A pre-roll cut short by this jump is over.
+            self.checker.set_preroll(0, "");
             self.compare_need_sync = true;
         }
         // Pre-roll: a seek that is going to show frame `t` sends the jump up to `preroll`
@@ -1597,14 +1788,15 @@ impl App {
             let n = self.compare.as_ref().map_or(0, |c| c.preroll);
             if k >= t {
                 self.preroll_to = None;
-            } else if self.compare_need_sync && self.compare_run && self.check_parity && k + n >= t && !egui_ctx().input(|i| i.pointer.any_down()) {
+            } else if self.compare_need_sync && self.compare_run && k + n >= t && !self.sync_held() {
                 self.preroll_to = None;
                 self.checker.set_preroll(t - k, &id);
                 self.compare_sync(&id, k);
             }
         }
-        if capture && self.compare_need_sync && self.compare_run && self.compare.is_some() && !egui_ctx().input(|i| i.pointer.any_down()) {
-            // Not while a button is held (dragging the ruler): that syncs once it's let go.
+        if capture && self.compare_need_sync && self.compare_run && self.compare.is_some() && !self.sync_held() {
+            // Not while a button is held (dragging the ruler) or just after a step back:
+            // `compare_idle` syncs once that is over.
             self.compare_sync(&id, k);
         }
         let (Some(col), Some(s), Some(pb)) = (&self.col, &mut self.session, &mut self.pb) else { return Ok(()) };
@@ -1807,7 +1999,8 @@ impl App {
             *then_seek = Some(target);
             return;
         }
-        if matches!(self.job, Some(Job::Seek { .. })) {
+        // (A pre-roll above left unfinished leaves `displaced` set: the seek loads a snapshot.)
+        if matches!(self.job, Some(Job::Seek { .. } | Job::Preroll { .. })) {
             self.job = None;
         }
         if let Err(e) = self.try_seek(target) {
@@ -1836,27 +2029,43 @@ impl App {
             }
         }
         let Some(pb) = &self.pb else { return Ok(()) };
-        // Pre-roll, for a comparison core whose [[compare]] entry asks for it, while parity is
-        // checked: start far enough back that it can copy the baseline before the frame
-        // shown. Inside this segment only; not when re-running a failure, which says itself
-        // where its run started.
+        // Pre-roll, for a comparison core whose [[compare]] entry asks for it, checking
+        // parity or not (a core that copies at a breakpoint draws nothing in the frame it
+        // copies in, so without it the picture would stay as it was): start far enough back that it can copy the baseline before the frame
+        // shown; into the segments above when this one has too few frames before it
+        // (`preroll_above`). Not when re-running a failure, which says itself where its run
+        // started.
         self.preroll_to = None;
+        let skip_above = std::mem::take(&mut self.preroll_skip);
         let preroll = match &self.compare {
-            Some(c) if self.compare_run && self.check_parity && self.rerun.is_none() => c.preroll,
+            Some(c) if self.compare_run && self.rerun.is_none() && !self.sync_held() => c.preroll,
             _ => 0,
         };
         let jump_at = (want_ran - 1).saturating_sub(preroll);
-        if want_ran != pb.ran || self.texture.is_none() || std::mem::take(&mut self.reshow) {
+        if want_ran != pb.ran || self.texture.is_none() || std::mem::take(&mut self.reshow) || self.displaced {
             // Restart from the nearest snapshot that still leaves one frame to draw,
             // unless running on from where we are is quicker.
             let (&k, _) = pb.snapshots.range(..want_ran).next_back().ok_or_else(|| anyhow!("no snapshot"))?;
-            let mut load = want_ran <= pb.ran || k > pb.ran;
+            let mut load = want_ran <= pb.ran || k > pb.ran || self.displaced;
             let mut k = k;
+            // Whether the frames about to run start with a jump for the comparison core.
+            let jump = load || self.compare_need_sync || self.base_next.as_ref().is_none_or(|(i, f)| *i != pb.id || *f != pb.ran);
+            if preroll > want_ran - 1 && jump && !skip_above && !self.displaced {
+                // (Not while the sync is held: `preroll` is 0 then, and `compare_idle` seeks
+                // again once it is over.)
+                match self.preroll_above(want_ran) {
+                    Ok(true) => return Ok(()),
+                    Ok(false) => {}
+                    Err(e) => self.error(format!("No pre-roll: {e:#}")),
+                }
+                load |= self.displaced;
+            }
+            let Some(pb) = &self.pb else { return Ok(()) };
             if preroll > 0 && jump_at + 1 < want_ran && (load || self.compare_need_sync) {
                 // A jump: from a snapshot at or before the frame the jump event goes at.
                 if let Some((&back, _)) = pb.snapshots.range(..=jump_at).next_back() {
                     k = back;
-                    load = pb.ran > jump_at || k > pb.ran;
+                    load = pb.ran > jump_at || k > pb.ran || self.displaced;
                     self.preroll_to = Some(want_ran - 1);
                 }
             }
@@ -1865,6 +2074,7 @@ impl App {
                 let state = pb.snapshots[&k].clone();
                 let (Some(col), Some(s)) = (&self.col, &mut self.session) else { return Ok(()) };
                 s.load_state(&state)?;
+                self.displaced = false;
                 let pb = self.pb.as_mut().unwrap();
                 if let Some(rec) = pb.rec.take() {
                     s.keep_snapshots(rec)?;
@@ -1899,6 +2109,9 @@ impl App {
 
     fn step_by(&mut self, delta: i64) {
         self.playing = false;
+        if delta < 0 && self.compare_run && self.compare.is_some() {
+            self.stepped_back = Some(egui_ctx().input(|i| i.time));
+        }
         // Stepping past either end crosses into the neighbour the roll shows there.
         if let Some(pb) = &self.pb {
             let at = pb.shown();
@@ -2339,15 +2552,36 @@ impl App {
         }
     }
 
+    /// The comparison core is not to be synced just now: a mouse button is held (the ruler
+    /// is being dragged), or the playhead stepped back a moment ago and may again. The sync
+    /// comes from `compare_idle`, once neither holds.
+    fn sync_held(&self) -> bool {
+        egui_ctx().input(|i| i.pointer.any_down()) || self.stepping_back()
+    }
+
+    /// The playhead stepped back within the last `STEP_BACK_HOLD` seconds.
+    fn stepping_back(&self) -> bool {
+        let now = egui_ctx().input(|i| i.time);
+        self.stepped_back.is_some_and(|t| now - t < STEP_BACK_HOLD)
+    }
+
     /// Paused with a sync wanted (after a jump, Run comparison or Sync now): re-run the frame
     /// shown, syncing just before it, so both pictures show the same frame.
     fn compare_idle(&mut self, ctx: &egui::Context) {
         if !self.compare_need_sync || !self.compare_run || self.compare.is_none() || self.playing || self.job.is_some() || self.hydrating.is_some() {
             return;
         }
-        if ctx.input(|i| i.pointer.any_down()) {
+        if self.sync_held() {
+            // Come back when the hold after a step back is over.
+            if let Some(t) = self.stepped_back {
+                let left = STEP_BACK_HOLD - (ctx.input(|i| i.time) - t);
+                if left > 0.0 {
+                    ctx.request_repaint_after(std::time::Duration::from_secs_f64(left));
+                }
+            }
             return;
         }
+        self.stepped_back = None;
         let Some(shown) = self.pb.as_ref().and_then(|pb| pb.shown()) else { return };
         self.reshow = true;
         self.seek(shown);
@@ -5862,7 +6096,8 @@ impl App {
         } else if self.checker.at.is_some() {
             ("in step".to_string(), Color32::from_rgb(120, 200, 120), None)
         } else {
-            ("waiting to sync".to_string(), Color32::from_gray(150), Some("Syncs at the next frame shown".to_string()))
+            let why = if self.stepping_back() { "Syncs when you stop stepping back" } else { "Syncs at the next frame shown" };
+            ("waiting to sync".to_string(), Color32::from_gray(150), Some(why.to_string()))
         };
         let mut sync_now = false;
         ui.scope_builder(egui::UiBuilder::new().max_rect(rh.shrink2(egui::vec2(6.0, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {

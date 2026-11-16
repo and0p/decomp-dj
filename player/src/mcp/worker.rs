@@ -570,10 +570,10 @@ impl Worker {
         let target = arg_u64(a, "offset");
         let region = a.get("region").and_then(|r| r.as_str()).unwrap_or("PRG").to_string();
         let out = a.get("out").and_then(|o| o.as_str()).map(PathBuf::from);
-        let labels: HashMap<u16, String> = a
+        let labels: HashMap<u32, String> = a
             .get("labels")
             .and_then(|l| l.as_object())
-            .map(|m| m.iter().filter_map(|(k, v)| Some((u16::from_str_radix(k.trim_start_matches('$'), 16).ok()?, v.as_str()?.to_string()))).collect())
+            .map(|m| m.iter().filter_map(|(k, v)| Some((u32::from_str_radix(k.trim_start_matches('$'), 16).ok()?, v.as_str()?.to_string()))).collect())
             .unwrap_or_default();
         self.seek_segment(&seg, frame - fb)?;
         let col = &self.col;
@@ -590,8 +590,12 @@ impl Worker {
             s.step(col, &seg, f, false)?;
         }
         let (events, dropped) = s.core.trace_take();
-        let name = |a: u16| labels.get(&a).cloned();
+        let name = |a: u32| labels.get(&a).cloned();
         let steps = decomp_dj::trace::group(&events);
+        // The instruction set of the code traced: the region's that the first instruction ran in.
+        let cpus: Vec<Option<String>> = s.core.region_facts().into_iter().map(|r| r.cpu).collect();
+        let cpu = steps.first().and_then(|st| cpus.get(usize::try_from(st.exec.region).ok()?)?.clone()).unwrap_or_default();
+        let cpu = cpu.as_str();
         // Index of each frame's first instruction.
         let mut step_frame = vec![0u64; steps.len()];
         {
@@ -620,7 +624,7 @@ impl Worker {
                 if Some(i) == hit {
                     text.push_str(">>> ");
                 }
-                text.push_str(&decomp_dj::trace::line(st, &name));
+                text.push_str(&decomp_dj::trace::line(st, cpu, &name));
                 text.push('\n');
             }
             std::fs::write(p, text)?;
@@ -630,7 +634,7 @@ impl Worker {
             Some(h) => steps[h.saturating_sub(before)..(h + after + 1).min(steps.len())]
                 .iter()
                 .enumerate()
-                .map(|(i, st)| format!("{}{}", if h.saturating_sub(before) + i == h { ">>> " } else { "" }, decomp_dj::trace::line(st, &name)))
+                .map(|(i, st)| format!("{}{}", if h.saturating_sub(before) + i == h { ">>> " } else { "" }, decomp_dj::trace::line(st, cpu, &name)))
                 .collect(),
             None => vec![],
         };

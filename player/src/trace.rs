@@ -84,6 +84,92 @@ pub fn disasm_6502(pc: u16, op: u8, operands: &[u8], name: &dyn Fn(u16) -> Optio
     }
 }
 
+const MIPS_REGS: [&str; 32] = [
+    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp",
+    "fp", "ra",
+];
+
+/// `sw ra, 0x14(sp)` for the MIPS instruction word `w` at CPU address `pc`: the loads,
+/// stores, jumps, branches and integer arithmetic a trace is read for. Anything else (the
+/// coprocessors, mostly) is `.word 0x...`. `name` turns a CPU address into a label.
+pub fn disasm_mips(pc: u32, w: u32, name: &dyn Fn(u32) -> Option<String>) -> String {
+    let (op, rs, rt, rd, sa, func) = (w >> 26, (w >> 21 & 31) as usize, (w >> 16 & 31) as usize, (w >> 11 & 31) as usize, w >> 6 & 31, w & 63);
+    let (r, imm) = (MIPS_REGS, w as u16);
+    let simm = imm as i16 as i32;
+    let hex = |v: i32| if v < 0 { format!("-0x{:X}", -(v as i64)) } else { format!("0x{v:X}") };
+    let label = |a: u32| name(a).unwrap_or_else(|| format!("0x{a:08X}"));
+    let branch = pc.wrapping_add(4).wrapping_add((simm << 2) as u32);
+    let mem = |m: &str| format!("{m} {}, {}({})", r[rt], hex(simm), r[rs]);
+    if w == 0 {
+        return "nop".into();
+    }
+    match op {
+        0 => match func {
+            0 | 2 | 3 => format!("{} {}, {}, {sa}", ["sll", "", "srl", "sra"][func as usize], r[rd], r[rt]),
+            4 | 6 | 7 => format!("{} {}, {}, {}", ["sllv", "", "srlv", "srav"][func as usize - 4], r[rd], r[rt], r[rs]),
+            8 => format!("jr {}", r[rs]),
+            9 => format!("jalr {}", r[rs]),
+            12 => "syscall".into(),
+            13 => "break".into(),
+            16 | 18 => format!("{} {}", if func == 16 { "mfhi" } else { "mflo" }, r[rd]),
+            17 | 19 => format!("{} {}", if func == 17 { "mthi" } else { "mtlo" }, r[rs]),
+            24..=31 => format!("{} {}, {}", ["mult", "multu", "div", "divu", "dmult", "dmultu", "ddiv", "ddivu"][func as usize - 24], r[rs], r[rt]),
+            32..=47 if !matches!(func, 40 | 41) => {
+                let m = ["add", "addu", "sub", "subu", "and", "or", "xor", "nor", "", "", "slt", "sltu", "dadd", "daddu", "dsub", "dsubu"][func as usize - 32];
+                format!("{m} {}, {}, {}", r[rd], r[rs], r[rt])
+            }
+            _ => format!(".word 0x{w:08X}"),
+        },
+        1 => match rt {
+            0 | 1 | 16 | 17 => format!("{} {}, {}", ["bltz", "bgez", "bltzal", "bgezal"][(rt & 1) + (rt >> 4) * 2], r[rs], label(branch)),
+            _ => format!(".word 0x{w:08X}"),
+        },
+        2 | 3 => format!("{} {}", if op == 2 { "j" } else { "jal" }, label(pc.wrapping_add(4) & 0xF000_0000 | (w & 0x03FF_FFFF) << 2)),
+        4 | 5 | 20 | 21 => format!("{} {}, {}, {}", ["beq", "bne", "beql", "bnel"][(op & 1) as usize + (op >> 4) as usize * 2], r[rs], r[rt], label(branch)),
+        6 | 7 | 22 | 23 => format!("{} {}, {}", ["blez", "bgtz", "blezl", "bgtzl"][(op & 1) as usize + (op >> 4) as usize * 2], r[rs], label(branch)),
+        8 | 9 | 10 | 11 | 24 | 25 => format!("{} {}, {}, {}", ["addi", "addiu", "slti", "sltiu", "daddi", "daddiu"][if op >= 24 { op as usize - 20 } else { op as usize - 8 }], r[rt], r[rs], hex(simm)),
+        12..=14 => format!("{} {}, {}, 0x{imm:X}", ["andi", "ori", "xori"][op as usize - 12], r[rt], r[rs]),
+        15 => format!("lui {}, 0x{imm:X}", r[rt]),
+        32 => mem("lb"),
+        33 => mem("lh"),
+        34 => mem("lwl"),
+        35 => mem("lw"),
+        36 => mem("lbu"),
+        37 => mem("lhu"),
+        38 => mem("lwr"),
+        39 => mem("lwu"),
+        40 => mem("sb"),
+        41 => mem("sh"),
+        42 => mem("swl"),
+        43 => mem("sw"),
+        46 => mem("swr"),
+        55 => mem("ld"),
+        63 => mem("sd"),
+        49 | 53 | 57 | 61 => format!("{} f{rt}, {}({})", ["lwc1", "ldc1", "swc1", "sdc1"][(op as usize - 49) / 4], hex(simm), r[rs]),
+        _ => format!(".word 0x{w:08X}"),
+    }
+}
+
+/// The instruction of an execute event, as text, for the instruction set `cpu` (a
+/// connector region's: "mips3", else the 6502).
+pub fn disasm(cpu: &str, e: &TraceEvent, name: &dyn Fn(u32) -> Option<String>) -> String {
+    if cpu == "mips3" {
+        let w = u32::from_be_bytes([e.value, e.operands[0], e.operands[1], e.operands[2]]);
+        disasm_mips(e.address(), w, name)
+    } else {
+        disasm_6502(e.addr, e.value, &e.operands[..e.operand_count as usize], &|a| name(a as u32))
+    }
+}
+
+/// A CPU address as text: `$C123` on the 6502, `$80114514` with 32-bit addresses.
+pub fn addr_text(cpu: &str, a: u32) -> String {
+    if cpu == "mips3" {
+        format!("${a:08X}")
+    } else {
+        format!("${a:04X}")
+    }
+}
+
 /// Instructions in a trace, each with the data reads and writes it made.
 pub struct Step<'a> {
     pub exec: &'a TraceEvent,
@@ -102,26 +188,23 @@ pub fn group(events: &[TraceEvent]) -> Vec<Step<'_>> {
     out
 }
 
-/// One line per instruction: `$C123 LDA $0200,X  A:00 X:01 Y:00 S:FD P:24  r$0201=05 w$0300=05`.
-pub fn line(s: &Step, name: &dyn Fn(u16) -> Option<String>) -> String {
+/// One line per instruction: `$C123 LDA $0200,X  A:00 X:01 Y:00 S:FD P:24  r$0201=05 w$0300=05`
+/// on the 6502. With `cpu` "mips3" there are no registers (the connector doesn't trace
+/// them): `$80005BD0 jr ra  r$8009EDA4=00`.
+pub fn line(s: &Step, cpu: &str, name: &dyn Fn(u32) -> Option<String>) -> String {
     let e = s.exec;
-    let mut t = format!(
-        "${:04X} {:<18} A:{:02X} X:{:02X} Y:{:02X} S:{:02X} P:{:02X}",
-        e.addr,
-        disasm_6502(e.addr, e.value, &e.operands[..e.operand_count as usize], name),
-        e.a,
-        e.x,
-        e.y,
-        e.sp,
-        e.p
-    );
+    let mut t = if cpu == "mips3" {
+        format!("{} {:<26}", addr_text(cpu, e.address()), disasm(cpu, e, name))
+    } else {
+        format!("{} {:<18} A:{:02X} X:{:02X} Y:{:02X} S:{:02X} P:{:02X}", addr_text(cpu, e.address()), disasm(cpu, e, name), e.a, e.x, e.y, e.sp, e.p)
+    };
     for a in &s.accesses {
         let k = match a.kind {
             TRACE_READ => 'r',
             TRACE_WRITE => 'w',
             _ => '?',
         };
-        t.push_str(&format!(" {k}${:04X}={:02X}", a.addr, a.value));
+        t.push_str(&format!(" {k}{}={:02X}", addr_text(cpu, a.address()), a.value));
     }
     t
 }
@@ -139,6 +222,21 @@ mod tests {
         assert_eq!(disasm_6502(0xC000, 0x20, &[0x34, 0x12], &|a| (a == 0x1234).then(|| "f".into())), "JSR f");
         assert_eq!(disasm_6502(0xC000, 0xB1, &[0x10], &none), "LDA ($10),Y");
         assert_eq!(disasm_6502(0xC000, 0x0A, &[], &none), "ASL A");
+    }
+
+    #[test]
+    fn disassembles_mips() {
+        let none = |_: u32| None;
+        assert_eq!(disasm_mips(0x8000_5BD0, 0x03E0_0008, &none), "jr ra");
+        assert_eq!(disasm_mips(0x8000_5BD4, 0x27BD_0050, &none), "addiu sp, sp, 0x50");
+        assert_eq!(disasm_mips(0x800D_9DFC, 0x0C04_5145, &none), "jal 0x80114514");
+        assert_eq!(disasm_mips(0x800D_9DFC, 0x0C04_5145, &|a| (a == 0x8011_4514).then(|| "match_tick".into())), "jal match_tick");
+        assert_eq!(disasm_mips(0x8000_0000, 0xAFBF_0014, &none), "sw ra, 0x14(sp)");
+        assert_eq!(disasm_mips(0x8000_0000, 0xA044_FFFF, &none), "sb a0, -0x1(v0)");
+        assert_eq!(disasm_mips(0x8000_0000, 0x1440_FFFE, &none), "bne v0, zero, 0x7FFFFFFC");
+        assert_eq!(disasm_mips(0x8000_0000, 0x0082_1021, &none), "addu v0, a0, v0");
+        assert_eq!(disasm_mips(0x8000_0000, 0, &none), "nop");
+        assert_eq!(disasm_mips(0x8000_0000, 0x4600_0000, &none), ".word 0x46000000");
         assert_eq!(std::mem::size_of::<TraceEvent>(), 40);
     }
 }

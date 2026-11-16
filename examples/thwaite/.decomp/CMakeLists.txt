@@ -30,14 +30,27 @@ add_library(thwaite_decomp_libretro SHARED
   src/title.c
   src/pads.c
   src/compare.c
+  src/math.c
+  src/bg.c
+  src/levels.c
+  src/smoke.c
+  src/explosion.c
+  src/scurry.c
+  src/missiles.c
+  src/play.c
+  src/practice.c
+  src/cutscene.c
   src/gfx.c
   src/gl.c
   src/data/chr.c
   src/data/palette.c
   src/data/map.c
+  src/data/cutscripts.c
   src/data/texts.c
 )
 set_target_properties(thwaite_decomp_libretro PROPERTIES PREFIX "")
+# dj's comparison-core header (dj_compare.h), from this repository.
+target_include_directories(thwaite_decomp_libretro PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../connectors/include)
 target_compile_definitions(thwaite_decomp_libretro PRIVATE THW_BUILD_ID="thwaite-decomp@${THW_COMMIT}")
 # A build with a bug planted on purpose, to check that parity catches it (README).
 option(THW_BREAK_ON_PURPOSE "Plant a known bug" OFF)

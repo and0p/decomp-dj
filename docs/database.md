@@ -23,7 +23,9 @@ lines (for a root, also its `sram` and `snapshot` blob ids). An edit gives a seg
 - **Parity** with comparison cores ([gui.md](gui.md#parity)), not keyed by content:
   `parity_passed` holds, per `[[compare]]` entry and build, the PRG coverage flags of every
   frame that passed; `parity_failures` holds each failing frame with its build, where the
-  comparison core was synced, the reason and that frame's flags; `parity_runs` holds, per
+  comparison core was synced (and how many frames from there were pre-roll), where in the
+  frame the core gave its verdict (`at`: a breakpoint's name or "the frame end"), the
+  reason and that frame's flags; `parity_runs` holds, per
   entry, build and segment content, how a `dj parity` check of that segment went, so the next
   run skips it ([cli.md](cli.md#parity)); `parity_diffs` holds what differed on each failing
   frame (label, region, address, symbol, both sides' bytes), up to 100 per failure, with the

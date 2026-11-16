@@ -428,6 +428,23 @@ static void setUpHelper(void)
     /* No `reset`: the console's reset is not the decomp's power-on, so it copies again. */
 }
 
+/* What differed at the last mismatch: the bytes of RAM, one each, so that dj can say which
+ * instruction of the original wrote each (dj parity --explain). */
+DJ_EXPORT size_t dj_parity_diffs(struct dj_parity_diff *out, size_t cap)
+{
+    const struct tetris_parity_diff *d;
+    size_t n = tetris_last_parity_diffs(&d);
+    for (size_t i = 0; i < n && i < cap; i++) {
+        memset(&out[i], 0, sizeof out[i]);
+        out[i].region = "RAM";
+        out[i].address = d[i].address;
+        out[i].expected = &d[i].nes;
+        out[i].actual = &d[i].decomp;
+        out[i].len = 1;
+    }
+    return n;
+}
+
 DJ_EXPORT size_t dj_breakpoints(const struct dj_breakpoint **out)
 {
     if (!judgeAtWait())

@@ -1056,6 +1056,10 @@ pub struct FailureRow {
     pub short: String,
     pub title: String,
     pub frame: u64,
+    /// Where in the frame the verdict came: a breakpoint's name, "the frame end", "a write".
+    /// Empty when it wasn't a verdict, and for failures kept before this was recorded.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub at: String,
     /// Where the comparison core was synced: the run to reproduce starts there.
     pub synced_segment: String,
     pub synced_frame: u64,
@@ -1148,6 +1152,7 @@ impl Project {
             short: self.short(&f.segment),
             title: if self.col.replays.contains_key(&f.segment) { self.title(&f.segment) } else { "(segment gone)".into() },
             frame: f.frame,
+            at: f.at.clone(),
             synced_segment: f.synced.0.clone(),
             synced_frame: f.synced.1,
             preroll: f.preroll,

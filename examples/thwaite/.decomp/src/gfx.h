@@ -35,6 +35,8 @@ struct gfx {
     uint8_t sprite_table;           /* pattern table for sprites (Thwaite: 1) */
     uint16_t scroll_x;              /* 0-511 */
     uint8_t scroll_y;               /* 0-239 */
+    uint8_t split_row;              /* 0: none; else from this tile row down, scroll x is... */
+    uint16_t split_scroll_x;        /* ...this (the cutscenes reset it mid-frame) */
     bool bg_on, sprites_on;
 };
 
@@ -45,6 +47,8 @@ void gfx_fill_nt(struct gfx *g, int nt, uint8_t tile, uint8_t palette);
 void gfx_put_tile(struct gfx *g, int x, int y, uint8_t tile, uint8_t table, uint8_t palette);
 /* Sets the tile at a PPU nametable address ($2000-$27BF), keeping its palette. */
 void gfx_poke(struct gfx *g, uint16_t ppu_addr, uint8_t tile);
+/* Sets one attribute byte (index 0-63) of nametable `nt`: four 2x2-tile palettes. */
+void gfx_set_attr(struct gfx *g, int nt, int index, uint8_t value);
 /* The pattern table for BG rows from `row` down (the title screen switches mid-frame). */
 void gfx_bg_table_from(struct gfx *g, int row, uint8_t table);
 

@@ -12,13 +12,14 @@ Priorities: **high** blocks the release, **medium** should be in it, **low** can
 | --- | --- | --- | --- |
 | high | Land the N64 connector and MIPS decoder; docs agree on what's supported | [CONNECTOR_PLAN.md](CONNECTOR_PLAN.md) | done 2026-11-09 |
 | high | CI on Linux and macOS (Windows as a template), Thwaite hashes on every change | [RELEASE_PLAN.md](RELEASE_PLAN.md) | written 2026-11-10, not run yet (push to run) |
+| medium | The Thwaite decomp: the example's "decomp" half, a C reimplementation drawn with OpenGL and checked with breakpoints and events; its parity checked in CI with the hashes | [THWAITE_DECOMP_PLAN.md](THWAITE_DECOMP_PLAN.md) | done 2026-11-16: every frame of the 15 segments in parity, pictures pixel for pixel, `--explain` traces failures; the CI step written, not run yet (push to run) |
 | high | Projects record the format and tool version; older tools refuse newer projects; a core rebuild re-pins | [below](#project-and-cli), "Versioning projects" | done 2026-11-10 |
 | high | Clean-up and licensing: scratch files, terminology in the CLI help, the Tetris data tables, connector licences | [RELEASE_PLAN.md](RELEASE_PLAN.md#licensing-of-the-connectors-to-settle) | not started |
 | high | Release workflow and install docs (`v0.1.0`) | [RELEASE_PLAN.md](RELEASE_PLAN.md) | portable ZIPs and draft release written 2026-11-10, not run yet |
 | medium | Decoder interface (step 1: one trait and one sweep; step 2: loadable decoders) | [DECODER_PLAN.md](DECODER_PLAN.md) | done (plugins 2026-11-10) |
-| high | Cores and plugins can't crash or hang dj: workers for decoder plugins, comparison cores, batch commands, then the GUI's core | [ISOLATION_PLAN.md](ISOLATION_PLAN.md) | done for plugins, comparison cores and batch commands; the GUI's core protected in process (edits kept, crash note); moving it to a worker designed, not built (decided 2026-11-10: not now, maybe before the release) |
+| high | Cores and plugins can't crash or hang dj: workers for decoder plugins, comparison cores, batch commands, then the GUI's core | [ISOLATION_PLAN.md](ISOLATION_PLAN.md) | done for plugins, comparison cores and batch commands (comparison cores went back into dj's process on 2026-11-15, so that they can read the baseline inside a frame: [yield-parity/PLAN.md](yield-parity/PLAN.md), section 11); the GUI's core protected in process (edits kept, crash note); moving it to a worker designed, not built (decided 2026-11-10: not now, maybe before the release) |
 | medium | Root segments that start from a snapshot, finished ([below](#root-segments-from-a-snapshot)) | | partly built |
-| high | Parity at check points, not frame ends: the version 2 comparison handle (frame and tick facts, the baseline's memory instead of its save state, CPU state), then check points in Mesen, dj and the tools | [CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md) | planned 2026-11-11; changes the comparison core API, so before the release |
+| high | Parity at check points, not frame ends: the version 2 comparison handle (frame and tick facts, the baseline's memory instead of its save state, CPU state), then check points in Mesen, dj and the tools | [CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md) | built 2026-11-15 and 16 in another form, as events and breakpoints the comparison core brings itself: [yield-parity/PLAN.md](yield-parity/PLAN.md). The plan linked here is the earlier design |
 
 ### Root segments from a snapshot
 
@@ -32,7 +33,7 @@ commercial game should not ship one: a state holds the game's RAM, and for some 
 ([segments.md](../docs/segments.md#header-fields)); the player loads it before frame 0
 (`player.rs`) and takes `start-frame` from the segment; the GUI sets it in Properties
 ("Snapshot", copied into `blobs/`); and a snapshot root acts like any stored state for a
-comparison core: `dj_sync` gets no `DJ_SYNC_BOOT` (`gui/src/main.rs`, `boot` is only set
+comparison core: its jump is not a power-on jump (`parity.rs`, `boot` is only set
 for a root without a snapshot), and `sync = "state"` cores load the baseline's state.
 
 **Left to do:**
@@ -54,10 +55,10 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   rebuilt core can't load it (ties in with "Versioning projects"). Test on more than one
   OS for Mesen.
 - **Tests.** A root from a snapshot plays and reproduces its hashes from an empty database;
-  a comparison core is synced at frame 0 without `DJ_SYNC_BOOT`; deleting or re-parenting
+  a comparison core gets a jump at frame 0 that is not a power-on; deleting or re-parenting
   keeps the blob only on a root (the GUI drops it already, with a message).
 - **Docs.** gui.md and editing.md on making a snapshot root; connectors.md already says
-  `DJ_SYNC_BOOT` is only for a power-on; cli.md for the new flags.
+  the power-on jump is only for a power-on; cli.md for the new flags.
 
 ## Known limits
 
@@ -385,6 +386,15 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
 
 ## Comparison and parity
 
+> **The comparison core API was replaced on 2026-11-15 and 16** (note added 2026-11-16).
+> A comparison core now exports `dj_handle_event` and is told of jumps, console resets,
+> its own breakpoints in the original and frame ends; it copies the baseline itself and
+> answers each event with a verdict. `dj_sync`, `DJ_SYNC_BOOT`, `dj_write`, `dj_run` and
+> `dj_check_parity` are gone, and so is SKIP (now "unjudged"). The entries below that name
+> them are kept as the record of what shipped and why; read them with that in mind. The
+> design and what was built are in [yield-parity/PLAN.md](yield-parity/PLAN.md), and the
+> API is in [connectors.md](../docs/connectors.md#comparison-cores).
+
 - **Shipped: comparison cores, phase 1.** `[[compare]]` entries, the GUI's Compare
   dropdown and Run toggle (now the Compare menu), `dj_sync` (with `DJ_SYNC_BOOT`) or save-state sync after
   jumps, `dj_write` for `[WRITE]` lines, and the pictures side by side
@@ -456,7 +466,9 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
     ([mcp.md](../docs/mcp.md#parity)).
   - What differed is kept with each failure (`dj_parity_diffs`, or the RAM compare), and
     `--explain` traces the original's last write of each difference.
-- **Planned before the release: parity at check points**
+- **Built in another form (2026-11-15 and 16): parity at check points.** The comparison
+  core names breakpoints in the original and is called there
+  ([yield-parity/PLAN.md](yield-parity/PLAN.md)). The earlier plan, kept for the record
   ([CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md)): the baseline pauses where a
   step of the original's logic ends, so lag frames and variable logic rates (N64,
   PlayStation) line up, and `dj_sync` knows which loop the original is in. Part 1 first: a
@@ -471,6 +483,14 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   `dj_run_to_checkpoint`), and the GUI's piano roll showing them. Check points
   ([CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md)) don't need it: they keep inputs
   per frame.
+- **Still to do after the events work** (from [yield-parity/PLAN.md](yield-parity/PLAN.md)):
+  - A trace hook in the mGBA connector, so `dj parity --explain` can name the writers
+    there. Mesen's and Mupen64Plus's have one (the N64's since 2026-11-16).
+  - Why WWF No Mercy's run changes when its framebuffers are zeroed in a stored snapshot
+    (`[cache] exclude`), and a check in dj that would catch such a setting.
+  - A real decomp of a game whose ticks cross frames, and one with a lag frame an
+    interrupt splits. The rules for both rest on the test core and a stub.
+  - "Pre-roll" shown as the comparison core's state in the GUI.
 - **Still to do for parity:** counts per block ("passed on X frames"); `dj parity --jobs`
   (a child process per job); `--from-power-on`; data symbols, so diffs can be given by
   symbol and the RAM compare's diffs get names; for diffs that can't be traced, "suspects

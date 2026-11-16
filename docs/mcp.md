@@ -84,7 +84,7 @@ there is more.
 | `frontier(addr?)` | Covered branches and calls that lead into uncovered code, with the segments and frames that run that branch. For an address in uncovered code, the ways into its block; for a function never entered, its covered callers; with none, the largest across the ROM |
 | `segments(filter?)` | The tree: id, title, parent, frames, status, poked, children |
 | `parity_summary(compare?, limit?)` | Parity with a comparison core ([below](#parity)): instructions that ran, as parity, failed, failed with an older build or not checked; the functions with the most failed or unchecked code; the failures kept, newest first |
-| `parity_failures(compare?, addr?, old?)` | The failures kept, newest first: segment and frame, where the comparison core was synced, the reason, and whether it failed with the build there is now. `addr` keeps those whose failing frame ran that code (a function's start: any of it); `old=true` only older builds', `old=false` only this build's |
+| `parity_failures(compare?, addr?, old?)` | The failures kept, newest first: segment and frame, where in the frame the core gave its verdict (`at`: its breakpoint's name, or "the frame end"), where the comparison core was synced and how many frames from there were pre-roll, the reason, and whether it failed with the build there is now. `addr` keeps those whose failing frame ran that code (a function's start: any of it); `old=true` only older builds', `old=false` only this build's |
 | `gui_view()` | What the person is looking at in `dj-gui`, when they share it ([below](#the-gui)) |
 
 ### Without a symbol map
@@ -118,8 +118,16 @@ $98A3 CMP #$24             A:80 X:FF Y:00 S:FB P:85
 $98A5 BCC $98C2            A:80 X:FF Y:00 S:FB P:05
 ```
 
-Traces need a connector with the trace hook ([connectors.md](connectors.md#traces)). The
-disassembly is 6502 only so far.
+Traces need a connector with the trace hook ([connectors.md](connectors.md#traces)):
+Mesen's and Mupen64Plus's have it. On the N64 a line has no registers (the connector
+doesn't trace them), addresses are 32 bits, and `labels` are keyed by the whole address:
+
+```
+$80005B98 sb v0, 0xB(a1)             w$8009EDCF=00
+$80005BD0 jr ra
+```
+
+`calls` is 6502 only: it reads a call's inputs and results off the 6502's stack.
 
 ## Sessions
 
@@ -276,6 +284,6 @@ or sharing your view.
 
 - Buttons are joypad buttons; other devices (mice, analog sticks) go through `play_text` with segment lines.
 - Fuzzing and goal searches press joypad buttons at random; they know nothing about the game.
-- Traces and their disassembly are 6502 only, and only the Mesen connector has the trace hook.
+- Traces are for the 6502 (Mesen) and MIPS (Mupen64Plus); the mGBA connector has no trace hook. The MIPS disassembly covers loads, stores, jumps, branches and integer arithmetic, and prints the rest as `.word`. `calls` is 6502 only.
 - The GUI follows and shares through files, a second or so behind. It can't hand its own running core to an agent; the agent opens its own session at the same point.
 - On Windows, workers end when `dj mcp` closes their pipe, but there is no job object yet to end them if it is killed. Windows hasn't been tried.

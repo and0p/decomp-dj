@@ -5,10 +5,12 @@ libretro core that dj compares against the original ROM. Written from Thwaite's 
 source, in its own structure; drawn with OpenGL 3.2 core; no sound. The plan, and what is
 done, is in [.agents/THWAITE_DECOMP_PLAN.md](../../../.agents/THWAITE_DECOMP_PLAN.md).
 
-**Status: milestone 1.** The legal screen and the title screen (joypad and mouse) are
-written and in parity on every segment that reaches them. Everything after the title is
-not written yet: the decomp answers "unjudged" there, with the reason, and copies the
-original again when it is back on a screen it has.
+**Status: done (milestone 5).** Every screen the segments reach is in parity on every frame: the
+legal screen, the title (joypad and mouse), the practice menu, gameplay (pause, game over,
+balloons, MIRVs, clearing a level, the silo rebuild, the hour changing), the cutscenes, and
+the day changing. Only boot's first frames, before its first wait, aren't judged. The
+pictures match the original's pixel for pixel, and a failure can be traced to the original's
+code with `dj parity --explain`.
 
 ## Build
 
@@ -31,22 +33,45 @@ player/target/release/dj parity examples/thwaite --compare decomp --all
 
 Or open the project in dj-gui and pick **Compare > Comparison core > decomp**.
 
-Two scratch tools in `player/examples/` help:
+CI does the same on every push and pull request (`.github/workflows/ci.yml`, the Thwaite
+job, on Linux and macOS): it builds the decomp after replaying the example, and fails if a
+frame differs. On Linux the decomp's OpenGL context comes from Mesa's software renderer
+through EGL, so the runner needs no GPU.
+
+Three scratch tools in `player/examples/` help:
 
 - `thwaite_pictures` plays a segment with the decomp beside the original, as dj-gui does,
   and saves both pictures side by side at the frames asked for.
 - `thwaite_breaks` checks the breakpoint table on every segment.
+- `thwaite_bot` records a segment by playing the original itself: it clicks the practice
+  menu, presses buttons, and shoots down missiles (letting those aimed at one building
+  through, if asked), then writes what it pressed into an empty segment from `dj new`.
 
 ```bash
 cd player
 cargo run --release --example thwaite_pictures -- ../examples/thwaite ../examples/thwaite/build/thwaite.nes ../build/cores/mesen_libretro d0c14220 9,119 /tmp/pics
 ```
 
+```bash
+cargo run --release --example thwaite_bot -- ../examples/thwaite ../examples/thwaite/build/thwaite.nes ../build/cores/mesen_libretro <new segment> click:84,44 click:84,60 press:START defend
+```
+
+Run `dj clean` afterwards to record the segment's hashes.
+
 Don't try the decomp with `dj play --core`: `dj play` saves the core it is given as the
 project's own (in `.local/local.toml`), and the project's own core is the original's.
 
-To check that parity catches a bug, build one with a bug planted (held keys count as new
-presses) and give it its own entry in `examples/thwaite/.local/local.toml`:
+When a frame fails, `--explain` says which instruction of the original wrote each byte
+that differs: the code to compare with the decomp's. Take the failure's id from `--report`:
+
+```bash
+player/target/release/dj parity examples/thwaite --compare decomp --report
+player/target/release/dj parity examples/thwaite --compare decomp --explain <id>
+```
+
+To check that parity catches a bug, build one with bugs planted (held keys count as new
+presses; enemy smoke every 21 frames, not 20) and give it its own entry in
+`examples/thwaite/.local/local.toml`:
 
 ```bash
 cmake -S . -B build/broken -DTHW_BREAK_ON_PURPOSE=ON && cmake --build build/broken
@@ -65,7 +90,8 @@ It sets breakpoints in the original (`dj_breakpoints`) and is driven by dj's eve
 (`docs/connectors.md#events`). It is parked at one of the original's wait loops; when the
 original reaches the next wait's exit, the decomp runs its own step to there and compares
 every RAM symbol of the original's with its own state, laid out the same way
-(`src/compare.c`). On the way it takes what the original read from outside its RAM: the
+(`src/compare.c`). In a cutscene that includes the text: the decoded line and the VRAM
+packets waiting for the next vblank. On the way it takes what the original read from outside its RAM: the
 controllers' raw bits (at `read_pads` and `read_mouse`) and the NMI counter where the logic
 reads it.
 
@@ -80,13 +106,17 @@ python3 tools/gen_map.py ../build/thwaite-nes ../build/thwaite.dbg
 ```
 
 - `gen_assets.py`: the CHR from `tilesets/*.png` (checked against the ROM's, byte for
-  byte), Mesen's default palette, and the screens' texts (decoded from the build's
-  `dtescripts.s`).
+  byte), Mesen's default palette, the screens' texts (decoded from the build's
+  `dtescripts.s`), and the cutscene scripts, still compressed, at their addresses in the
+  ROM (the original keeps a pointer into them in RAM).
 - `gen_map.py`: the original's RAM symbols, and the breakpoints: each wait loop's exit,
   each `lda nmis` the game logic reads, and where the controllers' raw bits are read.
   `breakpoints.tsv` is the same table for tools.
 
 ## The API
 
-`src/dj_api.h` copies the comparison-core API from `docs/connectors.md`. It goes when dj
-ships a header of its own.
+The API is dj's own headers, included from the repository's `connectors/include`:
+`dj_connector.h` (the API version, coverage regions, the build id, the trace hook) and
+`dj_compare.h` (events, breakpoints, writes, diffs). `src/dj_api.h` just includes both.
+The decomp's trace is, after each step, a write event for every byte of the original's RAM
+layout the step changed.

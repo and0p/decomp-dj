@@ -3,7 +3,7 @@
 Patches the [libretro Mupen64Plus-Next core](https://github.com/libretro/mupen64plus-libretro-nx)
 (Nintendo 64) so it reports which code ran, and so its save states line up with frames,
 for decomp-dj. First version: built and tried with WWF No Mercy (below); provenance of RAM
-code and the trace hook are still to come
+code is still to come
 ([.agents/CONNECTOR_PLAN.md](../../.agents/CONNECTOR_PLAN.md), N64).
 
 - **Pinned upstream:** `15bada85906593376e8fd697f1b0b3af3a20f512` (2026-10-22).
@@ -86,6 +86,17 @@ that dj asked for is in progress: the core runs instructions before a load, and 
 not the game's play. dj counts logic ticks at a breakpoint, so `[tick]` works on the N64
 now. Other code can sit at the same address in another overlay and is counted too; pick an
 address in code that is always loaded. `dj_read_registers` hands out the PC and r0 to r31.
+
+**The trace hook** (`dj_trace_start`, `dj_trace_stop`, `dj_trace_read`) records every
+instruction the pure interpreter runs and every byte the CPU reads or writes, through the
+four aligned read and write functions in `r4300_core.c`. How the 6502-shaped event is
+filled for a 32-bit CPU is in [docs/connectors.md](../../docs/connectors.md#traces). With
+no trace running it costs one test per instruction and per memory access; No Mercy plays
+at the same speed as before (41 frames a second here).
+
+[stub/](stub/) has a comparison core that uses two breakpoints with WWF No Mercy: one at
+the game's input routine and one at its logic tick. It is the test that breakpoints give
+the same hits from power-on and from a loaded state.
 
 The core can't save a state before its first frame (it sets up its devices then), so dj
 runs one frame at power-on for it, and frame 0 of a root segment starts after that.

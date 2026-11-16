@@ -242,6 +242,8 @@ fn a_run_of_mismatches_is_one_failure() {
     assert_eq!((f.frame, span.passed, f.synced.clone()), (9, 9, ("seg".to_string(), 0)));
     assert_eq!(f.diffs.total, 2, "{:?}", f.diffs);
     assert!(ran(&f.flags, 0x10), "the failing frame's code is blamed");
+    // Where in the frame the verdict came is kept with it.
+    assert_eq!(f.at, "the frame end");
     drop(s);
     let _ = std::fs::remove_dir_all(&c.tmp);
 }
@@ -534,6 +536,7 @@ fn pre_roll() {
     let f = span.failure.expect("the halt");
     assert_eq!((f.frame, f.preroll), (9, 6), "{}", f.reason);
     assert!(f.reason.contains("told to halt"), "{}", f.reason);
+    assert_eq!(f.at, "tick_end", "where the core said it");
     assert_eq!(span.passed, 0);
     drop(cmp);
     drop(s);

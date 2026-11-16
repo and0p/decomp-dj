@@ -105,6 +105,19 @@ int tetris_load_nes_snapshot(struct tetris *t, const uint8_t nesRam[0x800], char
 int tetris_check_nes_parity(const struct tetris *t, const uint8_t nesRam[0x800], char *why, size_t whyLen);
 
 /*
+ * The bytes of RAM that differed in the last tetris_check_nes_parity, up to
+ * TETRIS_PARITY_DIFFS of them: the address, the original's byte and the
+ * decomp's. None when the last check matched, or failed on the code position.
+ * Returns how many, and points `out` at them (valid until the next check).
+ */
+#define TETRIS_PARITY_DIFFS 32
+struct tetris_parity_diff {
+    uint16_t address;
+    uint8_t nes, decomp;
+};
+size_t tetris_last_parity_diffs(const struct tetris_parity_diff **out);
+
+/*
  * Game data that a front end needs to draw the game.
  *
  * tetris_piece_squares: the four squares of a piece orientation (0-0x12, as

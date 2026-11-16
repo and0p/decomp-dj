@@ -31,3 +31,13 @@ void gfx_bg_table_from(struct gfx *g, int row, uint8_t table) {
     for (int y = row < 0 ? 0 : row; y < GFX_MAP_H; y++)
         for (int x = 0; x < GFX_MAP_W; x++) g->map[y][x].table = table & 1;
 }
+
+void gfx_set_attr(struct gfx *g, int nt, int index, uint8_t value) {
+    int bx = (index % 8) * 4, by = (index / 8) * 4;
+    for (int q = 0; q < 4; q++) {
+        uint8_t pal = (uint8_t)((value >> (q * 2)) & 3);
+        int x0 = bx + (q & 1) * 2, y0 = by + (q >> 1) * 2;
+        for (int y = y0; y < y0 + 2 && y < GFX_MAP_H; y++)
+            for (int x = x0; x < x0 + 2; x++) g->map[y][nt * 32 + x].palette = pal;
+    }
+}

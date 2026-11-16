@@ -827,7 +827,16 @@ pub struct TraceEvent {
     pub p: u8,
     pub operand_count: u8,
     pub operands: [u8; 3],
-    pub reserved: [u8; 4],
+    /// The CPU address's high 16 bits, on a CPU with 32-bit addresses (0 on the 6502).
+    pub addr_high: u16,
+    pub reserved: [u8; 2],
+}
+
+impl TraceEvent {
+    /// The whole CPU address.
+    pub fn address(&self) -> u32 {
+        (self.addr_high as u32) << 16 | self.addr as u32
+    }
 }
 
 pub struct CoverageRegion {
@@ -1518,7 +1527,7 @@ impl Core {
     }
 
     /// Events recorded so far.
-    pub fn trace_len(&mut self) -> usize {
+    pub fn trace_len(&self) -> usize {
         let Some(t) = self.connector.as_ref().and_then(|c| c.trace.as_ref()) else { return 0 };
         unsafe { (t.read)(std::ptr::null_mut(), std::ptr::null_mut()) }
     }

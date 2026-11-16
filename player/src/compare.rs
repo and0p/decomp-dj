@@ -124,6 +124,8 @@ impl Diff {
     /// Where it is: "RAM 0x0002", a symbol, or None for a value with no one place.
     pub fn place(&self) -> Option<String> {
         match (&self.symbol, &self.region, self.address) {
+            // A symbol names the place for a person; the address beside it is what dj traces.
+            (Some(s), Some(r), Some(a)) => Some(format!("{s}, {r} 0x{a:04X}")),
             (Some(s), _, _) => Some(s.clone()),
             (None, Some(r), Some(a)) => Some(format!("{r} 0x{a:04X}")),
             (None, Some(r), None) => Some(r.clone()),
@@ -358,7 +360,7 @@ fn read_diffs(f: DiffsFn) -> Diffs {
         .map(|d| {
             let region = c_text(d.region);
             let symbol = c_text(d.symbol);
-            Diff { label: c_text(d.label), address: (region.is_some() && symbol.is_none()).then_some(d.address), region, symbol, len: d.len as u64, expected: bytes(d.expected, d.len), actual: bytes(d.actual, d.len) }
+            Diff { label: c_text(d.label), address: region.is_some().then_some(d.address), region, symbol, len: d.len as u64, expected: bytes(d.expected, d.len), actual: bytes(d.actual, d.len) }
         })
         .collect();
     Diffs { list, total: total as u64 }
@@ -1049,6 +1051,16 @@ fn sanitize(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A diff with a symbol keeps its address: the symbol is for reading, the address is
+    /// what `dj parity --explain` traces.
+    #[test]
+    fn a_symbol_goes_beside_the_address() {
+        let d = Diff { region: Some("RAM".into()), address: Some(0x45), symbol: Some("fallTimer".into()), len: 1, ..Default::default() };
+        assert_eq!(d.place().as_deref(), Some("fallTimer, RAM 0x0045"));
+        let d = Diff { symbol: Some("fallTimer".into()), len: 1, ..Default::default() };
+        assert_eq!(d.place().as_deref(), Some("fallTimer"));
+    }
 
     #[test]
     fn byte_diffs_are_runs() {

@@ -4,11 +4,12 @@
  *   table 1 in rows 128-255. It is CHR ROM, so it is uploaded once.
  * - The BG is one full-screen triangle; the fragment shader looks the tile up in a 64x30
  *   integer texture (tile, palette | table << 2) and the pixel in the CHR.
- * - Sprites are drawn as one 8x1 quad per visible row, so the 8-sprites-a-line limit is
- *   applied per line, as on the console: the CPU works out which rows survive.
- * - Order: backdrop, sprites behind the BG, the BG, sprites in front. Within each group the
- *   lower-numbered sprite is on top. Not reproduced: the console's quirk where a
- *   lower-numbered sprite behind the BG still hides a higher-numbered one in front.
+ * - Sprites are worked out on the CPU into a 256x240 layer, the console's way: at most 8
+ *   on a line, and at each pixel the lowest-numbered opaque sprite wins, whatever its
+ *   priority. Only then does its priority count: a winner behind the BG shows only where
+ *   the BG is transparent. So a sprite behind the BG still hides a higher-numbered one in
+ *   front of it (the cutscene's trees, where leaves overlap the trunk).
+ * - The shader puts the BG, the sprite layer and the backdrop together.
  */
 #include "gl.h"
 
@@ -99,14 +100,17 @@ typedef ptrdiff_t GLintptr;
     X(void, Clear, (GLbitfield)) \
     X(void, DrawArrays, (GLenum, GLint, GLsizei))
 
+/* CHR as one colour index (0-3) a pixel: 128 wide, pattern table 1 below table 0. */
+static unsigned char pixels[256 * 128];
+
 #define DECLARE(ret, name, args) static ret (*gl##name) args;
 GL_FUNCS(DECLARE)
 #undef DECLARE
 
 static struct {
     bool ready;
-    GLuint chr, map, bg_prog, spr_prog, vao_bg, vao_spr, vbo_spr;
-    GLint bg_pal, bg_scroll, spr_pal;
+    GLuint chr, map, spr, bg_prog, vao_bg;
+    GLint bg_pal, bg_scroll, bg_split, bg_layers;
     char error[256];
 } R;
 
@@ -122,47 +126,26 @@ static const char *FS_BG =
     "uniform usampler2D chr;\n"
     "uniform usampler2D map;\n"
     "uniform ivec2 scroll;\n"
+    "uniform ivec2 split;\n"
+    "uniform usampler2D spr;\n"
+    "uniform ivec2 layers;\n"
     "uniform vec3 pal[32];\n"
     "out vec4 frag;\n"
     "void main() {\n"
     "    int px = int(gl_FragCoord.x);\n"
     "    int py = 239 - int(gl_FragCoord.y);\n"
-    "    int wx = (px + scroll.x) & 511;\n"
+    "    int sx = (split.x > 0 && py >= split.x * 8) ? split.y : scroll.x;\n"
+    "    int wx = (px + sx) & 511;\n"
     "    int wy = (py + scroll.y) % 240;\n"
     "    uvec2 cell = texelFetch(map, ivec2(wx >> 3, wy >> 3), 0).rg;\n"
     "    int tile = int(cell.r);\n"
     "    int palette = int(cell.g) & 3;\n"
     "    int table = (int(cell.g) >> 2) & 1;\n"
     "    ivec2 at = ivec2((tile & 15) * 8 + (wx & 7), table * 128 + (tile >> 4) * 8 + (wy & 7));\n"
-    "    int v = int(texelFetch(chr, at, 0).r);\n"
-    "    if (v == 0) discard;\n"
-    "    frag = vec4(pal[palette * 4 + v], 1.0);\n"
-    "}\n";
-
-static const char *VS_SPR =
-    "#version 150\n"
-    "in vec2 pos;\n"
-    "in vec2 uv;\n"
-    "in float palette;\n"
-    "out vec2 v_uv;\n"
-    "flat out int v_palette;\n"
-    "void main() {\n"
-    "    gl_Position = vec4(pos.x / 128.0 - 1.0, 1.0 - pos.y / 120.0, 0.0, 1.0);\n"
-    "    v_uv = uv;\n"
-    "    v_palette = int(palette);\n"
-    "}\n";
-
-static const char *FS_SPR =
-    "#version 150\n"
-    "uniform usampler2D chr;\n"
-    "uniform vec3 pal[32];\n"
-    "in vec2 v_uv;\n"
-    "flat in int v_palette;\n"
-    "out vec4 frag;\n"
-    "void main() {\n"
-    "    int v = int(texelFetch(chr, ivec2(floor(v_uv)), 0).r);\n"
-    "    if (v == 0) discard;\n"
-    "    frag = vec4(pal[16 + v_palette * 4 + v], 1.0);\n"
+    "    int v = layers.x != 0 ? int(texelFetch(chr, at, 0).r) : 0;\n"
+    "    int s = layers.y != 0 ? int(texelFetch(spr, ivec2(px, py), 0).r) : 0;\n"
+    "    if (s != 0 && ((s & 128) == 0 || v == 0)) frag = vec4(pal[s & 31], 1.0);\n"
+    "    else frag = vec4(pal[v != 0 ? palette * 4 + v : 0], 1.0);\n"
     "}\n";
 
 const char *gl_error(void) { return R.error[0] ? R.error : NULL; }
@@ -185,10 +168,6 @@ static GLuint program(const char *vs, const char *fs) {
     GLuint p = glCreateProgram(), v = compile(GL_VERTEX_SHADER, vs), f = compile(GL_FRAGMENT_SHADER, fs);
     glAttachShader(p, v);
     glAttachShader(p, f);
-    /* The sprite program's inputs, at fixed locations (the BG program has none). */
-    glBindAttribLocation(p, 0, "pos");
-    glBindAttribLocation(p, 1, "uv");
-    glBindAttribLocation(p, 2, "palette");
     glLinkProgram(p);
     glDeleteShader(v);
     glDeleteShader(f);
@@ -223,7 +202,6 @@ bool gl_init(gl_get_proc get) {
 #undef LOAD
 
     /* CHR as one colour index (0-3) a pixel. */
-    static unsigned char pixels[256 * 128];
     for (int t = 0; t < 512; t++) {
         const unsigned char *tile = thw_chr + t * 16;
         int ox = (t & 15) * 8, oy = (t >> 4) * 8;  /* tiles 256-511 land in rows 128-255 */
@@ -238,31 +216,21 @@ bool gl_init(gl_get_proc get) {
     int_texture(R.chr, GL_R8UI, 128, 256, GL_RED_INTEGER, pixels);
     glGenTextures(1, &R.map);
     int_texture(R.map, GL_RG8UI, GFX_MAP_W, GFX_MAP_H, GL_RG_INTEGER, NULL);
+    glGenTextures(1, &R.spr);
+    int_texture(R.spr, GL_R8UI, GFX_W, GFX_H, GL_RED_INTEGER, NULL);
 
     R.bg_prog = program(VS_BG, FS_BG);
-    R.spr_prog = program(VS_SPR, FS_SPR);
     if (R.error[0]) return false;
     glUseProgram(R.bg_prog);
     glUniform1i(glGetUniformLocation(R.bg_prog, "chr"), 0);
     glUniform1i(glGetUniformLocation(R.bg_prog, "map"), 1);
     R.bg_pal = glGetUniformLocation(R.bg_prog, "pal");
     R.bg_scroll = glGetUniformLocation(R.bg_prog, "scroll");
-    glUseProgram(R.spr_prog);
-    glUniform1i(glGetUniformLocation(R.spr_prog, "chr"), 0);
-    R.spr_pal = glGetUniformLocation(R.spr_prog, "pal");
+    R.bg_split = glGetUniformLocation(R.bg_prog, "split");
+    R.bg_layers = glGetUniformLocation(R.bg_prog, "layers");
+    glUniform1i(glGetUniformLocation(R.bg_prog, "spr"), 2);
 
     glGenVertexArrays(1, &R.vao_bg);
-    glGenVertexArrays(1, &R.vao_spr);
-    glGenBuffers(1, &R.vbo_spr);
-    glBindVertexArray(R.vao_spr);
-    glBindBuffer(GL_ARRAY_BUFFER, R.vbo_spr);
-    glVertexAttribPointer(0, 2, GL_FLOAT, 0, 5 * sizeof(float), (const void *)0);
-    glVertexAttribPointer(1, 2, GL_FLOAT, 0, 5 * sizeof(float), (const void *)(2 * sizeof(float)));
-    glVertexAttribPointer(2, 1, GL_FLOAT, 0, 5 * sizeof(float), (const void *)(4 * sizeof(float)));
-    glEnableVertexAttribArray(0);
-    glEnableVertexAttribArray(1);
-    glEnableVertexAttribArray(2);
-    glBindVertexArray(0);
     R.ready = true;
     return true;
 }
@@ -272,48 +240,29 @@ void gl_destroy(void) {
     memset(&R, 0, sizeof R);
 }
 
-/* One 8x1 quad a sprite row: 6 vertices of (x, y, u, v, palette). */
-static float *row_quad(float *o, int x, int y, int u0, int u1, float v, int palette) {
-    const float xs[6] = {0, 8, 0, 8, 8, 0}, ys[6] = {0, 0, 1, 0, 1, 1};
-    for (int i = 0; i < 6; i++) {
-        *o++ = (float)x + xs[i];
-        *o++ = (float)y + ys[i];
-        *o++ = xs[i] == 0 ? (float)u0 : (float)u1;
-        *o++ = v;
-        *o++ = (float)palette;
-    }
-    return o;
-}
-
-/* Sprite rows for one priority group, lower-numbered sprites last (on top). Rows the
- * 8-a-line limit drops are left out. Returns the vertex count. */
-static int sprite_rows(const struct gfx *g, bool behind, float *out) {
-    static uint8_t shown[GFX_SPRITES][8];
-    int per_line[GFX_H] = {0};
-    for (int i = 0; i < GFX_SPRITES; i++)
-        for (int r = 0; r < 8; r++) {
-            int y = g->oam[i].y + 1 + r;   /* OAM's y is one less than the first line */
-            shown[i][r] = 0;
-            if (g->oam[i].y >= 0xEF || y >= GFX_H) continue;
-            if (per_line[y] < 8) {
-                per_line[y]++;
-                shown[i][r] = 1;
+/* The sprite layer: per pixel, 0 for none, else the sprite palette entry (16-31), with 128
+ * when the sprite is behind the BG. At most 8 sprites a line; the lowest-numbered opaque
+ * one wins. */
+static void sprite_layer(const struct gfx *g, uint8_t out[GFX_H][GFX_W]) {
+    memset(out, 0, GFX_H * GFX_W);
+    for (int y = 0; y < GFX_H; y++) {
+        int on_line = 0;
+        for (int i = 0; i < GFX_SPRITES && on_line < 8; i++) {
+            const struct gfx_sprite *s = &g->oam[i];
+            int r = y - (s->y + 1);   /* OAM's y is one less than the first line */
+            if (s->y >= 0xEF || r < 0 || r > 7) continue;
+            on_line++;
+            int row = (s->attr & GFX_SPR_FLIP_Y) ? 7 - r : r;
+            int tx = (s->tile & 15) * 8, ty = (g->sprite_table & 1) * 128 + (s->tile >> 4) * 8 + row;
+            for (int k = 0; k < 8; k++) {
+                int x = s->x + k;
+                if (x >= GFX_W || out[y][x]) continue;
+                int v = pixels[ty * 128 + tx + ((s->attr & GFX_SPR_FLIP_X) ? 7 - k : k)];
+                if (!v) continue;
+                out[y][x] = (uint8_t)(16 + (s->attr & 3) * 4 + v + ((s->attr & GFX_SPR_BEHIND) ? 128 : 0));
             }
         }
-    float *o = out;
-    for (int i = GFX_SPRITES - 1; i >= 0; i--) {
-        const struct gfx_sprite *s = &g->oam[i];
-        if (((s->attr & GFX_SPR_BEHIND) != 0) != behind) continue;
-        int tx = (s->tile & 15) * 8, ty = (g->sprite_table & 1) * 128 + (s->tile >> 4) * 8;
-        for (int r = 0; r < 8; r++) {
-            if (!shown[i][r]) continue;
-            int row = (s->attr & GFX_SPR_FLIP_Y) ? 7 - r : r;
-            int u0 = tx, u1 = tx + 8;
-            if (s->attr & GFX_SPR_FLIP_X) { u0 = tx + 8; u1 = tx; }
-            o = row_quad(o, s->x, s->y + 1 + r, u0, u1, (float)(ty + row) + 0.5f, s->attr & 3);
-        }
     }
-    return (int)((o - out) / 5);
 }
 
 bool gl_draw(const struct gfx *g, uintptr_t fbo) {
@@ -349,27 +298,20 @@ bool gl_draw(const struct gfx *g, uintptr_t fbo) {
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, GFX_MAP_W, GFX_MAP_H, GL_RG_INTEGER, GL_UNSIGNED_BYTE, cells);
     glActiveTexture(GL_TEXTURE0);
 
-    static float verts[GFX_SPRITES * 8 * 6 * 5];
-    for (int pass = 0; pass < 3; pass++) {
-        if (pass == 1) {
-            if (!g->bg_on) continue;
-            glUseProgram(R.bg_prog);
-            glUniform3fv(R.bg_pal, 32, pal);
-            glUniform2i(R.bg_scroll, g->scroll_x, g->scroll_y);
-            glBindVertexArray(R.vao_bg);
-            glDrawArrays(GL_TRIANGLES, 0, 3);
-            continue;
-        }
-        if (!g->sprites_on) continue;
-        int n = sprite_rows(g, pass == 0, verts);
-        if (!n) continue;
-        glUseProgram(R.spr_prog);
-        glUniform3fv(R.spr_pal, 32, pal);
-        glBindVertexArray(R.vao_spr);
-        glBindBuffer(GL_ARRAY_BUFFER, R.vbo_spr);
-        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(n * 5 * sizeof(float)), verts, GL_STREAM_DRAW);
-        glDrawArrays(GL_TRIANGLES, 0, n);
-    }
+    static uint8_t layer[GFX_H][GFX_W];
+    if (g->sprites_on) sprite_layer(g, layer);
+    glActiveTexture(GL_TEXTURE0 + 2);
+    glBindTexture(GL_TEXTURE_2D, R.spr);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, GFX_W, GFX_H, GL_RED_INTEGER, GL_UNSIGNED_BYTE, layer);
+    glActiveTexture(GL_TEXTURE0);
+
+    glUseProgram(R.bg_prog);
+    glUniform3fv(R.bg_pal, 32, pal);
+    glUniform2i(R.bg_scroll, g->scroll_x, g->scroll_y);
+    glUniform2i(R.bg_split, g->split_row, g->split_scroll_x);
+    glUniform2i(R.bg_layers, g->bg_on, g->sprites_on);
+    glBindVertexArray(R.vao_bg);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
     glUseProgram(0);
     return true;

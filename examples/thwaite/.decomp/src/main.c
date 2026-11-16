@@ -37,6 +37,17 @@ enum thw_wait game_step(struct game *g, const struct step_io *io) {
     case W_TITLE:
         next = title_step(g, io);
         break;
+    case W_MAIN:
+    case W_PAUSE:
+        next = play_step(g, io);
+        break;
+    case W_PRACTICE:
+        next = practice_step(g, io);
+        break;
+    case W_CUT1:
+    case W_CUT2:
+        next = cut_step(g, io);
+        break;
     default:
         break;
     }
@@ -46,11 +57,23 @@ enum thw_wait game_step(struct game *g, const struct step_io *io) {
 }
 
 void game_redraw(struct game *g) {
+    g->gfx.split_row = 0;
     switch (g->wait) {
     case W_TODO:
     case W_TITLE:
         title_redraw(g);
         break;
+    case W_MAIN:
+    case W_PAUSE:
+        play_redraw(g);
+        break;
+    case W_PRACTICE:
+        practice_redraw(g);
+        break;
+    case W_CUT1:
+    case W_CUT2:
+        cut_redraw(g);
+        return;
     default:
         break;
     }

@@ -18,3 +18,4 @@
 16	nmis	nmis:titleScreen	PRG:0x1620	0x0	0x0	title.s:296
 17	input	input:read_pads	PRG:0x4363	0x0	0x0	pads.s:38
 18	input	input:read_mouse	PRG:0x43C2	0x0	0x0	mouse.s:40
+19	input	sound:splitBalloon	PRG:0xDEB	0x0	0x0	missiles.s:791

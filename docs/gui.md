@@ -123,11 +123,23 @@ transport.
   for the same emulator (`sync = "state"`), by comparing system RAM byte for byte after
   every frame. While it's on, every
   frame is drawn, so a failure shows its own frame.
+- **Stepping back** doesn't sync at every step. The comparison picture fades, with
+  "waiting to sync" beside the core's name, and the core syncs once no step back has come
+  for 0.6 seconds, so holding the key stays quick. Dragging the ruler works the same way:
+  the sync comes when the button is let go.
 - **Pre-roll.** When the comparison core's `[[compare]]` entry sets `preroll`
-  ([config.md](config.md#compare-optional-repeatable)) and Check parity is on, a seek
+  ([config.md](config.md#compare-optional-repeatable)), with Check parity on or off, a seek
   starts that many frames before the frame asked for and plays up to it unseen, so the
-  core has copied the baseline by then. It stays inside the segment shown: frame 0 of a
-  segment you select gets none (`dj parity` reaches into the parent for it).
+  core has copied the baseline by then. Near the start of a segment the frames come from
+  the segment above: the baseline plays the parent's last frames behind the scenes, with
+  the segment shown, the roll and the picture left as they are, and comes out at frame 0
+  the way playback does. The status bar says "Pre-roll for frame N" while it runs. The
+  first time, the parent is played from its nearest stored snapshot, and the state where
+  the pre-roll starts is stored in the local database, so later ones run only the
+  pre-roll's own frames. There is none in the segments above when the parent's start
+  isn't stored (it would mean playing the tree from further up), or when an edit means
+  the parent no longer ends where the segment shown starts; the core then copies the
+  baseline at the frame shown.
 - **Any failure stops playback**: a parity failure, a core that says it can't go on (a
   halt), a failed sync. Both cores stop on that frame, and the comparison picture stays faded with
   the reason over it, the state **stopped** and the frame the comparison core was last synced
@@ -157,6 +169,11 @@ kept in the local database, separately for each `[[compare]]` entry
   [connectors.md](connectors.md#parity)), and the code that frame ran. Failed syncs aren't
   kept. The failure's message and its hover in the list show what differed;
   `dj parity --explain` traces who wrote it ([cli.md](cli.md#parity)).
+
+A core that takes events gives its verdicts where it chooses, so a verdict can speak for
+more than one frame: a match credits the frames since its last verdict, and a failure is
+kept at the frame it was given in, with the name of the breakpoint it answered (or "the
+frame end") in its message. Frames the core didn't judge count as not checked.
 
 Passes are added to what the database already has, never written over, so two dj-gui
 windows on one project both keep theirs. Results another program writes appear within

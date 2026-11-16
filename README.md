@@ -18,7 +18,6 @@
   * decomp with more accurate comments and symbol names
   * learn to play the game (or even create whole new replay segments on your behalf)
   * catch exactly when and why a decomp loses parity with the original game
-  * stop asking you to pause the game in specific states
 
 ## License
 

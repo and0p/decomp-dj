@@ -1,7 +1,9 @@
 # Builds, tests and packages decomp-dj on Linux, macOS and Windows on every push to main and
 # every pull request; the portable ZIPs are kept as artifacts of the run. Also replays the
 # Thwaite example from power-on with the Mesen core (Linux and macOS), so a change that makes
-# playback differ shows up. Windows is allowed to fail until it has been tried by hand
+# playback differ shows up, and checks the Thwaite decomp (examples/thwaite/.decomp) against
+# the original with `dj parity`, so a change to dj's comparison cores or to the decomp that
+# breaks parity shows up. Windows is allowed to fail until it has been tried by hand
 # (.agents/RELEASE_PLAN.md).
 name: CI
 
@@ -78,7 +80,7 @@ jobs:
           if-no-files-found: error
 
   replay:
-    name: Replay Thwaite (${{ matrix.name }})
+    name: Replay Thwaite, check its decomp (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -132,3 +134,21 @@ jobs:
         run: |
           core=build/cores/mesen_libretro
           player/target/release/dj run examples/thwaite --from-scratch --rom examples/thwaite/build/thwaite.nes --core "$core"
+
+      - name: OpenGL without a display
+        # The decomp draws with OpenGL. dj gives it a context with no window: EGL on Linux,
+        # which Mesa's software renderer provides on a runner with no GPU.
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libegl1 libegl-mesa0 libgl1-mesa-dri
+
+      - name: Build the Thwaite decomp
+        run: bash examples/thwaite/.decomp/build.sh
+
+      - name: Check the decomp's parity with the original
+        # Every frame of every segment; fails if one differs. Results are kept per build of
+        # the decomp, and each run builds it anew, so every segment is checked.
+        run: |
+          player/target/release/dj parity examples/thwaite --compare decomp \
+            --rom examples/thwaite/build/thwaite.nes --core build/cores/mesen_libretro

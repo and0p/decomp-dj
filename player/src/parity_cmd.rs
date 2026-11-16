@@ -420,8 +420,13 @@ fn rerun_one(s: &mut Session, cmp: &mut Comparison, col: &Collection, f: &Failur
     Ok(Some(total))
 }
 
-/// Events the trace of `--explain` may hold: about 30 frames of an NES game.
+/// Events the trace of one frame may hold in `--explain`: about 30 frames' worth on the
+/// NES, 4 on the N64.
 const EXPLAIN_TRACE_CAP: usize = 4_000_000;
+/// Events `--explain` keeps in all. The trace is taken frame by frame, and when the frames
+/// asked for come to more than this, the oldest are let go: the last write to an address
+/// is what is looked for, so the newest frames are the ones to keep.
+const EXPLAIN_TRACE_BUDGET: usize = 12_000_000;
 
 /// A failure played again for `--explain`, with the baseline traced over its last frames.
 struct Replayed {
@@ -434,6 +439,9 @@ struct Replayed {
     dropped: u64,
     /// Why the baseline wasn't traced, if it wasn't.
     no_trace: Option<String>,
+    /// The frame the trace was asked to start at, when its oldest frames were let go to
+    /// keep the newest within the budget.
+    shortened: Option<u64>,
 }
 
 /// Plays failure `f` again as `rerun_one` does, tracing the baseline from `frames_back`
@@ -456,7 +464,7 @@ fn replay_traced(s: &mut Session, cmp: &mut Comparison, col: &Collection, f: &Fa
         ck.set_preroll(f.preroll, &f.segment);
     }
     let mut total = Span::default();
-    let mut out = Replayed { span: Span::default(), traced: None, events: vec![], frame_starts: vec![], dropped: 0, no_trace: None };
+    let mut out = Replayed { span: Span::default(), traced: None, events: vec![], frame_starts: vec![], dropped: 0, no_trace: None, shortened: None };
     let add = |total: &mut Span, span: Span| {
         total.passed += span.passed;
         total.skipped += span.skipped;
@@ -487,25 +495,46 @@ fn replay_traced(s: &mut Session, cmp: &mut Comparison, col: &Collection, f: &Fa
         if total.failure.is_some() {
             break;
         }
-        let tracing = if !s.core.can_trace() {
+        let tracing = s.core.can_trace();
+        if !tracing {
             out.no_trace = Some("the baseline's connector has no trace hook (dj_trace_start), so writes can't be traced".into());
-            false
-        } else {
-            s.core.trace_start(EXPLAIN_TRACE_CAP)?;
-            true
-        };
+        }
+        // One trace per frame, so that a long stretch can lose its oldest frames, not its
+        // newest: (frame, its events).
+        let mut kept: std::collections::VecDeque<(u64, Vec<decomp_dj::libretro::TraceEvent>)> = Default::default();
+        let mut first_frame = trace_from;
         for k in trace_from..to {
-            out.frame_starts.push((k, if tracing { s.core.trace_len() } else { 0 }));
+            if tracing {
+                s.core.trace_start(EXPLAIN_TRACE_CAP)?;
+            }
             add(&mut total, check_span(s, cmp, &mut ck, col, id, k, k + 1, start_frame)?);
+            if tracing {
+                let (events, dropped) = s.core.trace_take();
+                out.dropped += dropped;
+                kept.push_back((k, events));
+                while kept.len() > 1 && kept.iter().map(|(_, e)| e.len()).sum::<usize>() > EXPLAIN_TRACE_BUDGET {
+                    kept.pop_front();
+                    first_frame = kept[0].0;
+                }
+            }
             if total.failure.is_some() {
                 break;
             }
         }
         if tracing {
-            let (events, dropped) = s.core.trace_take();
-            out.events = events;
-            out.dropped = dropped;
+            // Where the verdict came is counted in the failing frame's own trace.
+            let before_last: usize = kept.iter().rev().skip(1).map(|(_, e)| e.len()).sum();
+            if let Some(f) = &mut total.failure {
+                f.trace_at = f.trace_at.map(|n| before_last + n);
+            }
+            for (k, events) in kept {
+                out.frame_starts.push((k, out.events.len()));
+                out.events.extend(events);
+            }
             out.traced = out.frame_starts.first().zip(out.frame_starts.last()).map(|(a, b)| (a.0, b.0));
+            if first_frame > trace_from {
+                out.shortened = Some(trace_from);
+            }
         }
     }
     out.span = total;
@@ -547,8 +576,12 @@ fn explain(dir: &Path, col: &Collection, local: &Local, name: &str, id: i64, fra
     };
     let mut p = decomp_dj::query::Project::open(dir, local.rom.as_deref())?;
     let _ = p.report();
-    let regions: Vec<String> = s.core.coverage_regions().into_iter().map(|r| r.name).collect();
-    let steps = decomp_dj::trace::group(&r.events);
+    let (regions, cpus): (Vec<String>, Vec<Option<String>>) = s.core.region_facts().into_iter().map(|r| (r.name, r.cpu)).unzip();
+    // The search stops at the event the core answered: the baseline ran on to the frame's
+    // end after it, and what it wrote there is not what the core judged.
+    let stop_at = r.span.failure.as_ref().and_then(|nf| nf.trace_at).filter(|n| *n < r.events.len());
+    let where_at = r.span.failure.as_ref().map(|nf| nf.at.clone()).filter(|a| !a.is_empty()).unwrap_or_else(|| f.at.clone());
+    let steps = decomp_dj::trace::group(&r.events[..stop_at.unwrap_or(r.events.len())]);
     let frame_of = |step: &decomp_dj::trace::Step| {
         let idx = (step.exec as *const _ as usize - r.events.as_ptr() as usize) / std::mem::size_of::<decomp_dj::libretro::TraceEvent>();
         r.frame_starts.iter().rev().find(|(_, start)| idx >= *start).map(|(k, _)| *k).unwrap_or(0)
@@ -557,9 +590,9 @@ fn explain(dir: &Path, col: &Collection, local: &Local, name: &str, id: i64, fra
     for d in &diffs.list {
         let mut row = serde_json::to_value(decomp_dj::query::DiffRow::of(d))?;
         let note: Option<String> = match (&d.region, d.address, &d.symbol) {
-            (_, _, Some(_)) => Some("given by a data symbol, which dj doesn't resolve to an address yet".into()),
+            (None, _, Some(_)) | (_, None, Some(_)) => Some("given by a data symbol alone, which dj doesn't resolve to an address yet".into()),
             (None, _, _) | (_, None, _) => Some("no address: a value kept in no one place can't be traced".into()),
-            (Some(region), Some(address), None) => match (r.traced, regions.iter().position(|n| n == region)) {
+            (Some(region), Some(address), _) => match (r.traced, regions.iter().position(|n| n == region)) {
                 (None, _) => r.no_trace.clone().or_else(|| Some("not traced".into())),
                 (_, None) => Some(format!("the baseline's connector has no \"{region}\" region, so its writes can't be matched")),
                 (Some((t0, t1)), Some(ri)) => match last_write(&steps, ri as i8, address, d.len) {
@@ -568,13 +601,14 @@ fn explain(dir: &Path, col: &Collection, local: &Local, name: &str, id: i64, fra
                         let st = &steps[si];
                         let e = st.exec;
                         let at = (e.region >= 0).then(|| regions.get(e.region as usize).map(|rn| p.addr(rn, e.offset as u64))).flatten();
+                        let cpu = usize::try_from(e.region).ok().and_then(|i| cpus.get(i)?.clone()).unwrap_or_default();
                         row["writer"] = json!({
                             "frame": frame_of(st),
-                            "cpu": format!("${:04X}", e.addr),
+                            "cpu": decomp_dj::trace::addr_text(&cpu, e.address()),
                             "at": at.as_ref().map(|a| a.text.clone()),
                             "function": at.as_ref().and_then(|a| a.symbol.clone()),
-                            "instruction": decomp_dj::trace::disasm_6502(e.addr, e.value, &e.operands[..e.operand_count as usize], &|_| None),
-                            "wrote": format!("${:04X}={:02X}", w.addr, w.value),
+                            "instruction": decomp_dj::trace::disasm(&cpu, e, &|_| None),
+                            "wrote": format!("{}={:02X}", decomp_dj::trace::addr_text(&cpu, w.address()), w.value),
                         });
                         None
                     }
@@ -608,12 +642,12 @@ fn explain(dir: &Path, col: &Collection, local: &Local, name: &str, id: i64, fra
     };
     let out = json!({
         "id": f.id, "compare": name, "build": cmp.build, "current_build": f.build == cmp.build,
-        "segment": at_frame.0, "frame": at_frame.1,
+        "segment": at_frame.0, "frame": at_frame.1, "at": where_at,
         "synced": {"segment": f.synced.0, "frame": f.synced.1},
         "preroll": f.preroll,
         "outcome": outcome,
         "reason": if reason.is_empty() { f.reason.clone() } else { reason },
-        "traced": r.traced.map(|(a, b)| json!({"from": a, "to": b, "events": r.events.len(), "dropped": r.dropped})),
+        "traced": r.traced.map(|(a, b)| json!({"from": a, "to": b, "events": r.events.len(), "dropped": r.dropped, "stopped_at_event": stop_at, "asked_from": r.shortened})),
         "diffs": rows, "diffs_total": diffs.total,
         "ran": ran,
         "hint": hint,
@@ -628,7 +662,13 @@ fn explain(dir: &Path, col: &Collection, local: &Local, name: &str, id: i64, fra
             _ => println!("  fails again"),
         }
         if let Some((a, b)) = r.traced {
-            println!("  traced frames {a}–{b} of the original ({} events{})", r.events.len(), if r.dropped > 0 { format!(", {} dropped: try fewer --frames-back", r.dropped) } else { String::new() });
+            println!("  traced frames {a}–{b} of the original ({} events{})", r.events.len(), if r.dropped > 0 { format!(", {} dropped inside a frame: a write may be missed", r.dropped) } else { String::new() });
+            if let Some(asked) = r.shortened {
+                println!("  frames {asked}–{} were let go to keep the trace within {EXPLAIN_TRACE_BUDGET} events", a.saturating_sub(1));
+            }
+            if let Some(n) = stop_at {
+                println!("  the search for writers stops at {where_at}, {n} events in: the original ran on after it");
+            }
         } else if let Some(why) = &r.no_trace {
             println!("  not traced: {why}");
         }

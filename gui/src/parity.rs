@@ -557,7 +557,7 @@ mod tests {
     use super::*;
 
     fn fail(id: i64, build: &str, flags: Vec<u8>) -> Failure {
-        Failure { id, core: "c".into(), build: build.into(), synced: ("s".into(), 0), preroll: 0, segment: "s".into(), frame: 1, reason: String::new(), created: 0, flags, diffs: Default::default() }
+        Failure { id, core: "c".into(), build: build.into(), synced: ("s".into(), 0), preroll: 0, segment: "s".into(), frame: 1, at: String::new(), trace_at: None, reason: String::new(), created: 0, flags, diffs: Default::default() }
     }
 
     #[test]

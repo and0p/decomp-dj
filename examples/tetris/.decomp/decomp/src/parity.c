@@ -78,6 +78,16 @@ static int resumesAt(const struct tetris *t, uint16_t site)
     return 0;
 }
 
+/* The bytes of RAM that differed in the last check (the first of them). */
+static struct tetris_parity_diff lastDiffs[TETRIS_PARITY_DIFFS];
+static size_t lastDiffCount;
+
+size_t tetris_last_parity_diffs(const struct tetris_parity_diff **out)
+{
+    *out = lastDiffs;
+    return lastDiffCount;
+}
+
 int tetris_check_nes_parity(const struct tetris *t, const uint8_t nes[0x800], char *why, size_t whyLen)
 {
     static struct tetris there; /* the original's state, as the decomp would hold it */
@@ -87,6 +97,7 @@ int tetris_check_nes_parity(const struct tetris *t, const uint8_t nes[0x800], ch
     size_t flightN = 0;
     const char *drawing = NULL;
 
+    lastDiffCount = 0;
     if (t->ctl.framesBehind) {
         for (size_t i = 0; i < sizeof inFlight / sizeof inFlight[0]; i++)
             if (resumesAt(t, inFlight[i].resume)) {
@@ -138,6 +149,8 @@ int tetris_check_nes_parity(const struct tetris *t, const uint8_t nes[0x800], ch
         if (differ < 6 && o < whyLen)
             o += (size_t)snprintf(why + o, whyLen - o, "%s$%04X NES %02X decomp %02X", differ ? ", " : "RAM differs: ", a,
                                   nes[a], t->ram.b[a]);
+        if (lastDiffCount < TETRIS_PARITY_DIFFS)
+            lastDiffs[lastDiffCount++] = (struct tetris_parity_diff){a, nes[a], t->ram.b[a]};
         differ++;
     }
     if (differ) {

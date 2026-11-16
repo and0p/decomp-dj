@@ -39,9 +39,17 @@ pub struct Failure {
     pub preroll: u64,
     pub segment: String,
     pub frame: u64,
+    /// Where in the frame the verdict came: a breakpoint's name, "the frame end", "a write",
+    /// "the jump". Empty when it wasn't a verdict (a failed sync, a core that died) and in
+    /// rows kept before this was recorded.
+    pub at: String,
     pub reason: String,
     /// Unix seconds.
     pub created: i64,
+    /// While the baseline is traced (`dj parity --explain`): how many trace events it had
+    /// made when the verdict came. The baseline runs on to the frame's end after it, and
+    /// what it does there is not what the core judged. Not kept in the database.
+    pub trace_at: Option<usize>,
     /// The connector's coverage flags for the failing frame alone (empty for a failed sync).
     pub flags: Vec<u8>,
     /// What differed, when the check said (`dj_parity_diffs`, or the RAM compare).
@@ -90,7 +98,7 @@ pub fn or_opcodes(to: &mut Vec<u8>, from: &[u8]) -> bool {
 /// Every failure kept for `core`, whatever the build, oldest first.
 pub fn failures(conn: &Connection, core: &str) -> Result<Vec<Failure>> {
     let mut st = conn.prepare(
-        "SELECT id, core, build, synced_segment, synced_frame, segment, frame, reason, created, flags, preroll FROM parity_failures WHERE core = ?1 AND region = ?2 ORDER BY id",
+        "SELECT id, core, build, synced_segment, synced_frame, segment, frame, reason, created, flags, preroll, at FROM parity_failures WHERE core = ?1 AND region = ?2 ORDER BY id",
     )?;
     let rows = st.query_map(params![core, REGION], |r| {
         Ok(Failure {
@@ -104,6 +112,8 @@ pub fn failures(conn: &Connection, core: &str) -> Result<Vec<Failure>> {
             created: r.get(8)?,
             flags: r.get(9)?,
             preroll: r.get::<_, i64>(10)? as u64,
+            at: r.get(11)?,
+            trace_at: None,
             diffs: Diffs::default(),
         })
     })?;
@@ -133,8 +143,8 @@ pub fn failures(conn: &Connection, core: &str) -> Result<Vec<Failure>> {
 /// Keeps a failure; returns its id.
 pub fn add_failure(conn: &Connection, f: &Failure) -> Result<i64> {
     conn.execute(
-        "INSERT INTO parity_failures(core, build, synced_segment, synced_frame, segment, frame, reason, created, region, flags, preroll) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-        params![f.core, f.build, f.synced.0, f.synced.1 as i64, f.segment, f.frame as i64, f.reason, f.created, REGION, f.flags, f.preroll as i64],
+        "INSERT INTO parity_failures(core, build, synced_segment, synced_frame, segment, frame, reason, created, region, flags, preroll, at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+        params![f.core, f.build, f.synced.0, f.synced.1 as i64, f.segment, f.frame as i64, f.reason, f.created, REGION, f.flags, f.preroll as i64, f.at],
     )?;
     let id = conn.last_insert_rowid();
     // A row id can come back after the newest failure was deleted.
@@ -379,11 +389,15 @@ pub struct Stepped {
     pub passed_frames: u64,
     pub skipped_frames: u64,
     pub unchecked_frames: u64,
+    /// With `Checked::Failed` from a verdict: where in the frame it came ([`Failure::at`]),
+    /// and the baseline's trace length then ([`Failure::trace_at`]).
+    pub at: String,
+    pub trace_at: Option<usize>,
 }
 
 impl Stepped {
     fn of(checked: Checked) -> Stepped {
-        Stepped { checked, diffs: Diffs::default(), picture: None, flags: None, credited: vec![], blame: vec![], passed_frames: 0, skipped_frames: 0, unchecked_frames: 0 }
+        Stepped { checked, diffs: Diffs::default(), picture: None, flags: None, credited: vec![], blame: vec![], passed_frames: 0, skipped_frames: 0, unchecked_frames: 0, at: String::new(), trace_at: None }
     }
 }
 
@@ -425,6 +439,9 @@ enum Claim {
 #[derive(Default)]
 struct FrameOut {
     failure: Option<(String, Diffs)>,
+    /// With a failure: which event it answered, and the baseline's trace length then.
+    failed_at: String,
+    failed_trace: Option<usize>,
     drifting: Option<String>,
     unjudged: Option<String>,
     matched: bool,
@@ -556,6 +573,8 @@ impl Ev {
                 if self.out.failure.is_none() {
                     let msg = if halt { format!("The comparison core stopped at frame {}, at {at}: {}", self.frame, reply.reason) } else { format!("Parity failure at frame {}, at {at}: {}", self.frame, reply.reason) };
                     self.out.failure = Some((msg, reply.diffs));
+                    self.out.failed_at = at.to_string();
+                    self.out.failed_trace = (!self.baseline.is_null()).then(|| unsafe { (*self.baseline).trace_len() });
                     // The failure gets what was held, and this frame's flags when they come.
                     let pile = std::mem::take(&mut self.pile);
                     or_opcodes(&mut self.out.blame, &pile);
@@ -661,6 +680,10 @@ pub struct Checker {
     pub synced: Option<(String, u64)>,
     /// How many frames from `synced` on were pre-roll.
     pub preroll: u64,
+    /// The last frame stepped failed at a verdict: which event ([`Failure::at`]) and the
+    /// baseline's trace length then. Empty and None otherwise.
+    fail_at: String,
+    fail_trace: Option<usize>,
     ev: Rc<RefCell<Ev>>,
 }
 
@@ -807,6 +830,8 @@ impl Checker {
     #[allow(clippy::too_many_arguments)]
     pub fn step(&mut self, cmp: &mut Comparison, baseline: &mut Core, col: &Collection, id: &str, k: u64, power_on_frame: u64, capture: bool, check: bool) -> Option<Stepped> {
         crate::libretro::set_frame_hook(None);
+        self.fail_at.clear();
+        self.fail_trace = None;
         if !self.in_step(id, k) {
             return None;
         }
@@ -830,6 +855,7 @@ impl Checker {
                 Ok(Verdict::Skip(why)) => Checked::Skipped(why),
                 Ok(Verdict::Mismatch(why, d)) => {
                     diffs = d;
+                    self.fail_at = "the frame end".into();
                     Checked::Failed(format!("Parity failure at frame {k}: {why}"))
                 }
                 Err(e) => Checked::Failed(format!("The parity check at frame {k} failed: {e:#}")),
@@ -840,7 +866,7 @@ impl Checker {
             _ => Some((id.to_string(), k + 1)),
         };
         // Judged frame by frame: each frame's flags go with its own verdict.
-        let mut out = Stepped { diffs, picture: st.frame, ..Stepped::of(checked) };
+        let mut out = Stepped { diffs, picture: st.frame, at: self.fail_at.clone(), ..Stepped::of(checked) };
         if check {
             let flags = take_code_flags(baseline).unwrap_or_default();
             match out.checked {
@@ -913,7 +939,9 @@ impl Checker {
                 None => (Checked::Ran, Diffs::default()),
             },
         };
-        Stepped { checked, diffs, picture, flags, credited: out.credited, blame: out.blame, passed_frames: out.passed_frames, skipped_frames: out.skipped_frames, unchecked_frames: out.unchecked_frames }
+        self.fail_at = out.failed_at.clone();
+        self.fail_trace = out.failed_trace;
+        Stepped { checked, diffs, picture, flags, credited: out.credited, blame: out.blame, passed_frames: out.passed_frames, skipped_frames: out.skipped_frames, unchecked_frames: out.unchecked_frames, at: out.failed_at, trace_at: out.failed_trace }
     }
 
     /// A segment's check has ended: the frames still held, to count as unchecked. None when
@@ -956,6 +984,8 @@ impl Checker {
             preroll: if self.synced.is_some() { self.preroll } else { 0 },
             segment: id.to_string(),
             frame: k,
+            at: self.fail_at.clone(),
+            trace_at: self.fail_trace,
             reason: reason.to_string(),
             created: now(),
             flags,
@@ -1097,7 +1127,7 @@ mod tests {
     #[test]
     fn failures_round_trip_and_delete() {
         let c = db();
-        let f = Failure { id: 0, core: "a".into(), build: "b1".into(), synced: ("s".into(), 3), preroll: 2, segment: "t".into(), frame: 9, reason: "RAM 0x02".into(), created: 5, flags: vec![0, 1], diffs: Diffs::default() };
+        let f = Failure { id: 0, core: "a".into(), build: "b1".into(), synced: ("s".into(), 3), preroll: 2, segment: "t".into(), frame: 9, at: "tick".into(), trace_at: None, reason: "RAM 0x02".into(), created: 5, flags: vec![0, 1], diffs: Diffs::default() };
         let d = Diff { label: Some("Player 2 x".into()), region: Some("RAM".into()), address: Some(2), len: 1, expected: vec![5], actual: vec![6], ..Default::default() };
         let f = Failure { diffs: Diffs { list: vec![d.clone(), Diff { label: Some("score".into()), ..d }], total: 3 }, ..f };
         let id = add_failure(&c, &f).unwrap();

@@ -5,6 +5,7 @@
  * decomp runs its own step to there, with the raw input and NMI-counter values the
  * original read on the way (queued at their breakpoints), and compares. */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "compare.h"
@@ -21,7 +22,7 @@ const char *dj_build_id(void) { return THW_BUILD_ID; }
 
 /* ---- The breakpoint table --------------------------------------------------------------- */
 
-enum bp_role { BP_WAIT = 1, BP_NMIS, BP_PADS, BP_MOUSE };
+enum bp_role { BP_WAIT = 1, BP_NMIS, BP_PADS, BP_MOUSE, BP_SOUND };
 
 #define MAX_BPS 64
 static struct dj_breakpoint bps[MAX_BPS];
@@ -36,7 +37,7 @@ static const struct { const char *name; uint8_t wait; } WAIT_NAMES[] = {
     {"wait:ppu_wait_vblank", W_VBLANK},
 };
 
-static const char *WAIT_LABEL[W_COUNT] = {
+static const char *const WAIT_LABEL[W_COUNT] = {
     "(not written yet)", "display_todo", "titleScreen", "screen_off_title_palette", "main",
     "pauseScreen", "practice_menu", "load_cutscene (1)", "load_cutscene (2)", "ppu_wait_vblank",
 };
@@ -47,7 +48,9 @@ static void build_table(void) {
         const struct thw_bp *b = &thw_bps[i];
         bps[nbps] = (struct dj_breakpoint){(uint32_t)nbps, "PRG", b->prg, b->name};
         bp_info[nbps].role = b->kind == THW_BP_WAIT ? BP_WAIT : b->kind == THW_BP_NMIS_READ ? BP_NMIS
-                             : strcmp(b->name, "input:read_mouse") == 0 ? BP_MOUSE : BP_PADS;
+                             : strcmp(b->name, "input:read_mouse") == 0 ? BP_MOUSE
+                             : strncmp(b->name, "sound:", 6) == 0      ? BP_SOUND
+                                                                       : BP_PADS;
         for (size_t k = 0; k < sizeof WAIT_NAMES / sizeof *WAIT_NAMES; k++)
             if (strcmp(b->name, WAIT_NAMES[k].name) == 0) bp_info[nbps].wait = WAIT_NAMES[k].wait;
         nbps++;
@@ -71,8 +74,13 @@ static uint8_t wait_spinning_at(int64_t pc) {
     return W_NONE;
 }
 
-/* Waits the decomp can copy the original at: loops whose whole state is in RAM. */
-static bool copyable(uint8_t w) { return w == W_TODO || w == W_TITLE; }
+/* Waits the decomp can copy the original at: loops whose whole state is in RAM. (A
+ * cutscene's text already drawn is in VRAM: the picture lacks it until the next paragraph,
+ * but the state is whole.) */
+static bool copyable(uint8_t w) {
+    return w == W_TODO || w == W_TITLE || w == W_MAIN || w == W_PAUSE || w == W_PRACTICE || w == W_CUT1 ||
+           w == W_CUT2;
+}
 
 /* ---- What the original read during the step ------------------------------------------------ */
 
@@ -83,7 +91,8 @@ static struct {
     uint8_t pads[QN][2];
     uint8_t mouse[QN][4];   /* port, then the report */
     uint8_t nmis[QN];
-    unsigned npads, nmouse, nnmis, ipads, imouse, inmis;
+    uint8_t sound[QN];
+    unsigned npads, nmouse, nnmis, nsound, ipads, imouse, inmis, isound;
     /* [WRITE] lines that landed after the step the original was in: applied after the
      * decomp runs that step. */
     struct { uint16_t addr; uint8_t len; uint8_t bytes[16]; } writes[8];
@@ -91,7 +100,7 @@ static struct {
 } E;
 
 static void clear_queues(void) {
-    E.npads = E.nmouse = E.nnmis = E.ipads = E.imouse = E.inmis = 0;
+    E.npads = E.nmouse = E.nnmis = E.nsound = E.ipads = E.imouse = E.inmis = E.isound = 0;
     E.nwrites = 0;
 }
 
@@ -113,7 +122,13 @@ static bool q_nmis(void *ctx, uint8_t *v) {
     *v = E.nmis[E.inmis++];
     return true;
 }
-static const struct step_io QUEUED = {NULL, q_pads, q_mouse, q_nmis};
+static bool q_sound(void *ctx, uint8_t *v) {
+    (void)ctx;
+    if (E.isound >= E.nsound) return false;
+    *v = E.sound[E.isound++];
+    return true;
+}
+static const struct step_io QUEUED = {NULL, q_pads, q_mouse, q_nmis, q_sound};
 
 /* ---- The baseline ---------------------------------------------------------------------- */
 
@@ -140,6 +155,9 @@ static int copy_at(uint8_t w, const uint8_t *ram, bool fresh, char *reason, size
     return DJ_UNJUDGED;
 }
 
+static void trace_before_step(void);
+static void trace_after_step(void);
+
 /* ---- Events ------------------------------------------------------------------------------ */
 
 static int on_wait(uint8_t w, const uint8_t *ram, char *reason, size_t len) {
@@ -152,13 +170,21 @@ static int on_wait(uint8_t w, const uint8_t *ram, char *reason, size_t len) {
         E.fresh = false;   /* the original only left the spin: nothing ran */
     } else {
         E.fresh = false;
+        trace_before_step();
         uint8_t next = (uint8_t)game_step(&thw_game, &QUEUED);
+        trace_after_step();
         if (next == W_NONE) {
             const char *why = game_io_error() ? game_io_error() : game_unwritten();
             E.live = false;
             clear_queues();
             if (game_io_error()) {
-                snprintf(reason, len, "%s (on the way to %s)", why, WAIT_LABEL[w]);
+                /* The decomp went another way than the original earlier in this step. Its
+                 * state is partway through the step, but what it got wrong on the way
+                 * (often the field that sent it the other way) shows in a compare, and
+                 * --explain can trace those. */
+                size_t n = compare_check(&thw_game, ram, NULL, 0);
+                snprintf(reason, len, "%s (on the way to %s)%s", why, WAIT_LABEL[w],
+                         n ? "; the diffs are of the decomp's state partway through its step" : "");
                 return DJ_MISMATCH;
             }
             if (copyable(w)) {
@@ -177,7 +203,7 @@ static int on_wait(uint8_t w, const uint8_t *ram, char *reason, size_t len) {
         }
         for (unsigned i = 0; i < E.nwrites; i++) compare_write(&thw_game, E.writes[i].addr, E.writes[i].bytes, E.writes[i].len);
     }
-    bool unread = E.ipads < E.npads || E.imouse < E.nmouse || E.inmis < E.nnmis;
+    bool unread = E.ipads < E.npads || E.imouse < E.nmouse || E.inmis < E.nnmis || E.isound < E.nsound;
     clear_queues();
     compare_take_baseline(&thw_game, ram);
     core_present();
@@ -245,6 +271,9 @@ int dj_handle_event(const struct dj_event *ev, char *reason, size_t reason_len) 
     }
     case BP_NMIS:
         if (E.live && E.nnmis < QN) E.nmis[E.nnmis++] = ram[THW_NMIS_ADDR];
+        return DJ_PENDING;
+    case BP_SOUND:
+        if (E.live && E.nsound < QN) E.sound[E.nsound++] = ram[0x02];
         return DJ_PENDING;
     }
     return DJ_PENDING;
@@ -314,15 +343,71 @@ void dj_clear(void) {
     memset(ram_flags, 0, sizeof ram_flags);
 }
 
-/* ---- Traces: not yet (milestone 4) ---------------------------------------------------- */
+/* ---- Traces ------------------------------------------------------------------------------
+ *
+ * The decomp has no instructions to trace, so its trace is what its steps did to the
+ * original's RAM layout: after each step, a write event for every byte of the 2 KB view
+ * that changed, in address order (region "RAM", `cycle` the step's number). dj traces only
+ * the baseline today; this is the decomp's side, for when it traces both. */
+
+static struct {
+    bool on;
+    struct dj_trace_event *buf;
+    size_t cap, n;
+    uint64_t dropped;
+    uint8_t before[THW_RAM_SIZE];
+} T;
 
 bool dj_trace_start(size_t capacity) {
-    (void)capacity;
-    return false;
+    dj_trace_stop();
+    T.buf = capacity ? calloc(capacity, sizeof *T.buf) : NULL;
+    if (capacity && !T.buf) return false;
+    T.cap = capacity;
+    T.n = 0;
+    T.dropped = 0;
+    T.on = true;
+    return true;
 }
-void dj_trace_stop(void) {}
-size_t dj_trace_read(const void **events, uint64_t *dropped) {
-    *events = NULL;
-    *dropped = 0;
-    return 0;
+
+void dj_trace_stop(void) {
+    free(T.buf);
+    T.buf = NULL;
+    T.cap = T.n = 0;
+    T.on = false;
+}
+
+size_t dj_trace_read(const struct dj_trace_event **events, uint64_t *dropped) {
+    static struct dj_trace_event *out;
+    static size_t out_cap;
+    if (out_cap < T.n) {
+        free(out);
+        out = malloc(T.n * sizeof *out);
+        out_cap = out ? T.n : 0;
+    }
+    size_t n = out ? T.n : 0;
+    if (n) memcpy(out, T.buf, n * sizeof *out);
+    if (events) *events = out;
+    if (dropped) *dropped = T.dropped;
+    T.n = 0;
+    T.dropped = 0;
+    return n;
+}
+
+static void trace_before_step(void) {
+    if (T.on) compare_export(&thw_game, T.before);
+}
+
+static void trace_after_step(void) {
+    if (!T.on) return;
+    static uint8_t after[THW_RAM_SIZE];
+    compare_export(&thw_game, after);
+    for (unsigned a = 0; a < THW_RAM_SIZE; a++) {
+        if (after[a] == T.before[a]) continue;
+        if (T.n >= T.cap) {
+            T.dropped++;
+            continue;
+        }
+        T.buf[T.n++] = (struct dj_trace_event){.cycle = thw_game.steps, .offset = a, .addr = (uint16_t)a,
+                                               .kind = DJ_TRACE_WRITE, .region = 1, .value = after[a]};
+    }
 }

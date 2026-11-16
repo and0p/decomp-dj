@@ -18,6 +18,11 @@ a worker designed below, not built. Linked from [ROADMAP.md](ROADMAP.md#before-t
 > before it would have blamed the baseline. `RemoteComparison` and the `compare` worker are
 > still in the code, used only by `tests/compare.rs`. Details:
 > [yield-parity/PLAN.md](yield-parity/PLAN.md), "Built so far".
+>
+> **Since 2026-11-16** the worker serves only `sync = "state"` cores. A core that takes
+> events is refused there: it has to read the baseline inside a frame, which a worker
+> can't. The step 2 details below describe the worker as it was built, with the functions
+> of the earlier API (`dj_sync` and the rest), which are gone.
 
 ## The problem
 

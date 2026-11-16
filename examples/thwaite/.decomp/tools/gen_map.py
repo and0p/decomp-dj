@@ -32,6 +32,10 @@ SKIP_FILES = {"paldetect.s"}
 INPUT_POINTS = [
     ("pads.s", "read_pads", "jsr read_pads_once", "after", "input:read_pads"),
     ("mouse.s", "read_mouse", "rts", "at", "input:read_mouse"),
+    # Not input, but from outside the game logic all the same: after splitBalloon starts the
+    # split sound, it reloads X from $02, where pently_start_sound left the channel (0 or 4,
+    # depending on the sound engine's state).
+    ("missiles.s", "splitBalloon", "jsr pently_start_sound", "after", "sound:splitBalloon"),
 ]
 
 # Fixed buffers defined as equates (global.inc), not labels.

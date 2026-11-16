@@ -610,6 +610,7 @@ pub fn refresh_segments_now(conn: &mut Connection, col: &Collection, setup: &str
 /// database's table as it is. An error means the column is already there.
 pub(crate) fn add_columns(conn: &Connection) {
     let _ = conn.execute("ALTER TABLE parity_failures ADD COLUMN preroll INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE parity_failures ADD COLUMN at TEXT NOT NULL DEFAULT ''", []);
 }
 
 pub(crate) const SCHEMA: &str = "
@@ -638,7 +639,7 @@ CREATE TABLE IF NOT EXISTS parity_passed(core TEXT NOT NULL, build TEXT NOT NULL
 CREATE TABLE IF NOT EXISTS parity_failures(
     id INTEGER PRIMARY KEY, core TEXT NOT NULL, build TEXT NOT NULL, synced_segment TEXT NOT NULL, synced_frame INTEGER NOT NULL,
     segment TEXT NOT NULL, frame INTEGER NOT NULL, reason TEXT NOT NULL, created INTEGER NOT NULL, region TEXT NOT NULL, flags BLOB NOT NULL,
-    preroll INTEGER NOT NULL DEFAULT 0);
+    preroll INTEGER NOT NULL DEFAULT 0, at TEXT NOT NULL DEFAULT '');
 -- What differed on a failing frame (dj_parity_diffs, or system RAM compared byte for byte), in
 -- the order given: up to 100 per failure. total: how many there were in all (on every row).
 CREATE TABLE IF NOT EXISTS parity_diffs(

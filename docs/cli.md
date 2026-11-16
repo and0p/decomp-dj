@@ -76,8 +76,10 @@ dj parity <dir> --explain 12              # what differed on failure 12, and who
   comparison core (the sha256 of its library) is skipped, with how it went then; `--all`
   checks it again. A rebuilt core is a new build, so everything is checked again.
 - **Results** go into the local database the GUI reads: the code frames that passed ran,
-  and each failure with the segment and frame, where the comparison core was synced, and the
-  reason. A failure found again replaces the earlier one.
+  and each failure with the segment and frame, where in the frame the core gave its
+  verdict (the name of its breakpoint, or "the frame end"; `at` in the JSON), where the
+  comparison core was synced, and the reason. A failure found again replaces the earlier
+  one.
 - **`--report`** counts the instructions that ran by parity (with parity, failed, failed
   with an older build, not checked), per function with a symbol map, and lists the
   failures with their ids, newest first.
@@ -97,9 +99,19 @@ dj parity <dir> --explain 12              # what differed on failure 12, and who
   traces the original (the baseline core) over the failing frame and the `--frames-back N`
   before it (10 by default), and for each difference with an address gives the original's
   last instruction that wrote it, with its function. That is the code to compare with the
-  decomp's. It also says whether the frame still fails and which functions it ran. Tracing
-  needs the trace hook in the baseline's connector (Mesen's has it). Exit status 0 when it
-  passes now, 1 when it still fails.
+  decomp's. It also says whether the frame still fails and which functions it ran. Exit
+  status 0 when it passes now, 1 when it still fails.
+  - **The search stops where the core gave its verdict.** A core that judges at a
+    breakpoint inside the frame compared the original as it was there. The original then
+    ran on to the end of the frame, and what it wrote after the breakpoint is left out.
+  - **Tracing needs the trace hook in the baseline's connector.** Mesen's and
+    Mupen64Plus's have it. mGBA's doesn't yet: there, `--explain` plays the failure again
+    and lists what differed, with no writers.
+  - **A long trace keeps its newest frames.** The frames are traced one at a time, and
+    when they come to more than 12 million events (about 14 frames of an N64 match) the
+    oldest are let go, with a line saying so.
+  - **The diff's region must be one of the connector's** to be traced: `RAM` on the NES,
+    `RDRAM` on the N64, with the address as the console has it.
 - **`--json`** prints the segments and failures (or the report, or the explanation) as JSON.
 
 The same checks are MCP tools for agents ([mcp.md](mcp.md#parity)). Not yet: several

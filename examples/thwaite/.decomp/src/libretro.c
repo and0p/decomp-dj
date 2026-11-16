@@ -160,6 +160,13 @@ static bool lr_nmis(void *ctx, uint8_t *v) {
     return true;
 }
 
+/* The split sound's channel: the decomp doesn't model the sound engine's pooling, so 0. */
+static bool lr_sound(void *ctx, uint8_t *v) {
+    (void)ctx;
+    *v = 0;
+    return true;
+}
+
 static void read_input(void *out) {
     struct pads { uint8_t held[2]; } *in = out;
     static const struct { unsigned id; uint8_t key; } MAP[] = {
@@ -184,7 +191,7 @@ static void silence(void) {
 }
 
 void retro_run(void) {
-    static const struct step_io LIBRETRO_IO = {NULL, lr_pads, lr_mouse, lr_nmis};
+    static const struct step_io LIBRETRO_IO = {NULL, lr_pads, lr_mouse, lr_nmis, lr_sound};
     if (input_poll) input_poll();
     if (thw_game.wait != W_NONE) {
         thw_game.nmis++;

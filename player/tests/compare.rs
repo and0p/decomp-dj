@@ -275,6 +275,8 @@ fn dj_parity_command() {
     assert_eq!(fs.len(), 1, "{out}");
     assert_eq!((fs[0]["frame"].as_u64(), fs[0]["current_build"].as_bool()), (Some(9), Some(true)));
     let id = fs[0]["id"].as_i64().unwrap().to_string();
+    // Where in the frame the core gave its verdict.
+    assert_eq!(fs[0]["at"].as_str(), Some("the frame end"), "{out}");
     // What differed is kept with the failure (dj_parity_diffs).
     assert_eq!(fs[0]["diffs_total"].as_u64(), Some(2), "{out}");
     assert_eq!((fs[0]["diffs"][0]["label"].as_str(), fs[0]["diffs"][0]["address"].as_str()), (Some("mixed state"), Some("0x0002")), "{out}");
@@ -288,6 +290,7 @@ fn dj_parity_command() {
     assert_eq!(code, 1, "{out}{err}");
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!((v["outcome"].as_str(), v["frame"].as_u64(), v["diffs_total"].as_u64()), (Some("failed"), Some(9), Some(2)), "{out}");
+    assert_eq!(v["at"].as_str(), Some("the frame end"), "{out}");
     assert!(v["traced"].is_null(), "{out}");
     assert!(v["diffs"][0]["note"].as_str().unwrap().contains("no trace hook"), "{out}");
     assert!(v["diffs"][1]["note"].as_str().unwrap().contains("no address"), "{out}");

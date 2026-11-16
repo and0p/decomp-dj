@@ -151,12 +151,31 @@ struct dj_trace_event {      // 40 bytes
     uint8_t  a, x, y, sp, p; // registers before an executed instruction
     uint8_t  operand_count;
     uint8_t  operands[3];
-    uint8_t  reserved[4];
+    uint16_t addr_high;      // the CPU address's high 16 bits, on a CPU with 32-bit addresses
+    uint8_t  reserved[2];    // 0
 };
 ```
 
-Events past the capacity are counted in `dropped` rather than stored. Only the Mesen
-connector has the hook so far.
+Events past the capacity are counted in `dropped` rather than stored. A read or write of
+several bytes is one event per byte.
+
+The Mesen and Mupen64Plus connectors have the hook. The struct was made for the 6502; on
+the N64 it is filled like this:
+
+- **The address** is `addr_high << 16 | addr`: the CPU's (virtual) address, such as
+  `0x80005BD0`. `offset` is the physical address, in region `RDRAM`. An access outside
+  RDRAM (a hardware register) has region -1.
+- **An execute** carries the whole instruction: `value` is its first byte and `operands`
+  the other three, in the CPU's (big-endian) order.
+- **The registers are 0.** `dj_read_registers` gives them at a breakpoint.
+- **A read is of the whole word,** four events, whatever the instruction took from it: the
+  CPU's read function reads a word and the instruction picks its bytes afterwards. A write
+  is of exactly the bytes written.
+- **`cycle`** counts instructions since the trace started.
+- **Only what the CPU does is traced.** A DMA from the cartridge and the GPU's copies into
+  RAM are not in it.
+- **About 830,000 events a frame** in a No Mercy match, 33 MB. The buffer grows as it
+  fills, up to the capacity.
 
 ## Comparison cores
 
@@ -167,6 +186,11 @@ beside the baseline on the same input lines. There are two kinds
 - **A core that takes events** (the default). It exports `dj_handle_event`, found by name
   like the rest: through the core's proc address callback, then its library exports. The
   rest of this section is about these.
+  - `connectors/include/dj_compare.h` declares what such a core exports, with the
+    [helper](#the-helper).
+  - A core that also reports its own coverage or traces exports the connector API above
+    as well. `connectors/include/dj_connector.h` declares that: the version, the regions,
+    breakpoints, registers and the trace hook.
 - **The same emulator as the baseline** (`sync = "state"`), to compare builds or options.
   It needs no functions: dj loads the baseline's save state into it after a jump, runs it
   one frame after the baseline, and compares the two cores' system RAM byte for byte.
@@ -368,6 +392,26 @@ The Tetris decomp (`examples/tetris/.decomp/libretro/tetris_libretro.c`) is buil
 judges at a breakpoint where the original starts waiting for the next frame, and has a
 core option to judge at frame ends instead.
 
+### On the N64
+
+What a comparison core for the Mupen64Plus connector has to know. The No Mercy stub in
+[connectors/mupen64plus/stub/](../connectors/mupen64plus/stub/README.md) does each of
+these in a few lines.
+
+- **RAM is 32-bit words in the host's byte order.** The byte at address A is at A ^ 3 on
+  a little-endian machine. Read whole words and take bytes from them.
+- **Other code can sit at a breakpoint's address.** Games load overlays over one another.
+  The list of breakpoints is fixed, so check that a hit is the code you mean (the
+  instruction there, or the caller's return address) and answer "pending" when it isn't.
+  A breakpoint in code that is always loaded needs no check.
+- **The registers** are the PC, then r0 to r31, 64 bits each in the host's order. r29 is
+  the stack pointer and r31 the return address.
+- **A logic tick often does not line up with a frame.** In a four-player match of No Mercy
+  about half the ticks start in one frame and end in the next. Judge at the tick's
+  breakpoint, not at frame ends.
+- **Leave the framebuffers out of what you compare** when the GPU copies the picture into
+  RAM (`mupen64plus-EnableCopyColorToRDRAM`): what it copies depends on what ran before.
+
 ### Parity
 
 **What a match is** is the core's to decide, which matters for a port whose memory isn't
@@ -381,7 +425,7 @@ struct dj_parity_diff {
     const char    *label;    // optional plain-text name: "Player 2 x coordinate"
     const char    *region;   // the original's region: "RAM", "SRAM" (NULL: no one place)
     uint64_t       address;  // offset in that region
-    const char    *symbol;   // optional: a data symbol of the original's, instead of an address
+    const char    *symbol;   // optional: a data symbol of the original's, shown beside the address
     const uint8_t *expected; // the original's bytes (may be NULL)
     const uint8_t *actual;   // the port's bytes (may be NULL)
     size_t         len;
@@ -395,12 +439,19 @@ size_t dj_parity_diffs(struct dj_parity_diff *out, size_t cap);
 dj keeps the first 100 with the failure and counts the rest. They show in dj-gui's failure
 message, in `dj parity`'s output and in the MCP tools. A difference with a region and an
 address can be traced: `dj parity --explain` ([cli.md](cli.md#parity)) finds the original's
-last instruction that wrote it, which is the function to fix. A label alone (a value the
+last instruction that wrote it, which is the function to fix. For a verdict given at a
+breakpoint it looks no further than that breakpoint. A label alone (a value the
 port keeps in no one place, like a checksum) is shown but can't be traced. The region names
-are the baseline connector's (`"RAM"` for Mesen's internal RAM), and `symbol` isn't
-resolved to an address yet. A core without `dj_parity_diffs` gives none; the RAM compare
+are the baseline connector's (`"RAM"` for Mesen's internal RAM, `"RDRAM"` on the N64). A
+`symbol` is shown beside the address and doesn't replace it; given alone, with no region,
+it can't be traced, since dj doesn't resolve it to an address yet. A core without `dj_parity_diffs` gives none; the RAM compare
 of a `sync = "state"` core lists one difference per run of differing bytes. The test core
-in `player/tests/testcore/` has one. A mismatch or a halt stops playback at that frame
+in `player/tests/testcore/` has one, and so do the Tetris decomp (one per differing byte
+of RAM) and the No Mercy stub.
+
+**A failure names the event it answered.** dj keeps, with each failure, the `name` of the
+breakpoint the core was called at, or "the frame end", and the tools show it beside the
+frame. Give breakpoints names a person can find in the original's source. A mismatch or a halt stops playback at that frame
 ([gui.md](gui.md#comparison-cores)).
 
 ### Checking parity in CI
@@ -408,7 +459,11 @@ in `player/tests/testcore/` has one. A mismatch or a halt stops playback at that
 `dj parity` ([cli.md](cli.md#parity)) checks every clean segment against the comparison
 core and exits 1 when a frame fails, so a decomp's CI can run it after building its core.
 dj doesn't build the decomp: the job builds it, names it in a `[[compare]]` entry, and
-runs `dj parity`. A sketch for GitHub Actions, for an NES decomp checked against Mesen:
+runs `dj parity`. This repository's own CI does it for the Thwaite example's decomp
+(`.github/workflows/ci.yml`, the Thwaite job): it builds Mesen, the ROM and the decomp, and
+runs `dj parity` with `--rom` and `--core`. A decomp that draws with OpenGL needs EGL on a
+Linux runner, which Mesa's software renderer gives (`libegl1 libegl-mesa0
+libgl1-mesa-dri`). A sketch for GitHub Actions, for an NES decomp checked against Mesen:
 
 ```yaml
 name: parity

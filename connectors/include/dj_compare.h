@@ -12,6 +12,9 @@
  *    judges at one place, so dj_helper_event does them. A core that needs more writes its
  *    own dj_handle_event and ignores the helper.
  *
+ * A core that also reports its own coverage or traces exports the connector API as well:
+ * that is in dj_connector.h, beside this file.
+ *
  * MIT license, like dj_decoder.h. Copy this header into your core, or include it from
  * dj's connectors/include.
  */
@@ -79,18 +82,20 @@ struct dj_write {
 
 struct dj_parity_diff {
     const char *label;       /* optional plain-text name: "Player 2 x coordinate" */
-    const char *region;      /* the original's region: "RAM" (NULL: no one place) */
-    uint64_t address;        /* offset in that region */
-    const char *symbol;      /* optional: a data symbol of the original's */
+    const char *region;      /* the baseline connector's region: "RAM", "RDRAM" (NULL: no one place) */
+    uint64_t address;        /* offset in that region. With a region, dj can trace who wrote it */
+    const char *symbol;      /* optional: a data symbol of the original's, shown beside the address */
     const uint8_t *expected; /* the original's bytes (may be NULL) */
     const uint8_t *actual;   /* the core's bytes (may be NULL) */
     size_t len;
 };
 
+#ifndef DJ_EXPORT
 #if defined(_WIN32)
 #define DJ_EXPORT __declspec(dllexport)
 #else
 #define DJ_EXPORT __attribute__((visibility("default")))
+#endif
 #endif
 
 /* What a core exports. Only dj_handle_event is needed.

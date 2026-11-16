@@ -668,9 +668,10 @@ fn marker_list(ui: &mut egui::Ui, col: &Collection, filter: &mut String, at: Opt
         for l in &r.lines {
             let (glyph, color, text, event) = match &l.command {
                 Command::Event { text, .. } => ("⚑", Color32::from_rgb(240, 210, 90), text.clone(), true),
-                Command::Write { region, address, bytes } => {
+                Command::Write { region, address, bytes, at } => {
                     let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02X}")).collect();
-                    ("✏", Color32::from_rgb(200, 120, 220), format!("{region} 0x{address:X} = {}", hex.join(" ")), false)
+                    let place = at.as_ref().map(|(r, o)| format!(" at {r}:0x{o:X}")).unwrap_or_default();
+                    ("✏", Color32::from_rgb(200, 120, 220), format!("{region} 0x{address:X} = {}{place}", hex.join(" ")), false)
                 }
                 Command::Reset => ("⟲", Color32::from_rgb(230, 90, 80), "Reset".to_string(), false),
                 Command::Device { port, device } => ("◆", Color32::from_rgb(120, 200, 230), format!("P{} device {device}", port + 1), false),
@@ -1564,12 +1565,16 @@ impl App {
             return Ok(());
         }
         let (id, k) = (pb.id.clone(), pb.ran);
-        // Playing on after a failure: sync first, as after a jump.
+        // Playing on after a failure: sync first, as after a jump. Not a core that takes
+        // events: it stays as it is after a mismatch and carries on (it may put itself right),
+        // and after a halt the checker asks it to copy the baseline again.
         if self.compare_failed {
             self.compare_failed = false;
             self.compare_problem = None;
-            self.checker.lose_step();
-            self.compare_need_sync = true;
+            if !self.compare.as_ref().is_some_and(|c| c.takes_events()) {
+                self.checker.lose_step();
+                self.compare_need_sync = true;
+            }
         }
         // While checking parity, every frame is drawn, so a failure shows its own frame.
         let capture = capture || (self.check_parity && self.compare_run && self.compare.is_some() && !self.seeking);
@@ -1602,6 +1607,13 @@ impl App {
             pb.checkpoints_seen.insert(k, got);
         }
         let show = capture || k + 1 == pb.frames;
+        // A comparison core that takes events is told of what happens inside the baseline's
+        // frame: set that up before the baseline runs it.
+        if self.compare_run {
+            if let Some(c) = &mut self.compare {
+                self.checker.begin(c, &mut s.core, col, &id, k, capture, self.check_parity);
+            }
+        }
         let frame = match &mut pb.rec {
             Some(rec) => {
                 s.advance(col, rec, show)?;
@@ -1621,6 +1633,9 @@ impl App {
         // and matched.
         let mut failed: Option<(String, decomp_dj::compare::Diffs)> = None;
         let mut passed = false;
+        // From the checker, which takes each frame's coverage itself while it checks: the
+        // frame's flags, those a verdict credited, and those a failure blames.
+        let (mut stepped_flags, mut credited, mut blame) = (None, vec![], vec![]);
         if self.compare_run {
             if let Some(c) = &mut self.compare {
                 if let Some(st) = self.checker.step(c, &mut s.core, col, &id, k, pb.start_frame + k, capture, self.check_parity) {
@@ -1631,12 +1646,23 @@ impl App {
                             None => self.compare_texture = Some(egui_ctx().load_texture("compare", img, egui::TextureOptions::NEAREST)),
                         }
                     }
+                    stepped_flags = st.flags;
+                    credited = st.credited;
+                    blame = st.blame;
                     match st.checked {
-                        Checked::Passed => passed = true,
+                        Checked::Passed => {
+                            passed = true;
+                            // Parity again after a mismatch that went on.
+                            if !self.compare_failed {
+                                self.compare_problem = None;
+                            }
+                        }
                         // A [WRITE] it couldn't follow: sync again at the next frame shown
                         // (this frame isn't checked: the core didn't see the write).
                         Checked::NeedsSync => self.compare_need_sync = true,
                         Checked::Failed(msg) => failed = Some((msg, st.diffs)),
+                        // The same loss of parity, still going: shown, and playback goes on.
+                        Checked::Drifting(msg) => self.compare_problem = Some(msg),
                         Checked::Skipped(_) | Checked::Ran => {}
                     }
                 }
@@ -1645,13 +1671,19 @@ impl App {
         // While checking parity, each frame's coverage is read on its own: the code a frame
         // that passed or failed ran.
         let checking = self.check_parity && self.compare_run && self.compare.is_some();
-        let frame_flags = if checking { decomp_dj::parity::take_code_flags(&mut s.core) } else { None };
+        let frame_flags = match stepped_flags {
+            Some(f) => Some(f),
+            None if checking => decomp_dj::parity::take_code_flags(&mut s.core),
+            None => None,
+        };
         if let Some(fl) = &frame_flags {
             self.cov.absorb(fl, egui_ctx().input(|i| i.time));
-            if passed && failed.is_none() {
-                if let Some(p) = &mut self.parity {
-                    p.add_pass(fl);
-                }
+        }
+        // What a verdict credited: this frame's flags for a core checked frame by frame, or
+        // the frames held since the last verdict for a core that takes events.
+        if !credited.is_empty() {
+            if let Some(p) = &mut self.parity {
+                p.add_pass(&credited);
             }
         }
         let checked = if failed.is_some() { Some(false) } else { passed.then_some(true) };
@@ -1659,12 +1691,16 @@ impl App {
             let synced = self.checker.synced.clone().unwrap_or((id.clone(), k));
             let from = if synced.0 == id { format!("frame {}", synced.1) } else { format!("frame {} of \"{}\"", synced.1, col_title(Some(col), &synced.0)) };
             if let (Some(p), Some(c)) = (&mut self.parity, &self.compare) {
-                p.add_failure(self.checker.failure(c, &id, k, &msg, frame_flags.unwrap_or_default(), diffs.clone()), s.cache.as_ref());
+                p.add_failure(self.checker.failure(c, &id, k, &msg, blame, diffs.clone()), s.cache.as_ref());
             }
-            self.checker.lose_step();
+            let events = self.compare.as_ref().is_some_and(|c| c.takes_events());
+            if !events {
+                self.checker.lose_step();
+            }
             self.compare_failed = true;
             let differed = if diffs.is_empty() { String::new() } else { format!("\n\nWhat differed:\n{}", diffs.lines(8).iter().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n")) };
-            self.compare_problem = Some(format!("{msg}{differed}\n\nSynced at {from}. Play or step on to sync again."));
+            let then = if events { "Play or step on to carry on from here; Compare > Sync now has the core copy the baseline again." } else { "Play or step on to sync again." };
+            self.compare_problem = Some(format!("{msg}{differed}\n\nSynced at {from}. {then}"));
             self.playing = false;
         }
         let reached_end = pb.ran == pb.frames;
@@ -2214,9 +2250,13 @@ impl App {
         self.parity = None;
         self.rerun = None;
         self.compare = None;
-        self.checker.lose_step();
+        // The checker's state belonged to that core, and so did its breakpoints in the baseline.
+        self.checker = Default::default();
+        decomp_dj::libretro::set_frame_hook(None);
+        if let Some(s) = &mut self.session {
+            s.core.set_core_breakpoints(&[]);
+        }
         self.compare_failed = false;
-        self.checker.synced = None;
         self.compare_problem = None;
         self.compare_texture = None;
         self.compare_need_sync = false;

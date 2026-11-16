@@ -11,10 +11,13 @@
 use anyhow::Result;
 use rusqlite::{params, Connection};
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::collection::Collection;
-use crate::compare::{Comparison, Diff, Diffs, SyncOutcome, Verdict};
+use crate::compare::{Action, Answer, Comparison, Diff, Diffs, Event, JumpReason, Reply, SyncOutcome, Verdict};
 use crate::coverage::FLAG_OPCODE;
-use crate::libretro::{Core, Frame};
+use crate::libretro::{Core, Frame, Stop};
 use crate::player::Session;
 
 /// The coverage region parity is kept for.
@@ -338,16 +341,22 @@ pub fn take_code_flags(core: &mut Core) -> Option<Vec<u8>> {
 pub enum Checked {
     /// Checked, and the cores agree.
     Passed,
-    /// The core didn't judge it (`dj_check_parity` said skip), with its reason.
+    /// The core didn't judge it (`dj_check_parity` said skip, or an event was answered
+    /// "unjudged"), with its reason.
     Skipped(String),
-    /// Ran in step but not checked (checking is off).
+    /// Ran in step but not checked (checking is off), or not judged yet: a core that takes
+    /// events gives its verdict at an event of its own choosing, maybe in a later frame.
     Ran,
     /// It had a line the comparison core couldn't follow (a `[WRITE]` without `dj_write`):
     /// not checked, and the core must be synced again before the next frame.
     NeedsSync,
-    /// A mismatch, a failed tick (`dj_run`) or an error, with the message to show. The core
-    /// is out of step until synced again.
+    /// A mismatch, a failed tick (`dj_run`), a halt or an error, with the message to show.
+    /// Playback stops. A core that takes events stays as it is after a mismatch, and
+    /// carries on if playback does; any other is out of step until synced again.
     Failed(String),
+    /// A mismatch that follows another with no match between: the same loss of parity, still
+    /// going. Shown, not kept, and playback goes on.
+    Drifting(String),
 }
 
 /// One frame on the comparison core.
@@ -357,19 +366,293 @@ pub struct Stepped {
     pub diffs: Diffs,
     /// Its picture, when asked for.
     pub picture: Option<Frame>,
+    /// The baseline's coverage flags for this frame, when parity is being checked. They are
+    /// taken (and the connector's cleared) here, so the caller doesn't take them again.
+    pub flags: Option<Vec<u8>>,
+    /// Flags a verdict of this frame credits: to add to the build's passed set.
+    pub credited: Vec<u8>,
+    /// With `Checked::Failed`: the flags the failure blames.
+    pub blame: Vec<u8>,
+    /// Frames this frame's verdicts settled: credited by a match, dropped by "unjudged", and
+    /// dropped without a verdict (a jump, a mismatch that goes on, checking off).
+    pub passed_frames: u64,
+    pub skipped_frames: u64,
+    pub unchecked_frames: u64,
+}
+
+impl Stepped {
+    fn of(checked: Checked) -> Stepped {
+        Stepped { checked, diffs: Diffs::default(), picture: None, flags: None, credited: vec![], blame: vec![], passed_frames: 0, skipped_frames: 0, unchecked_frames: 0 }
+    }
+}
+
+/// The core's last verdict, pending aside.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum Last {
+    #[default]
+    None,
+    Match,
+    Unjudged,
+    Mismatch,
+}
+
+/// Where an event arrives (.agents/yield-parity/STATES.md, section 2).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Place {
+    /// Between frames: the frame ahead hasn't run, and a verdict doesn't touch it.
+    Between,
+    /// Inside the frame: its flags aren't taken yet, so a verdict claims them.
+    Inside,
+    /// The frame's end: its flags are on the pile.
+    End,
+}
+
+/// What a verdict inside a frame decided for that frame's flags, used when they arrive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
+enum Claim {
+    #[default]
+    None,
+    /// Dropped: a mismatch that goes on.
+    Unchecked,
+    /// Dropped: "unjudged".
+    Skipped,
+    /// They go to the failure.
+    Blame,
+}
+
+/// What one frame's verdicts came to.
+#[derive(Default)]
+struct FrameOut {
+    failure: Option<(String, Diffs)>,
+    drifting: Option<String>,
+    unjudged: Option<String>,
+    matched: bool,
+    credited: Vec<u8>,
+    blame: Vec<u8>,
+    passed_frames: u64,
+    skipped_frames: u64,
+    unchecked_frames: u64,
+}
+
+/// The state of a comparison core that takes events, as dj keeps it
+/// (.agents/yield-parity/STATES.md, section 1).
+struct Ev {
+    /// A jump is owed: sent before the next frame runs.
+    jump: Option<JumpReason>,
+    /// The core said halt: no event until a jump, which the next frame sends.
+    halted: bool,
+    last: Last,
+    /// Coverage flags of whole frames, held until a verdict.
+    pile: Vec<u8>,
+    pile_frames: u64,
+    claim: Claim,
+    /// A write was made inside the frame that the core can't follow: its verdicts for the
+    /// rest of the frame mean nothing.
+    muted: bool,
+    out: FrameOut,
+    // The frame being run:
+    cmp: *mut Comparison,
+    baseline: *const Core,
+    segment: String,
+    frame: u64,
+    check: bool,
+    preroll: bool,
+    has_reset: bool,
+    /// The frame's `[WRITE]` lines that name no instruction: (region, address, bytes).
+    writes: Vec<(String, u64, Vec<u8>)>,
+    /// Inputs to release when the frame ends.
+    impulses: Vec<crate::format::InputKey>,
+    /// The core's breakpoints as the baseline knows them: (region index, offset), id, name.
+    breaks: Vec<((i32, i64), u32, String)>,
+    /// The region names of the baseline's connector, by index.
+    regions: Vec<String>,
+    /// The comparison core these breakpoints were set for.
+    breaks_for: usize,
+}
+
+impl Default for Ev {
+    fn default() -> Ev {
+        Ev {
+            jump: None,
+            halted: false,
+            last: Last::None,
+            pile: vec![],
+            pile_frames: 0,
+            claim: Claim::None,
+            muted: false,
+            out: FrameOut::default(),
+            cmp: std::ptr::null_mut(),
+            baseline: std::ptr::null(),
+            segment: String::new(),
+            frame: 0,
+            check: false,
+            preroll: false,
+            has_reset: false,
+            writes: vec![],
+            impulses: vec![],
+            breaks: vec![],
+            regions: vec![],
+            breaks_for: 0,
+        }
+    }
+}
+
+impl Ev {
+    /// Empties the pile without crediting it: its frames were never judged.
+    fn drop_pile(&mut self, skipped: bool) {
+        if skipped {
+            self.out.skipped_frames += self.pile_frames;
+        } else {
+            self.out.unchecked_frames += self.pile_frames;
+        }
+        self.pile.clear();
+        self.pile_frames = 0;
+    }
+
+    /// Acts on the core's answer to an event at `place` (STATES.md, section 3). `at` says
+    /// which event, for messages.
+    fn apply(&mut self, place: Place, reply: Reply, at: &str) {
+        // In pre-roll, with checking off, or after a write the core couldn't follow, only a
+        // halt counts.
+        if (self.preroll || !self.check || self.muted) && reply.answer != Answer::Halt {
+            return;
+        }
+        match reply.answer {
+            Answer::Pending => {}
+            Answer::Match => {
+                or_opcodes(&mut self.out.credited, &self.pile);
+                self.out.passed_frames += self.pile_frames;
+                self.pile.clear();
+                self.pile_frames = 0;
+                self.out.matched = true;
+                self.last = Last::Match;
+            }
+            Answer::Unjudged => {
+                self.drop_pile(true);
+                if place == Place::Inside {
+                    self.claim = self.claim.max(Claim::Skipped);
+                }
+                self.out.unjudged.get_or_insert(reply.reason);
+                self.last = Last::Unjudged;
+            }
+            Answer::Mismatch if self.last == Last::Mismatch => {
+                // The same loss of parity, still going: shown, not kept, and blames no code.
+                self.drop_pile(false);
+                if place == Place::Inside {
+                    self.claim = self.claim.max(Claim::Unchecked);
+                }
+                self.out.drifting.get_or_insert(format!("Still without parity at frame {}, at {at}: {}", self.frame, reply.reason));
+            }
+            Answer::Mismatch | Answer::Halt => {
+                let halt = reply.answer == Answer::Halt;
+                if self.out.failure.is_none() {
+                    let msg = if halt { format!("The comparison core stopped at frame {}, at {at}: {}", self.frame, reply.reason) } else { format!("Parity failure at frame {}, at {at}: {}", self.frame, reply.reason) };
+                    self.out.failure = Some((msg, reply.diffs));
+                    // The failure gets what was held, and this frame's flags when they come.
+                    let pile = std::mem::take(&mut self.pile);
+                    or_opcodes(&mut self.out.blame, &pile);
+                    self.pile_frames = 0;
+                    if place == Place::Inside {
+                        self.claim = Claim::Blame;
+                    }
+                }
+                self.last = Last::Mismatch;
+                if halt {
+                    self.halted = true;
+                }
+            }
+        }
+    }
+
+    /// Calls the comparison core with an event and acts on its answer. Nothing is sent to a
+    /// core that has halted.
+    fn send(&mut self, place: Place, ev: Event, at: &str) {
+        if self.halted || self.cmp.is_null() {
+            return;
+        }
+        let reply = unsafe { (*self.cmp).event(self.baseline, ev, &self.segment, self.frame, self.preroll) };
+        self.apply(place, reply, at);
+    }
+
+    /// Sends the jump that is owed, if one is: what was held was never judged, and the
+    /// core's verdicts start afresh.
+    fn send_jump(&mut self) {
+        let Some(reason) = self.jump.take() else { return };
+        self.halted = false;
+        self.drop_pile(false);
+        self.last = Last::None;
+        self.send(Place::Between, Event::Jump(reason), "the jump");
+    }
+
+    /// The baseline is stopped: tells the comparison core.
+    fn stop(&mut self, stop: Stop) {
+        match stop {
+            Stop::FrameStart => {
+                // In this order: the jump, a console reset, then writes that name no instruction.
+                self.send_jump();
+                if self.has_reset {
+                    self.send(Place::Between, Event::ConsoleReset, "the console reset");
+                }
+                let writes = std::mem::take(&mut self.writes);
+                let follows = !self.cmp.is_null() && unsafe { (*self.cmp).handles_writes() };
+                if !writes.is_empty() && !follows {
+                    // It can't follow a write: its state is wrong from here, so it copies again.
+                    self.jump = Some(JumpReason::CopyAgain);
+                    self.send_jump();
+                }
+                for (region, address, bytes) in writes.iter().filter(|_| follows) {
+                    if self.halted {
+                        break;
+                    }
+                    let reply = unsafe { (*self.cmp).write_event(self.baseline, &self.segment, self.frame, self.preroll, region, *address, bytes, None) };
+                    self.apply(Place::Between, reply, "a write");
+                }
+            }
+            Stop::Write { at_region, at_offset, region, address, bytes } => {
+                if self.halted || self.cmp.is_null() {
+                    return;
+                }
+                if unsafe { (*self.cmp).handles_writes() } {
+                    let name = self.regions.get(at_region as usize).cloned().unwrap_or_default();
+                    let reply = unsafe { (*self.cmp).write_event(self.baseline, &self.segment, self.frame, self.preroll, region, address, bytes, Some((&name, at_offset as u64))) };
+                    self.apply(Place::Inside, reply, "a write");
+                } else {
+                    // Its state is wrong from the middle of this frame: the rest of the frame
+                    // is unjudged, and it copies the baseline again before the next.
+                    self.drop_pile(true);
+                    self.claim = self.claim.max(Claim::Skipped);
+                    self.out.unjudged.get_or_insert("a write was made inside the frame, and the core has no dj_handle_write".into());
+                    self.muted = true;
+                    self.jump = Some(JumpReason::CopyAgain);
+                }
+            }
+            Stop::Break { region, offset } => {
+                let Some((_, id, name)) = self.breaks.iter().find(|(at, _, _)| *at == (region, offset)).cloned() else { return };
+                self.send(Place::Inside, Event::Break(id), &name);
+            }
+        }
+    }
 }
 
 /// Keeps a comparison core in step with the baseline and checks frames one at a time
-/// (docs/gui.md#parity). The baseline is driven by the caller; after it runs a frame, the
-/// comparison core runs the same frame with [`Checker::step`], if it is in step. A jump, a
-/// failure or a line it can't follow puts it out of step, and [`Checker::sync`] brings it
-/// back before the next frame.
-#[derive(Default, Debug, Clone)]
+/// (docs/gui.md#parity). The baseline is driven by the caller, around each frame:
+/// [`Checker::sync`] after a jump, [`Checker::begin`] before the baseline runs the frame, and
+/// [`Checker::step`] after.
+///
+/// There are two kinds of comparison core. One that takes events (`dj_handle_event`) is told
+/// of each jump, console reset, write, breakpoint and frame end, runs itself inside those
+/// calls, and gives its verdict when it chooses; dj holds each frame's coverage until one
+/// comes (.agents/yield-parity/PLAN.md). Any other runs one frame after the baseline and
+/// is checked there (`dj_sync`, `dj_run`, `dj_check_parity`, or the same emulator's save
+/// state and RAM).
+#[derive(Default, Clone)]
 pub struct Checker {
     /// The frame the comparison core runs next, in step: (segment, frame). None: out of step.
     pub at: Option<(String, u64)>,
-    /// Where it was last synced. A failure records it, so it can be re-run from there.
+    /// Where it was last synced, or last jumped. A failure records it, so it can be re-run
+    /// from there.
     pub synced: Option<(String, u64)>,
+    ev: Rc<RefCell<Ev>>,
 }
 
 impl Checker {
@@ -381,14 +664,29 @@ impl Checker {
     /// Out of step (after a jump): it syncs again before the next frame it runs.
     pub fn lose_step(&mut self) {
         self.at = None;
+        crate::libretro::set_frame_hook(None);
     }
 
     /// Syncs the comparison core to the baseline, which is about to run frame `k` of `id`
     /// (`power_on_frame` frames since power-on). Frame 0 of a root segment that doesn't start
     /// from a snapshot is a fresh power-on. Err: the message to show.
+    ///
+    /// A core that takes events is not synced by dj: it is owed a jump, sent before the frame
+    /// runs, and copies the baseline when it can.
     pub fn sync(&mut self, cmp: &mut Comparison, baseline: &mut Core, col: &Collection, id: &str, k: u64, power_on_frame: u64) -> std::result::Result<(), String> {
         self.at = None;
         let boot = k == 0 && col.replays.get(id).is_some_and(|r| r.parent().is_none() && r.get("snapshot").is_none());
+        if cmp.takes_events() {
+            // Held inputs aren't part of the baseline's state: set them as the segment has them.
+            match crate::compare::InputState::at(col, id, k) {
+                Ok(inputs) => inputs.apply(&mut cmp.core),
+                Err(e) => return Err(format!("Couldn't set the comparison core's inputs at frame {k}: {e:#}")),
+            }
+            self.ev.borrow_mut().jump = Some(if boot { JumpReason::PowerOn } else { JumpReason::State });
+            self.at = Some((id.to_string(), k));
+            self.synced = Some((id.to_string(), k));
+            return Ok(());
+        }
         match cmp.sync(baseline, col, id, k, power_on_frame, boot) {
             Ok(SyncOutcome::Synced) => {
                 self.at = Some((id.to_string(), k));
@@ -400,19 +698,95 @@ impl Checker {
         }
     }
 
+    /// Asks a core that takes events to copy the baseline again, with nothing loaded (Sync
+    /// now): a jump before the next frame.
+    pub fn copy_again(&mut self) {
+        self.ev.borrow_mut().jump = Some(JumpReason::CopyAgain);
+    }
+
+    /// The baseline is about to run frame `k` of `id`. For a core that takes events, in
+    /// step: sets its inputs for the frame, gives the baseline's connector its breakpoints,
+    /// and has the core told of what happens while the baseline runs. `capture`: keep the
+    /// picture it draws. `check`: parity is being checked. Call [`Checker::step`] after the
+    /// baseline's frame.
+    #[allow(clippy::too_many_arguments)]
+    pub fn begin(&mut self, cmp: &mut Comparison, baseline: &mut Core, col: &Collection, id: &str, k: u64, capture: bool, check: bool) {
+        crate::libretro::set_frame_hook(None);
+        if !cmp.takes_events() || !self.in_step(id, k) {
+            return;
+        }
+        {
+            let mut ev = self.ev.borrow_mut();
+            let ev = &mut *ev;
+            // Its breakpoints, in the baseline's terms: once per comparison core.
+            let me = cmp as *const Comparison as usize;
+            if ev.breaks_for != me {
+                ev.breaks_for = me;
+                ev.regions = baseline.coverage_regions().into_iter().map(|r| r.name).collect();
+                ev.breaks.clear();
+                for b in cmp.breakpoints() {
+                    match ev.regions.iter().position(|r| *r == b.region) {
+                        Some(i) => ev.breaks.push(((i as i32, b.offset as i64), b.id, b.name.clone())),
+                        None => crate::console::warn("dj", &format!("the comparison core's breakpoint \"{}\" is in region {}, which the baseline's connector doesn't have: it is left out", b.name, b.region)),
+                    }
+                }
+                baseline.set_core_breakpoints(&ev.breaks.iter().map(|((r, o), _, _)| (*r as usize, *o as u64)).collect::<Vec<_>>());
+            }
+            ev.cmp = cmp as *mut Comparison;
+            ev.baseline = baseline as *const Core;
+            ev.segment = id.to_string();
+            ev.frame = k;
+            ev.check = check;
+            ev.preroll = false;
+            ev.claim = Claim::None;
+            ev.muted = false;
+            ev.out = FrameOut::default();
+            ev.has_reset = false;
+            ev.writes.clear();
+            ev.impulses.clear();
+            // Pressing play after a halt: the core is asked to copy the baseline again.
+            if ev.halted && ev.jump.is_none() {
+                ev.jump = Some(JumpReason::CopyAgain);
+            }
+            for action in Action::of_frame(col, id, k) {
+                match action {
+                    Action::Input { key, value, impulse } => {
+                        cmp.core.set_input(key, value);
+                        if impulse {
+                            ev.impulses.push(key);
+                        }
+                    }
+                    Action::Device { port, device } => cmp.core.set_port_device(port, device),
+                    Action::Reset => ev.has_reset = true,
+                    Action::Write { region, address, bytes, at: None } => ev.writes.push((region, address, bytes)),
+                    // Made by the baseline at its instruction: the core is told then.
+                    Action::Write { .. } | Action::Rng => {}
+                }
+            }
+        }
+        cmp.core.capture_begin(capture);
+        let ev = self.ev.clone();
+        crate::libretro::set_frame_hook(Some(Box::new(move |stop| ev.borrow_mut().stop(stop))));
+    }
+
     /// The baseline just ran frame `k` of `id`: runs it on the comparison core and, with
-    /// `check`, judges it. None when the comparison core isn't in step at this frame (it
+    /// `check`, judges it. For a core that takes events (after [`Checker::begin`]) this is
+    /// the frame-end event. None when the comparison core isn't in step at this frame (it
     /// didn't run).
     #[allow(clippy::too_many_arguments)]
     pub fn step(&mut self, cmp: &mut Comparison, baseline: &mut Core, col: &Collection, id: &str, k: u64, power_on_frame: u64, capture: bool, check: bool) -> Option<Stepped> {
+        crate::libretro::set_frame_hook(None);
         if !self.in_step(id, k) {
             return None;
+        }
+        if cmp.takes_events() {
+            return Some(self.step_events(cmp, baseline, id, k, capture, check));
         }
         let st = match cmp.step(baseline, col, id, k, capture) {
             Ok(st) => st,
             Err(e) => {
                 self.at = None;
-                return Some(Stepped { checked: Checked::Failed(format!("The comparison core's frame {k} failed: {e:#}")), diffs: Diffs::default(), picture: None });
+                return Some(Stepped::of(Checked::Failed(format!("The comparison core's frame {k} failed: {e:#}"))));
             }
         };
         let mut diffs = Diffs::default();
@@ -437,11 +811,83 @@ impl Checker {
             Checked::Failed(_) | Checked::NeedsSync => None,
             _ => Some((id.to_string(), k + 1)),
         };
-        Some(Stepped { checked, diffs, picture: st.frame })
+        // Judged frame by frame: each frame's flags go with its own verdict.
+        let mut out = Stepped { diffs, picture: st.frame, ..Stepped::of(checked) };
+        if check {
+            let flags = take_code_flags(baseline).unwrap_or_default();
+            match out.checked {
+                Checked::Passed => {
+                    out.credited = flags.clone();
+                    out.passed_frames = 1;
+                }
+                Checked::Skipped(_) => out.skipped_frames = 1,
+                Checked::Failed(_) => out.blame = flags.clone(),
+                _ => out.unchecked_frames = 1,
+            }
+            out.flags = Some(flags);
+        } else {
+            out.unchecked_frames = 1;
+        }
+        Some(out)
+    }
+
+    /// The end of a frame, for a core that takes events: the frame's flags are settled as
+    /// its verdicts decided, then the core is told the frame has ended.
+    fn step_events(&mut self, cmp: &mut Comparison, baseline: &mut Core, id: &str, k: u64, capture: bool, check: bool) -> Stepped {
+        let mut ev = self.ev.borrow_mut();
+        let ev = &mut *ev;
+        ev.cmp = cmp as *mut Comparison;
+        ev.baseline = baseline as *const Core;
+        let flags = if check { Some(take_code_flags(baseline).unwrap_or_default()) } else { None };
+        match (&flags, ev.claim) {
+            (None, _) => ev.out.unchecked_frames += 1,
+            (Some(f), Claim::None) => {
+                or_opcodes(&mut ev.pile, f);
+                ev.pile_frames += 1;
+            }
+            (Some(_), Claim::Skipped) => ev.out.skipped_frames += 1,
+            (Some(_), Claim::Unchecked) => ev.out.unchecked_frames += 1,
+            (Some(f), Claim::Blame) => {
+                or_opcodes(&mut ev.out.blame, f);
+            }
+        }
+        ev.send(Place::End, Event::FrameEnd, "the frame end");
+        for key in std::mem::take(&mut ev.impulses) {
+            cmp.core.set_input(key, 0);
+        }
+        let picture = if capture { cmp.core.capture_take() } else { None };
+        cmp.core.capture_begin(false);
+        ev.cmp = std::ptr::null_mut();
+        ev.baseline = std::ptr::null();
+        let out = std::mem::take(&mut ev.out);
+        self.at = Some((id.to_string(), k + 1));
+        let (checked, diffs) = match (out.failure, out.drifting) {
+            (Some((msg, diffs)), _) => (Checked::Failed(msg), diffs),
+            (None, Some(msg)) => (Checked::Drifting(msg), Diffs::default()),
+            (None, None) if out.matched => (Checked::Passed, Diffs::default()),
+            (None, None) => match out.unjudged {
+                Some(why) => (Checked::Skipped(why), Diffs::default()),
+                None => (Checked::Ran, Diffs::default()),
+            },
+        };
+        Stepped { checked, diffs, picture, flags, credited: out.credited, blame: out.blame, passed_frames: out.passed_frames, skipped_frames: out.skipped_frames, unchecked_frames: out.unchecked_frames }
+    }
+
+    /// A segment's check has ended: the frames still held, to count as unchecked. None when
+    /// the core's last verdict was a match: those frames are the segment's tail, part of a
+    /// tick the segment doesn't finish, and no verdict is expected for them.
+    pub fn finish(&mut self) -> u64 {
+        let mut ev = self.ev.borrow_mut();
+        let held = if ev.last == Last::Match { 0 } else { ev.pile_frames };
+        ev.pile.clear();
+        ev.pile_frames = 0;
+        held
     }
 
     /// The baseline went on from the end of `parent` into its child `child`: the comparison
     /// core goes with it if it was in step at that end. False when it wasn't, or couldn't.
+    /// A core that takes events is told nothing: no state was replaced, and what it holds
+    /// goes with it.
     pub fn enter(&mut self, cmp: &mut Comparison, col: &Collection, parent: &str, child: &str) -> bool {
         let end = col.replays.get(parent).and_then(|r| r.frames().ok());
         if end.is_none() || self.at != Some((parent.to_string(), end.unwrap())) {
@@ -482,7 +928,7 @@ pub struct Span {
     /// Frames the core didn't judge.
     pub skipped: u64,
     /// Frames run but not checked: after a line the comparison core couldn't follow, until
-    /// it synced again.
+    /// it synced again, or dropped without a verdict.
     pub unchecked: u64,
     /// What the frames that passed ran (opcode flags, OR'd).
     pub passed_flags: Vec<u8>,
@@ -495,6 +941,9 @@ pub struct Span {
 /// first, unless `ck` has it in step already (carried on from the parent with
 /// [`Checker::enter`]), and again after a line it couldn't follow; stops at the first failure,
 /// as dj-gui does. A failed sync is a failure at that frame. Err: the baseline failed.
+///
+/// For a core that takes events, frames it has not yet judged when the span ends stay held
+/// in `ck`: the next span carries on, or [`Checker::finish`] counts them.
 #[allow(clippy::too_many_arguments)]
 pub fn check_span(s: &mut Session, cmp: &mut Comparison, ck: &mut Checker, col: &Collection, id: &str, from: u64, to: u64, start_frame: u64) -> Result<Span> {
     let mut span = Span::default();
@@ -508,24 +957,24 @@ pub fn check_span(s: &mut Session, cmp: &mut Comparison, ck: &mut Checker, col: 
                 return Ok(span);
             }
         }
-        s.step(col, id, k, false)?;
-        let st = ck.step(cmp, &mut s.core, col, id, k, start_frame + k, false, true);
-        let flags = take_code_flags(&mut s.core).unwrap_or_default();
-        let (checked, diffs) = match st {
-            Some(st) => (Some(st.checked), st.diffs),
-            None => (None, Diffs::default()),
+        ck.begin(cmp, &mut s.core, col, id, k, false, true);
+        let ran = s.step(col, id, k, false);
+        if ran.is_err() {
+            ck.lose_step();
+        }
+        ran?;
+        let Some(st) = ck.step(cmp, &mut s.core, col, id, k, start_frame + k, false, true) else {
+            let _ = take_code_flags(&mut s.core);
+            span.unchecked += 1;
+            continue;
         };
-        match checked {
-            Some(Checked::Passed) => {
-                span.passed += 1;
-                or_opcodes(&mut span.passed_flags, &flags);
-            }
-            Some(Checked::Skipped(_)) => span.skipped += 1,
-            Some(Checked::Failed(msg)) => {
-                span.failure = Some(ck.failure(cmp, id, k, &msg, flags, diffs));
-                return Ok(span);
-            }
-            Some(Checked::Ran | Checked::NeedsSync) | None => span.unchecked += 1,
+        span.passed += st.passed_frames;
+        span.skipped += st.skipped_frames;
+        span.unchecked += st.unchecked_frames;
+        or_opcodes(&mut span.passed_flags, &st.credited);
+        if let Checked::Failed(msg) = st.checked {
+            span.failure = Some(ck.failure(cmp, id, k, &msg, st.blame, st.diffs));
+            return Ok(span);
         }
     }
     Ok(span)

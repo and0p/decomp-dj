@@ -1,7 +1,9 @@
 # Plan: a C reimplementation of Thwaite as a comparison core
 
-Status: draft. Written 2026-11-11, rewritten 2026-11-15 for parity by breakpoints
-([yield-parity/PLAN.md](yield-parity/PLAN.md)). Not started.
+Status: milestone 0 mostly done (2026-11-15): the core builds, draws the CHR with OpenGL,
+exports the API, and its breakpoint table is checked on all 12 segments. Results are under
+"Milestone 0 results". Written 2026-11-11, rewritten 2026-11-15 for parity by breakpoints
+([yield-parity/PLAN.md](yield-parity/PLAN.md)).
 
 Decided by the developer:
 
@@ -11,7 +13,9 @@ Decided by the developer:
 
 This plan changes nothing in dj. It needs the breakpoint design built up to its step 6
 (`dj_handle_event` in dj), and the nested OpenGL contexts of its step 4. Where this plan
-finds a problem in that design, it says so under "For the breakpoint plan".
+finds a problem in that design, it says so under "For the breakpoint plan". As of
+2026-11-15, dj has steps 3 and 4 (connector API 3, with `dj_set_breakpoints` and
+`dj_read_registers`; the comparison core in dj's process), not step 6.
 
 ## Goal
 
@@ -19,7 +23,7 @@ finds a problem in that design, it says so under "For the breakpoint plan".
 a libretro core that exports the comparison-core API. `dj parity` and the GUI check it
 against the original ROM (Mesen) on the project's 12 segments. It becomes the example of
 the "decomp" half of decomp-dj, and a second real decomp for the breakpoint design beside
-Tetris: one whose lag frames are judged rather than skipped.
+Tetris: one whose steps that cross a frame boundary are judged rather than skipped.
 
 What it is:
 
@@ -83,7 +87,8 @@ from one wait's exit to the next wait's exit, the same span the original runs be
 of its NMIs.
 
 - **Under dj**, the decomp runs a step when the baseline reaches a wait's exit (below). A
-  lag frame needs no special handling: the step simply arrives late.
+  step that crosses a frame boundary (a lag frame, or a screen's setup) needs no special
+  handling: it simply arrives late.
 - **On its own** (RetroArch, or `dj run` with the decomp as the core), `retro_run` runs one
   step. It never lags.
 
@@ -98,15 +103,21 @@ rebuilt ROM moves the addresses with it. All in `PRG`.
 | Kind | Where | What the decomp does |
 | --- | --- | --- |
 | **Wait exit**, one per wait loop: `game` (`main`), `pause` (`pauseScreen`), `title` ×3, `practice`, `cutscene` ×2 | The first instruction after the `beq` that spins on `nmis`. It runs once per wait, never in the spin (the Mesen spike saw a breakpoint inside a spin hit 3,891 times in a frame) | Runs its pending step, compares, answers |
-| **NMI-counter read**: `updateAllExplosions`, `drawBalloonNumberX`, the missile-target drawing, `updateSmoke`, `cut_handle_state_wait_a` | The `lda nmis` that reads the counter for logic | Takes `nmis` through the handle and queues it for the step in progress; answers "pending" |
+| **NMI-counter read**: `updateAllExplosions`, `drawBalloonNumberX`, the missile-target drawing, `updateSmoke` (two, one in a loop), `cut_handle_state_wait_a`, `load_cutscene`, `titleScreen` | The `lda nmis` that reads the counter for logic | Takes `nmis` through the handle and queues it for the step in progress; answers "pending" |
+| **Input**: `read_pads`, `read_mouse` | The routine's first instruction | Polls libretro's input (that frame's) and queues it for the step in progress; answers "pending" |
+
+The generator finds 9 wait loops, 8 counter reads and the 2 input routines. One wait,
+`ppu_wait_vblank`, is in a routine nothing calls; it stays in the table and is never hit.
+The waits in `getTVSystem` (PAL detection, at boot) are left out.
 
 **Why the counter reads.** Thwaite's NMI handler is only `inc nmis`, but game logic reads
 the counter. Which half of the explosions advances this frame is the important one; the
-others decide sprite flicker and the balloon's float. On a normal frame the counter is
-fixed for the whole step. On a lag frame the NMI lands mid-step, and a read can fall
-before or after it, depending on 6502 cycle counts a port cannot reproduce. With a
-breakpoint at each read, the decomp uses the value the original actually read. Thwaite's
-7 lag frames in the segments can then be judged instead of answered "unjudged".
+others decide sprite flicker, the cutscene's scrolling and the balloon's float. In most
+steps the counter is fixed for the whole step. In a step that crosses a frame boundary the
+NMI lands mid-step, and a read can fall before or after it, depending on 6502 cycle counts
+a port cannot reproduce. With a breakpoint at each read, the decomp uses the value the
+original actually read. Milestone 0 found such steps at every screen change, and reads
+after the NMI in four of them.
 
 The breakpoint plan's notes say each place where timing-dependent data enters the logic
 needs a breakpoint. For Thwaite these are the only such places apart from input (below).
@@ -115,11 +126,12 @@ needs a breakpoint. For Thwaite these are the only such places apart from input 
 
 | Event | What the decomp does |
 | --- | --- |
-| jump, power-on | Resets to power-on. Boot (the PPU warm-up and PAL detection, timing loops on the PPU's status) isn't modelled. The decomp answers "pending" until the first `title` wait exit, copies there and answers "unjudged" ("boot isn't modelled"). Boot's frames show as skipped, with that reason |
-| jump, a state or "copy again" | Reads the registers. If the PC is inside a wait loop's spin (the generated PC ranges), the original's step is done, so the decomp copies now, parks at that wait's exit and answers "unjudged". The next wait-exit hit then has an empty step, and is compared. Otherwise (a lag frame, boot) it answers "pending" and copies at the next wait exit. No pre-roll is needed: after boot, the original waits once per frame in 11,013 of 11,020 frames (breakpoint plan, "What was measured"), so a jump almost always finds it in a spin. Milestone 0 checks the frame ends directly |
+| jump, power-on | Resets to power-on. Boot (the PPU warm-up and PAL detection, timing loops on the PPU's status) isn't modelled. The decomp answers "pending" until the first wait exit (frame 5, `screen_off_title_palette`), copies there and answers "unjudged" ("boot isn't modelled"). Boot's 5 frames show as skipped, with that reason |
+| jump, a state or "copy again" | Reads the registers. If the PC is inside a wait loop's spin (the generated PC ranges), the original's step is done, so the decomp copies now, parks at that wait's exit and answers "unjudged". The next wait-exit hit then has an empty step, and is compared. Otherwise (mid-step, boot) it answers "pending" and copies at the next wait exit. No pre-roll is needed: in the 12 segments every frame end after boot is in a spin except 8, each in a screen's setup (milestone 0) |
 | console reset | Treated as a jump. The decomp is parked at its last wait exit while the original was in the spin after the step, not where the game reset from. No segment has a `[RESET]` today |
 | break, wait exit `W` | Runs the pending step with the queued counter values. If the state machine reached a different wait than `W`, that's a mismatch in itself ("the decomp went to `title`, the original to `pause`"). Otherwise it compares (below). Then it draws the step's picture and parks at `W` |
 | break, counter read | Queues `nmis`; "pending" |
+| break, input | Queues that frame's pads (or mouse); "pending" |
 | frame end | "Pending" |
 
 The verdict after a copy is "unjudged", never "pending". Otherwise the first match would
@@ -127,18 +139,21 @@ credit frames that were compared with nothing (breakpoint plan, section 4).
 
 ### Input
 
-A step reads the pads right after its wait exit (`read_pads` comes before the logic). dj
-sets input per frame through libretro. So the decomp polls input at each wait-exit event
-and keeps it for the step that starts there, which it runs at the next wait exit. That's
-the frame `read_pads` actually ran in, lag frames included: the read is a few hundred
-cycles after the exit, so it is in the same frame.
+dj sets input per frame through libretro, and the decomp has to use the frame the
+original read the controllers in. So it polls libretro's input at the input breakpoints,
+when the original enters `read_pads` or `read_mouse`, and queues it for the step that is
+running.
 
-The SNES mouse (the Mouse segment) is read the same way, through libretro's mouse device.
-Mesen reads mouse motion from libretro port 1 whatever port the mouse is in (the example's
-README), and the decomp does the same.
+Polling at the wait exit instead would be wrong once in the segments: in the step from the
+cutscene into the game, the wait exit is in frame 62 and `read_pads` runs in frame 63,
+after `setupGameBG` crosses the frame boundary (milestone 0). Every other read is in the
+frame of its step's wait exit.
 
-If this turns out wrong anywhere, the breakpoint plan's fallback applies: a breakpoint in
-`read_pads` after the raw bytes are read, copying them through the handle.
+The decomp still runs its own version of `read_pads` (new presses, autorepeat), so that
+code is tested; only the raw buttons come from the poll. The SNES mouse (the Mouse
+segment) is read the same way, through libretro's mouse device. Mesen reads mouse motion
+from libretro port 1 whatever port the mouse is in (the example's README), and the decomp
+does the same. In menus `read_mouse` runs twice a step, once for each port.
 
 ### Writes
 
@@ -151,7 +166,7 @@ is answered "pending" and dropped. Outside `RAM`, it's "halt" with a reason.
   is done, and the write lands after it. The decomp queues the write and applies it after
   it runs that step at the next wait exit, before comparing. This is exact. "Jump to
   Saturday" (`gameDay`) works without changing the segment.
-- **Anywhere else** (a lag frame, an address mid-step): the decomp goes stale and copies
+- **Anywhere else** (mid-step, or an address mid-step): the decomp goes stale and copies
   at its next wait exit ("unjudged", with the reason).
 
 ### What is compared
@@ -233,16 +248,18 @@ Until the breakpoint design reaches its step 6, game code is written and tried o
 is in dj.
 
 0. **Skeleton and checks.**
-   - The core: libretro boilerplate, the GL renderer showing the CHR, every function
-     above stubbed, the converters and their committed tables, `build.sh`, `[[compare]]`
-     in config.toml.
-   - The breakpoint table checked with the Mesen spike harness
-     (`player/examples/mesen_spike.rs`, which takes a list of `PRG` addresses) on all 12
-     segments. Each wait exit should be hit once per frame on its screen, apart from lag
-     frames. The counter reads should be hit only in their steps. Every frame end except
-     the lag frames should have the PC in a spin range.
-   - Drawing from inside the baseline's frame, as soon as the breakpoint plan's step 4
-     lands. If nested contexts don't work on a platform, that's a finding for the
+   - *Done:* the core: libretro boilerplate, the GL renderer showing the CHR, every
+     function above stubbed, the converters and their committed tables, `build.sh`. It
+     loads and draws in `dj play`.
+   - *Done:* the breakpoint table checked on all 12 segments with
+     `player/examples/thwaite_breaks.rs`, against the version 3 Mesen connector. Results
+     below.
+   - *Waiting on the breakpoint plan's step 6:* the `[[compare]]` entry in config.toml.
+     Today's dj still loads a comparison core through `dj_sync`, which the decomp doesn't
+     have, so the entry would break the example's comparison until events exist.
+   - *Waiting on step 6 too:* drawing from inside the baseline's frame. The nested
+     contexts of step 4 are only exercised when dj calls the decomp during a frame, which
+     needs events. If nested contexts don't work on a platform, that's a finding for the
      breakpoint plan, not a reason for a software renderer here.
 1. **Boot and menus**: the title screens, the 2-player and mouse paths, the practice
    menu. Segments: Boot (from the first title wait), 2 Players, Mouse, Practice
@@ -253,15 +270,41 @@ is in dj.
    write).
 3. **Cutscenes and between levels**: DTE text from `texts.txt` and `cutscripts.txt`, the
    level reward, silo and house rebuilding. Segment: the opening cutscene. All 12 pass,
-   with the 7 lag frames judged.
+   with the steps that cross a frame boundary judged.
 4. **Diffs and tracing**: `dj_parity_diffs` and the trace hook complete, checked with
    `dj parity --explain` on a build that is broken on purpose.
 5. **CI and docs**: a CI job builds Mesen and the decomp and runs `dj parity` on the
    example; a README for the decomp; examples/thwaite/README and the ROADMAP updated.
 
 New segments that reach more of the game (later days, a rebuilt house, a high score, and
-heavier waves for more lag frames) are worth adding as the decomp gets there. The
-coverage map shows where.
+heavier waves that might lag in play) are worth adding as the decomp gets there. The
+coverage map shows where. No balloon appears in today's segments, so
+`drawBalloonNumberX`'s counter read is never hit.
+
+### Milestone 0 results
+
+From `player/examples/thwaite_breaks.rs`, run 2026-11-15 on all 12 segments (11,140 frames)
+with the version 3 Mesen connector (`build/cores/mesen_libretro`):
+
+```bash
+cd player && cargo run --release --example thwaite_breaks -- ../examples/thwaite ../examples/thwaite/build/thwaite.nes ../build/cores/mesen_libretro ../examples/thwaite/.decomp/src/data/breakpoints.tsv
+```
+
+| Question | Result |
+| --- | --- |
+| Is each wait exit hit at most once a frame? | Yes, every wait, every frame. No frame has two |
+| Does gameplay lag? | No. `wait:main` is hit in every frame of Defend (2,400), Jump to Saturday (1,800) and Practice play, and in every frame of play in Idle and Pause |
+| Frames with no wait exit, after the first | 8, one at a screen change: title to cutscene (3 segments), cutscene to game, title to the practice menu, and three into a text screen (boot's legal screen, after game over, after leaving practice). Each frame ends inside the new screen's setup, with rendering off: `cut_draw_buildings`, `setupGameBG`, or the text decoder `undte_line0` |
+| Frame ends in a spin | Every frame after boot except those 8. So the decomp can copy at almost any jump, with no pre-roll |
+| Counter reads that saw the NMI | 4 steps: the cutscene-to-game step reads it three times (explosions, missiles, smoke) after `setupGameBG` crosses the frame boundary, and the title-to-cutscene step once (`load_cutscene`, in 3 segments). Pause's resume step also reads a value other than its wait exit's, from pause's own `sta nmis`, not an NMI |
+| Input read in a later frame than its step's wait exit | Once: the cutscene-to-game step (wait exit in frame 62, `read_pads` in 63). Hence the input breakpoints |
+| Boot | 5 frames to the first wait exit (`screen_off_title_palette`) |
+| Loops | `updateSmoke`'s second read is in a loop: up to 24 hits a frame, far under dj's cap of 1,024 |
+| Never hit | `ppu_wait_vblank` (nothing calls it) and `drawBalloonNumberX` (no balloon in the segments) |
+
+This corrects the plan's earlier "7 lag frames": in these segments Thwaite never lags in
+play. Its frames without a wait are all screen setup, which the breakpoint plan's
+measurement also counted. The decomp handles both the same way.
 
 ## For the breakpoint plan
 
@@ -270,28 +313,34 @@ What this decomp needs from [yield-parity/PLAN.md](yield-parity/PLAN.md), or tes
 - **Nested OpenGL contexts** (its section 11, open problem 3). This decomp draws only with
   OpenGL, from inside the baseline's frame.
 - **`registers()` at a jump.** Copying at the jump relies on the PC between frames. The
-  plan has registers in the handle for every event; the 6502 layout (its open problem 1)
-  needs to be fixed before this decomp reads it.
+  6502 layout is now fixed in connector API 3 (A, X, Y, SP, P, PC low byte first), and
+  milestone 0 read it at every frame end; the handle still needs to pass it on.
 - **Queued writes.** A between-frames write applied after the next step is something any
   core parked at a wait exit can do. It may belong in the plan's notes for a core's author
   or in the helper header.
 - **Its build order, steps 7 to 9,** test with the Tetris decomp. Thwaite is a second test
-  there, and the first whose lag frames are judged through counter breakpoints rather than
-  answered "unjudged".
+  there, and the first whose steps across a frame boundary are judged through counter and
+  input breakpoints rather than answered "unjudged".
+- **"Lag frames" in its measurements.** For Thwaite, the 7 frames without a wait that it
+  counted are screen setup, not lag in play (milestone 0 results). The same may be true of
+  some of Tetris's 15.
+- **Input in a step that crosses a frame.** Milestone 0 found the case its notes for a
+  core's author describe: the step's controller read lands in the next frame. A breakpoint
+  at the input routine's entry, polling libretro there, was enough; the raw bytes didn't
+  need copying through the handle.
 
 ## Risks
 
-- **The counter breakpoints miss a read.** If a lag-frame step reads `nmis` somewhere not
-  listed, a lag frame mismatches; the diff names the field. The converter finds every
-  `lda nmis` in the source, and milestone 0 lists which ones are in steps.
+- **The counter breakpoints miss a read.** If a step that crosses a frame reads `nmis`
+  somewhere not listed, it mismatches; the diff names the field. The converter finds every
+  `lda nmis` in the source; another instruction reading `nmis` would be missed (none today).
 - **A between-frames write while the original isn't in a spin.** Answered "unjudged" and
-  copied again. Rare: the segments have 7 lag frames.
+  copied again. Rare: 8 frame ends in the segments, all in screen setup.
 - **The `missilesOverlay` reuse:** cutscenes and the practice menu reuse missile RAM for
   their own variables, and the policy table has to know which layout is live.
 - **Sprite order:** if Thwaite's OAM rotation is part of its state (it decides flicker),
   it has to match exactly, and the `sprites` policy may become `exact`.
-- **Boot isn't judged,** up to the first title wait. Modelling the PAL detection's timing
-  loops would need cycle counts. Milestone 0 measures how many frames that is; the
-  routines that run there are reset-time setup.
+- **Boot isn't judged:** its first 5 frames, up to the first wait exit. Modelling the PAL
+  detection's timing loops would need cycle counts.
 - **Committed tables drift** if the pinned Thwaite commit changes. The converters are
   rerun by hand then, and the README says so.

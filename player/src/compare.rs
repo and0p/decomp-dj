@@ -204,6 +204,152 @@ impl Diffs {
     }
 }
 
+// ---- events (.agents/yield-parity/PLAN.md, sections 1 to 4) ---------------------------------
+
+/// `struct dj_baseline`, version 2: what a comparison core reads the baseline through during
+/// an event. Memory and registers, and nothing else.
+#[repr(C)]
+struct DjBaseline2 {
+    version: u32,
+    ctx: *mut c_void,
+    memory: unsafe extern "C" fn(*mut c_void, *const c_char, *mut usize) -> *const u8,
+    registers: unsafe extern "C" fn(*mut c_void, *mut c_void, usize) -> usize,
+}
+
+/// `struct dj_breakpoint`: a place in the original where the core wants to be called.
+#[repr(C)]
+struct DjBreakpointC {
+    id: u32,
+    region: *const c_char,
+    offset: u64,
+    name: *const c_char,
+}
+
+/// `struct dj_event`.
+#[repr(C)]
+struct DjEventC {
+    size: u32,
+    kind: u32,
+    flags: u32,
+    breakpoint: u32,
+    jump_reason: u32,
+    segment: *const c_char,
+    frame: u64,
+    baseline: *const DjBaseline2,
+}
+
+/// `struct dj_write`.
+#[repr(C)]
+struct DjWriteC {
+    size: u32,
+    flags: u32,
+    segment: *const c_char,
+    frame: u64,
+    baseline: *const DjBaseline2,
+    region: *const c_char,
+    offset: u64,
+    bytes: *const u8,
+    len: usize,
+    at_region: *const c_char,
+    at_offset: u64,
+}
+
+const DJ_EVENT_JUMP: u32 = 1;
+const DJ_EVENT_CONSOLE_RESET: u32 = 2;
+const DJ_EVENT_BREAK: u32 = 3;
+const DJ_EVENT_FRAME_END: u32 = 4;
+/// In `flags`: the frame is pre-roll.
+const DJ_PREROLL: u32 = 1;
+
+type EventFn = unsafe extern "C" fn(*const DjEventC, *mut c_char, usize) -> i32;
+type WriteEventFn = unsafe extern "C" fn(*const DjWriteC, *mut c_char, usize) -> i32;
+type BreakpointsFn = unsafe extern "C" fn(*mut *const DjBreakpointC) -> usize;
+
+/// Why the baseline's state is not what the comparison core last saw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JumpReason {
+    /// A fresh power-on.
+    PowerOn = 1,
+    /// A state was loaded: a seek, a snapshot, a segment's start.
+    State = 2,
+    /// Nothing was replaced; the core is asked to copy the baseline again (after a halt, a
+    /// write it can't follow, Sync now, or being switched on).
+    CopyAgain = 3,
+}
+
+/// One call to a comparison core's `dj_handle_event`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Event {
+    Jump(JumpReason),
+    /// A `[RESET]` line was applied to the baseline.
+    ConsoleReset,
+    /// The baseline reached the core's breakpoint with this id.
+    Break(u32),
+    FrameEnd,
+}
+
+/// What a comparison core answers to an event (`enum dj_verdict`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Answer {
+    Pending,
+    Match,
+    Mismatch,
+    Unjudged,
+    Halt,
+}
+
+/// An answer with its reason, and what differed (for a mismatch or a halt).
+#[derive(Clone, Debug)]
+pub struct Reply {
+    pub answer: Answer,
+    pub reason: String,
+    pub diffs: Diffs,
+}
+
+/// A place in the original where a comparison core wants to be called (`dj_breakpoints`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Breakpoint {
+    pub id: u32,
+    /// The baseline connector's region: "PRG", "RDRAM".
+    pub region: String,
+    pub offset: u64,
+    pub name: String,
+}
+
+unsafe extern "C" fn baseline_memory(ctx: *mut c_void, name: *const c_char, size: *mut usize) -> *const u8 {
+    if !size.is_null() {
+        *size = 0;
+    }
+    if ctx.is_null() || name.is_null() {
+        return std::ptr::null();
+    }
+    let core = &*(ctx as *const Core);
+    let name = CStr::from_ptr(name).to_string_lossy().to_ascii_uppercase();
+    match crate::libretro::region_memory_id(&name).and_then(|id| core.memory_ptr(id)) {
+        Some((ptr, len)) => {
+            if !size.is_null() {
+                *size = len;
+            }
+            ptr
+        }
+        None => std::ptr::null(),
+    }
+}
+
+unsafe extern "C" fn baseline_registers(ctx: *mut c_void, out: *mut c_void, cap: usize) -> usize {
+    if ctx.is_null() || out.is_null() {
+        return 0;
+    }
+    let core = &*(ctx as *const Core);
+    match core.registers() {
+        Some(r) if r.len() <= cap => {
+            std::ptr::copy_nonoverlapping(r.as_ptr(), out as *mut u8, r.len());
+            r.len()
+        }
+        _ => 0,
+    }
+}
+
 fn c_text(p: *const c_char) -> Option<String> {
     if p.is_null() {
         return None;
@@ -289,6 +435,12 @@ pub struct Comparison {
     check_fn: Option<CheckFn>,
     diffs_fn: Option<DiffsFn>,
     run_fn: Option<RunFn>,
+    /// `dj_handle_event`: the core takes events, and runs itself inside them.
+    event_fn: Option<EventFn>,
+    /// `dj_handle_write` (optional, for a core that takes events).
+    write_event_fn: Option<WriteEventFn>,
+    /// `dj_breakpoints`: where in the original the core wants to be called.
+    breakpoints: Vec<Breakpoint>,
     /// The sha256 of the core library as loaded: the build parity results belong to.
     pub build: String,
     /// A private copy of the library, when it is the baseline's own file.
@@ -337,14 +489,35 @@ impl Comparison {
             let diffs_ptr = core.proc("dj_parity_diffs");
             let diffs_fn: Option<DiffsFn> = (!diffs_ptr.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, DiffsFn>(diffs_ptr) });
             let run_fn: Option<RunFn> = (!run_ptr.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, RunFn>(run_ptr) });
+            let ev_ptr = core.proc("dj_handle_event");
+            let event_fn: Option<EventFn> = (!ev_ptr.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, EventFn>(ev_ptr) });
+            let wev_ptr = core.proc("dj_handle_write");
+            let write_event_fn: Option<WriteEventFn> = (!wev_ptr.is_null()).then(|| unsafe { std::mem::transmute::<*mut c_void, WriteEventFn>(wev_ptr) });
+            let bp_ptr = core.proc("dj_breakpoints");
+            let mut breakpoints = vec![];
+            if event_fn.is_some() && !bp_ptr.is_null() {
+                let f: BreakpointsFn = unsafe { std::mem::transmute(bp_ptr) };
+                let mut list: *const DjBreakpointC = std::ptr::null();
+                let n = core.in_core(crate::crash::CALL_DJ_BREAKPOINTS, || unsafe { f(&mut list) });
+                if !list.is_null() {
+                    for b in unsafe { std::slice::from_raw_parts(list, n) } {
+                        let region = c_text(b.region).ok_or_else(|| anyhow!("dj_breakpoints: breakpoint {} names no region", b.id))?.to_ascii_uppercase();
+                        breakpoints.push(Breakpoint { id: b.id, region, offset: b.offset, name: c_text(b.name).unwrap_or_else(|| format!("breakpoint {}", b.id)) });
+                    }
+                }
+            }
+            if event_fn.is_some() {
+                // It draws when it chooses: tell it whether a picture is wanted.
+                core.set_video_hint(true);
+            }
             match spec.mode {
-                SyncMode::DjSync if sync_fn.is_none() => bail!("the core has no dj_sync, which [[compare]] \"{name}\" asks for (sync = \"dj_sync\", the default). For the same emulator as the baseline, sync = \"state\" syncs by save state instead"),
+                SyncMode::DjSync if sync_fn.is_none() && event_fn.is_none() => bail!("the core has neither dj_handle_event nor dj_sync, which [[compare]] \"{name}\" asks for (sync = \"dj_sync\", the default). For the same emulator as the baseline, sync = \"state\" syncs by save state instead"),
                 SyncMode::State => {
                     core.serialize().context("sync = \"state\" needs save states, and this core can't save one")?;
                 }
                 _ => {}
             }
-            Ok(Comparison { name: name.to_string(), core, mode: spec.mode, sync_fn, write_fn, check_fn, diffs_fn, run_fn, build: spec.build.clone(), copy: None })
+            Ok(Comparison { name: name.to_string(), core, mode: spec.mode, sync_fn, write_fn, check_fn, diffs_fn, run_fn, event_fn, write_event_fn, breakpoints, build: spec.build.clone(), copy: None })
         })();
         match loaded {
             Ok(mut c) => {
@@ -416,6 +589,100 @@ impl Comparison {
         self.step_with(Some(baseline), &Action::of_frame(col, id, frame), capture)
     }
 
+    /// Whether the core takes events (`dj_handle_event`): dj then calls it at each jump,
+    /// console reset, breakpoint and frame end, and the core runs itself inside the call.
+    pub fn takes_events(&self) -> bool {
+        self.event_fn.is_some() && self.mode == SyncMode::DjSync
+    }
+
+    /// Where in the original the core wants to be called.
+    pub fn breakpoints(&self) -> &[Breakpoint] {
+        &self.breakpoints
+    }
+
+    /// Whether the core follows `[WRITE]` lines itself (`dj_handle_write`).
+    pub fn handles_writes(&self) -> bool {
+        self.write_event_fn.is_some()
+    }
+
+    fn handle2(baseline: *const Core) -> DjBaseline2 {
+        DjBaseline2 { version: 2, ctx: baseline as *mut c_void, memory: baseline_memory, registers: baseline_registers }
+    }
+
+    /// The core's answer `r`, with its reason, and what differed for a mismatch or a halt.
+    fn reply(&mut self, r: i32, buf: &[u8], call: &str) -> Reply {
+        let (answer, fallback) = match r {
+            0 => (Answer::Pending, None),
+            1 => (Answer::Match, None),
+            2 => (Answer::Mismatch, Some("the core reports a mismatch".to_string())),
+            3 => (Answer::Unjudged, Some("not judged here".to_string())),
+            4 => (Answer::Halt, Some("the core can't go on".to_string())),
+            other => (Answer::Halt, Some(format!("{call} returned {other}, which is no verdict"))),
+        };
+        let reason = reason(buf).or(fallback).unwrap_or_default();
+        let diffs = match (answer, self.diffs_fn) {
+            (Answer::Mismatch | Answer::Halt, Some(f)) => {
+                let _call = crate::crash::CompareCall::enter(crate::crash::CALL_DJ_PARITY_DIFFS);
+                read_diffs(f)
+            }
+            _ => Diffs::default(),
+        };
+        Reply { answer, reason, diffs }
+    }
+
+    /// Calls the core's `dj_handle_event`. `baseline` is the baseline core, stopped: between
+    /// frames, or inside its frame at a breakpoint. The core may read it through the handle
+    /// for the length of the call.
+    ///
+    /// # Safety
+    /// `baseline` must point at the live baseline core.
+    pub unsafe fn event(&mut self, baseline: *const Core, ev: Event, segment: &str, frame: u64, preroll: bool) -> Reply {
+        let Some(f) = self.event_fn else { return Reply { answer: Answer::Pending, reason: String::new(), diffs: Diffs::default() } };
+        let h = Self::handle2(baseline);
+        let seg = CString::new(segment).unwrap_or_default();
+        let (kind, breakpoint, jump_reason) = match ev {
+            Event::Jump(r) => (DJ_EVENT_JUMP, 0, r as u32),
+            Event::ConsoleReset => (DJ_EVENT_CONSOLE_RESET, 0, 0),
+            Event::Break(id) => (DJ_EVENT_BREAK, id, 0),
+            Event::FrameEnd => (DJ_EVENT_FRAME_END, 0, 0),
+        };
+        let c = DjEventC { size: std::mem::size_of::<DjEventC>() as u32, kind, flags: if preroll { DJ_PREROLL } else { 0 }, breakpoint, jump_reason, segment: seg.as_ptr(), frame, baseline: &h };
+        let mut buf = vec![0u8; 512];
+        let r = self.core.in_core(crate::crash::CALL_DJ_HANDLE_EVENT, || f(&c, buf.as_mut_ptr() as *mut c_char, buf.len()));
+        self.reply(r, &buf, "dj_handle_event")
+    }
+
+    /// Calls the core's `dj_handle_write`: a `[WRITE]` line was applied to the baseline.
+    /// `at`: the instruction it was made at, for a line that names one. A core without the
+    /// function answers nothing (pending); the caller then asks it to copy the baseline again.
+    ///
+    /// # Safety
+    /// `baseline` must point at the live baseline core.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn write_event(&mut self, baseline: *const Core, segment: &str, frame: u64, preroll: bool, region: &str, offset: u64, bytes: &[u8], at: Option<(&str, u64)>) -> Reply {
+        let Some(f) = self.write_event_fn else { return Reply { answer: Answer::Pending, reason: String::new(), diffs: Diffs::default() } };
+        let h = Self::handle2(baseline);
+        let seg = CString::new(segment).unwrap_or_default();
+        let region_c = CString::new(region).unwrap_or_default();
+        let at_c = at.map(|(r, _)| CString::new(r).unwrap_or_default());
+        let c = DjWriteC {
+            size: std::mem::size_of::<DjWriteC>() as u32,
+            flags: if preroll { DJ_PREROLL } else { 0 },
+            segment: seg.as_ptr(),
+            frame,
+            baseline: &h,
+            region: region_c.as_ptr(),
+            offset,
+            bytes: bytes.as_ptr(),
+            len: bytes.len(),
+            at_region: at_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
+            at_offset: at.map_or(0, |(_, o)| o),
+        };
+        let mut buf = vec![0u8; 512];
+        let r = self.core.in_core(crate::crash::CALL_DJ_HANDLE_WRITE, || f(&c, buf.as_mut_ptr() as *mut c_char, buf.len()));
+        self.reply(r, &buf, "dj_handle_write")
+    }
+
     /// Whether a frame's `actions` need the baseline (a `[WRITE]` for `dj_write`).
     pub fn needs_baseline(&self, actions: &[Action]) -> bool {
         self.mode == SyncMode::DjSync && self.write_fn.is_some() && actions.iter().any(|a| matches!(a, Action::Write { .. }))
@@ -435,9 +702,15 @@ impl Comparison {
                     }
                 }
                 Action::Device { port, device } => self.core.set_port_device(*port, *device),
-                Action::Write { region, address, bytes } => match (self.mode, self.write_fn) {
-                    // The same emulator: the write goes straight into its memory.
-                    (SyncMode::State, _) => write_memory(&mut self.core, region, *address, bytes)?,
+                Action::Write { region, address, bytes, at } => match (self.mode, self.write_fn) {
+                    // The same emulator: the write goes straight into its memory, or, for a
+                    // line that names an instruction, is made when this core runs it too.
+                    (SyncMode::State, _) => match at {
+                        None => write_memory(&mut self.core, region, *address, bytes)?,
+                        Some((at_region, at_offset)) => self.core.arm_write(at_region, *at_offset, region, *address, bytes, &format!("[WRITE] {region} {address:#X} @{at_region}:{at_offset:#X} (comparison core)"))?,
+                    },
+                    // dj_write is told before the frame: it can't follow a write made inside it.
+                    (SyncMode::DjSync, Some(_)) if at.is_some() => needs_sync = true,
                     (SyncMode::DjSync, Some(f)) => {
                         let baseline = baseline.ok_or_else(|| anyhow!("a [WRITE] for dj_write needs the baseline"))?;
                         let h = handle(baseline);
@@ -639,7 +912,8 @@ impl InputState {
 pub enum Action {
     Input { key: InputKey, value: i16, impulse: bool },
     Device { port: u32, device: u32 },
-    Write { region: String, address: u64, bytes: Vec<u8> },
+    /// `at`: the instruction the write is made at, for a line that names one.
+    Write { region: String, address: u64, bytes: Vec<u8>, at: Option<(String, u64)> },
     Reset,
     Rng,
 }
@@ -655,7 +929,7 @@ impl Action {
             .filter_map(|l| match &l.command {
                 Command::Input { key, value, impulse } => Some(Action::Input { key: *key, value: *value, impulse: *impulse }),
                 Command::Device { port, device } => Some(Action::Device { port: *port, device: *device }),
-                Command::Write { region, address, bytes } => Some(Action::Write { region: region.clone(), address: *address, bytes: bytes.clone() }),
+                Command::Write { region, address, bytes, at } => Some(Action::Write { region: region.clone(), address: *address, bytes: bytes.clone(), at: at.clone() }),
                 Command::Reset => Some(Action::Reset),
                 Command::Rng { .. } => Some(Action::Rng),
                 Command::Event { .. } | Command::Screenshot => None,

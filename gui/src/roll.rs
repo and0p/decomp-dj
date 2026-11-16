@@ -274,9 +274,10 @@ fn build_model(col: &Collection, id: &str, gen: u64, all_buttons: bool) -> Model
                 }
             }
             Command::Device { port, device } => markers.push(Marker { frame: l.frame, glyph: "◆", color: Color32::from_rgb(120, 200, 230), text: format!("[DEVICE] P{} = {device}", port + 1), label: format!("P{} dev {device}", port + 1) }),
-            Command::Write { region, address, bytes } => {
+            Command::Write { region, address, bytes, at } => {
                 let hex: Vec<String> = bytes.iter().map(|b| format!("{b:02X}")).collect();
-                markers.push(Marker { frame: l.frame, glyph: "✏", color: Color32::from_rgb(200, 120, 220), text: format!("[WRITE] {region} 0x{address:X} {}", hex.join(" ")), label: format!("{region} {address:X}={}", hex.join(" ")) })
+                let place = at.as_ref().map(|(r, o)| format!(" @{r}:0x{o:X}")).unwrap_or_default();
+                markers.push(Marker { frame: l.frame, glyph: "✏", color: Color32::from_rgb(200, 120, 220), text: format!("[WRITE] {region} 0x{address:X} {}{place}", hex.join(" ")), label: format!("{region} {address:X}={}", hex.join(" ")) })
             }
             Command::Event { text, .. } => markers.push(Marker { frame: l.frame, glyph: "⚑", color: Color32::from_rgb(240, 210, 90), text: format!("[EVENT] {text}"), label: text.clone() }),
             Command::Reset => markers.push(Marker { frame: l.frame, glyph: "⟲", color: Color32::from_rgb(230, 90, 80), text: "[RESET]".into(), label: "reset".into() }),

@@ -101,7 +101,7 @@ fn main() -> Result<()> {
     let mut totals: BTreeMap<&str, u64> = BTreeMap::new();
     for id in &ids {
         let n = col.replays[id].frames()?;
-        let root = col.replays[id].get("parent").is_none();
+        let root = col.replays[id].parent().is_none();
         unsafe { set(std::ptr::null(), 0, None, std::ptr::null_mut()) };
         s.enter_replay(&col, id)?;
         rec().hits.clear();
@@ -158,19 +158,33 @@ fn main() -> Result<()> {
         println!("  frame ends in a spin: {:?}", where_);
         println!("  frame ends outside one: {} {:?}", outside.len(),
                  outside.iter().take(8).map(|(f, pc)| format!("{f}@PRG:0x{pc:X}")).collect::<Vec<_>>());
-        // 4. counter reads after an NMI mid-step
-        let mut last_wait_nmis: Option<u8> = None;
-        let mut moved = vec![];
+        // 4. counter reads that saw another value than the step's wait exit, and input reads
+        // in another frame than the step's wait exit
+        let kind_of = |o: i64| bps.iter().find(|b| b.offset == o).map(|b| b.kind.as_str()).unwrap_or("");
+        let mut last_wait: Option<(u8, u64)> = None;
+        let (mut moved, mut late_input) = (vec![], vec![]);
         for h in &hits {
-            if waits.iter().any(|w| w.offset == h.offset) {
-                last_wait_nmis = Some(h.nmis);
-            } else if let Some(w) = last_wait_nmis {
-                if h.nmis != w {
-                    moved.push(format!("{}@{}", name_of(h.offset), h.frame));
+            match kind_of(h.offset) {
+                "wait" => last_wait = Some((h.nmis, h.frame)),
+                "nmis" => {
+                    if let Some((n, _)) = last_wait {
+                        if h.nmis != n {
+                            moved.push(format!("{}@{}", name_of(h.offset), h.frame));
+                        }
+                    }
                 }
+                "input" => {
+                    if let Some((_, f)) = last_wait {
+                        if h.frame != f {
+                            late_input.push(format!("{}@{} (step from {f})", name_of(h.offset), h.frame));
+                        }
+                    }
+                }
+                _ => {}
             }
         }
-        println!("  counter reads after an NMI in the step: {} {:?}", moved.len(), &moved[..moved.len().min(8)]);
+        println!("  counter reads that differ from the step's wait exit: {} {:?}", moved.len(), &moved[..moved.len().min(8)]);
+        println!("  input reads in a later frame than the step's wait exit: {} {:?}", late_input.len(), &late_input[..late_input.len().min(8)]);
     }
     println!("\n== totals over every segment");
     for (k, v) in &totals {

@@ -50,9 +50,9 @@ struct dj_baseline {
     void    *ctx;
     /* A memory region by the name [WRITE] and [hash] use ("RAM"). NULL if none. Read only. */
     const uint8_t *(*memory)(void *ctx, const char *name, size_t *size);
-    /* The CPU's registers. Returns the bytes written, 0 if the connector can't say. The
-     * 6502 layout isn't fixed yet (yield-parity open problem 1); the Mesen spike used
-     * A, X, Y, SP, P, PCL, PCH, and so does this decomp until it is. */
+    /* The CPU's registers. Returns the bytes written, 0 if the connector can't say. For
+     * the 6502, 7 bytes: A, X, Y, SP, P, then PC low byte first (docs/connectors.md,
+     * `dj_read_registers`, connector API 3). */
     size_t (*registers)(void *ctx, void *out, size_t cap);
 };
 

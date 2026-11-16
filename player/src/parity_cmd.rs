@@ -184,6 +184,8 @@ fn check(col: &Collection, local: &Local, name: &str, a: &Args) -> Result<i32> {
         let died = decomp_dj::isolate::batch_compare_died(id);
         let mut ck = Checker::default();
         let mut span = check_span(&mut s, &mut cmp, &mut ck, col, id, 0, died.as_ref().map_or(n, |d| d.0.min(n)), start_frame)?;
+        // Frames a core that takes events hadn't judged when the segment ended.
+        span.unchecked += ck.finish();
         if let (Some((frame, what)), None) = (&died, &span.failure) {
             span.failure = Some(ck.failure(&cmp, id, *frame, &format!("The comparison core {what} at frame {frame}"), vec![], decomp_dj::compare::Diffs::default()));
         }

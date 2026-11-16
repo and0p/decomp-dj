@@ -116,7 +116,10 @@ pub enum Command {
     /// Sets a held value. `impulse` values last one frame only (mouse motion).
     Input { key: InputKey, value: i16, impulse: bool },
     Device { port: u32, device: u32 },
-    Write { region: String, address: u64, bytes: Vec<u8> },
+    /// `at`: an instruction address (a connector's code region and an offset into it). The
+    /// write is then made when the baseline first runs that instruction in the frame, not
+    /// before the frame (docs/segments.md#memory-writes).
+    Write { region: String, address: u64, bytes: Vec<u8>, at: Option<(String, u64)> },
     Event { text: String, pos: Option<(i32, i32)> },
     Reset,
     Screenshot,
@@ -681,14 +684,28 @@ pub fn parse_body_line(t: &str) -> Result<(u64, Command)> {
         let name = tag_words.next().unwrap_or("").to_ascii_uppercase();
         let cmd = match name.as_str() {
             "WRITE" => {
-                let mut w = args.split_whitespace();
+                // `@REGION:0xOFFSET`, last: the instruction at which the write is made.
+                let mut words: Vec<&str> = args.split_whitespace().collect();
+                let at = match words.last().and_then(|w| w.strip_prefix('@')) {
+                    Some(place) => {
+                        let (r, o) = place.split_once(':').ok_or_else(|| anyhow!("[WRITE] @{place}: expected @REGION:0xOFFSET"))?;
+                        if r.trim().is_empty() {
+                            bail!("[WRITE] @{place}: expected @REGION:0xOFFSET");
+                        }
+                        let at = (r.trim().to_ascii_uppercase(), parse_hex(o)?);
+                        words.pop();
+                        Some(at)
+                    }
+                    None => None,
+                };
+                let mut w = words.into_iter();
                 let region = w.next().ok_or_else(|| anyhow!("[WRITE] needs a region"))?.to_ascii_uppercase();
                 let address = parse_hex(w.next().ok_or_else(|| anyhow!("[WRITE] needs an address"))?)?;
                 let bytes = w.map(|b| parse_hex(b).and_then(|v| u8::try_from(v).map_err(|_| anyhow!("byte {b} > 0xFF")))).collect::<Result<Vec<u8>>>()?;
                 if bytes.is_empty() {
                     bail!("[WRITE] needs at least one byte");
                 }
-                Command::Write { region, address, bytes }
+                Command::Write { region, address, bytes, at }
             }
             "EVENT" => {
                 let pos = match tag_words.next() {
@@ -1019,7 +1036,13 @@ frames: 100
             r.lines[2].command,
             Command::Input { key: InputKey { port: 1, device: 2, index: 0, id: 0 }, value: -3, impulse: true }
         );
-        assert_eq!(r.lines[4].command, Command::Write { region: "RAM".into(), address: 0x12, bytes: vec![0x13, 0xff] });
+        assert_eq!(r.lines[4].command, Command::Write { region: "RAM".into(), address: 0x12, bytes: vec![0x13, 0xff], at: None });
+        // With an instruction address: made when the baseline runs that instruction.
+        let w = Replay::parse("dj-segment 1\nid: w\nparent: none\nframes: 20\n---\n7 [WRITE] RAM 0x12 13 ff @prg:0x0197\n").unwrap();
+        assert_eq!(w.lines[0].command, Command::Write { region: "RAM".into(), address: 0x12, bytes: vec![0x13, 0xff], at: Some(("PRG".into(), 0x197)) });
+        for bad in ["7 [WRITE] RAM 0x12 13 @0x197", "7 [WRITE] RAM 0x12 13 @PRG:zz", "7 [WRITE] RAM 0x12 @PRG:0x197", "7 [WRITE] RAM 0x12 @PRG:0x10 13"] {
+            assert!(Replay::parse(&format!("dj-segment 1\nid: w\nparent: none\nframes: 20\n---\n{bad}\n")).is_err(), "{bad}");
+        }
         assert_eq!(r.lines[5].command, Command::Event { text: "Title visible".into(), pos: Some((10, 20)) });
         assert_eq!(Replay::parse(&r.to_text()).unwrap().to_text(), r.to_text());
     }

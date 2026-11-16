@@ -2,9 +2,9 @@
 
 Written 2026-11-15 15:20 EST, from a conversation with the developer that day. The
 developer asked for the design to be looked at afresh, with the comparison core doing
-more and dj less. Build steps 1 to 4 are done: the two connector spikes ("Spike results"),
-the new connector API, and the comparison core in dj's process ("Built so far"). The rest
-is not built.
+more and dj less. Build steps 1 to 6 are done: the two connector spikes ("Spike results"),
+and the new connector API, the comparison core in dj's process, writes at an instruction
+and events ("Built so far"). The rest is not built.
 
 Revisions, all 2026-11-15:
 
@@ -28,6 +28,7 @@ Revisions, all 2026-11-15:
 - 22:40 EST: build step 3 is built: connector API 3 in all three connectors, with dj
   counting ticks itself.
 - 22:54 EST: build step 4 is built: the comparison core runs in dj's process.
+- 23:20 EST: build steps 5 and 6 are built: writes at an instruction, and events.
 
 How to read it:
 
@@ -653,6 +654,71 @@ Checked:
 - **The spike cores no longer load their connector:** they speak API 2. The commands under
   "Where the spike code is" need the spike patches carried over to API 3 to run again.
 
+**Steps 5 and 6, 2026-11-15: writes at an instruction, and events.**
+
+- **A `[WRITE]` line may end `@REGION:0xOFFSET`** (`player/src/format.rs`). The player arms
+  it for its frame (`libretro::Core::arm_write`); the write is made from inside the
+  connector's breakpoint call, the first time that instruction is about to run; if it
+  doesn't run in the frame, the write is dropped with a console warning.
+- **A comparison core that is the same emulator** arms the same write in its own connector.
+- **`dj_breakpoints`, `dj_handle_event` and `dj_handle_write`** are read from a comparison
+  core, with the version 2 handle (`memory`, `registers`), as sections 1 to 3 give them.
+  A core with `dj_handle_event` is driven by events; any other is driven as before.
+- **The older functions are still read** (`dj_sync`, `dj_write`, `dj_run`,
+  `dj_check_parity`). The Tetris decomp uses them until step 7 moves it; they go then.
+- **`parity::Checker`** has the state STATES.md lists: the jump owed, halted, the last
+  verdict, the pile, the frame's claim. `Checker::begin` is new and is called before the
+  baseline's frame; it sets a hook that `libretro.rs` calls at the frame's start, at each
+  of the core's breakpoints and at each write made inside the frame. `Checker::step`, after
+  the frame, sends the frame end. It now takes the frame's coverage flags itself and hands
+  back what was credited and what a failure blames.
+- **`dj parity` and the GUI** call `begin`, and use what `step` hands back. In the GUI a
+  mismatch pauses once; playing on leaves a core that takes events as it is.
+- **The test core has a small connector** (`-DCONNECTOR`) and an event mode (`-DEVENTS`),
+  so breakpoints, coverage and events are tested without a ROM.
+
+Checked:
+
+| Check | Result |
+| --- | --- |
+| A core that judges at frame ends (`tests/events.rs`) | 40 of 40 frames pass, the first after the jump included |
+| A core that judges at a tick inside the frame | no failure; the frame before its copy is credited to nothing; a lag frame is unjudged; one tail frame |
+| A run of mismatches | one failure at frame 9; frames 10 to 12 shown and not kept; Sync now, or the core itself, restores parity |
+| A halt | a failure; the next frame sends a jump, "copy again", and passes |
+| An unjudged stretch | 4 frames skipped, and the code only they ran is not credited |
+| Writes: between frames, at an instruction, at an instruction that doesn't run, with and without `dj_handle_write` | each as STATES.md says |
+| A console reset, for a core at a frame boundary and one at a tick | the first stays in parity; the second starts again |
+| Ticks counted by dj, and the cap | 35 of 40 frames; capped at 1,024 a frame |
+| Thwaite on Mesen, two writes at the tick (`PRG:0x197`) | the same hashes from scratch, again, and from loaded states |
+| Thwaite, a write at an instruction that never runs | dropped with the warning; the same end hash as no write |
+| Thwaite against the same emulator across those writes | in parity, 300 of 300 frames |
+| Tetris against its decomp, on the older functions | 30 segments, 24,392 frames, 0 failed |
+| The whole test suite, and the GUI's build | pass |
+
+What this turned up:
+
+- **A lag frame costs a tick core four frames of credit, not one.** Coverage is credited
+  by whole frames, one verdict late. In the test core, with a lag frame every seventh
+  frame, 18 of 40 frames are credited and 21 are not. The frame before the lag frame and
+  the lag frame are still held when the tick after it is unjudged; that frame is claimed;
+  and the core copies the baseline in the next. Section 5 calls this conservative; this is
+  its size.
+- **`dj run` panics on a segment id shorter than eight characters** (`player/src/main.rs`,
+  an older bug, not fixed here).
+
+Not done, or not checked:
+
+- **Pre-roll** (step 9): the flag is always off.
+- **A failure does not record the breakpoint's name** in a column of its own (step 11). It
+  is in the failure's message.
+- **`--explain` still searches to the frame's end** (step 11).
+- **The GUI was not run.** Its Sync now sends a jump with the reason "replaced state", not
+  "copy again".
+- **A write at an instruction on the N64 or the GBA** was not tried. On the N64 the bytes
+  would go into memory kept as host-order words.
+- **`sync = "events"`** in `[[compare]]` is not added: a core with `dj_handle_event` is
+  recognised by that function.
+
 **Step 4, 2026-11-15: the comparison core in dj's process.** The comparison still works
 frame by frame, as before: `dj_sync`, `dj_run`, `dj_check_parity`. Only where it runs has
 changed. Events and verdicts come with step 6.
@@ -895,12 +961,14 @@ protection.
    `tests/compare.rs` passes without a worker, and a core that crashes on purpose is
    named in the GUI's note and recorded as a failure at its frame by `dj parity`, with
    its earlier passes kept and the segments below it still checked.
-5. **Writes at an instruction address** (section 3). After step 4, because the
+5. **Writes at an instruction address** (section 3). *Done 2026-11-15: see "Built so
+   far".* After step 4, because the
    same-emulator comparison needs the write armed in its connector too, and before step
    4 that core is in a worker. Done when a Thwaite segment with such a line plays to the
    same hash twice and from a snapshot, a line whose address is not reached is dropped
    with its warning, and the same-emulator comparison stays in parity across the write.
-6. **`dj_handle_event` and `dj_handle_write`,** in the test core (`player/tests/testcore`) and two stubs: one
+6. **`dj_handle_event` and `dj_handle_write`,** *(done 2026-11-15: see "Built so far")* in
+   the test core (`player/tests/testcore`) and two stubs: one
    that copies the baseline at every event and answers match, one that diverges on
    purpose. Done when each event and each verdict has been seen; a run of mismatches has
    recorded one failure; playback has paused at the first mismatch of a run and not at the later ones; a halt has

@@ -78,7 +78,10 @@ static COMPARE_CALL: AtomicUsize = AtomicUsize::new(0);
 
 /// The calls the note can name ([`enter`], [`enter_compare`]): libretro's, then a comparison
 /// core's own.
-pub const CALLS: [&str; 12] = ["", "retro_run", "retro_serialize", "retro_unserialize", "retro_load_game", "retro_reset", "retro_init", "dj_sync", "dj_write", "dj_check_parity", "dj_parity_diffs", "dj_run"];
+pub const CALLS: [&str; 15] = ["", "retro_run", "retro_serialize", "retro_unserialize", "retro_load_game", "retro_reset", "retro_init", "dj_sync", "dj_write", "dj_check_parity", "dj_parity_diffs", "dj_run", "dj_handle_event", "dj_handle_write", "dj_breakpoints"];
+pub const CALL_DJ_HANDLE_EVENT: usize = 12;
+pub const CALL_DJ_HANDLE_WRITE: usize = 13;
+pub const CALL_DJ_BREAKPOINTS: usize = 14;
 pub const CALL_DJ_SYNC: usize = 7;
 pub const CALL_DJ_WRITE: usize = 8;
 pub const CALL_DJ_CHECK_PARITY: usize = 9;

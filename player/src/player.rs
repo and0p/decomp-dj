@@ -652,7 +652,15 @@ impl Session {
                     }
                 }
                 Command::Device { port, device } => self.core.set_port_device(*port, *device),
-                Command::Write { region, address, bytes } => self.write(region, *address, bytes)?,
+                Command::Write { region, address, bytes, at } => match at {
+                    None => self.write(region, *address, bytes)?,
+                    // At an instruction: armed now, made when the core first runs it in this
+                    // frame (libretro::Core::arm_write).
+                    Some((at_region, at_offset)) => {
+                        let text = r.line_command_text(line.line_no).unwrap_or_default();
+                        self.core.arm_write(at_region, *at_offset, region, *address, bytes, &format!("segment {}, frame {frame}: {text}", &id[..id.len().min(8)]))?;
+                    }
+                },
                 Command::Event { .. } | Command::Screenshot => {}
                 Command::Reset => self.core.reset(),
                 Command::Rng { .. } => bail!("[RNG] is not supported yet"),

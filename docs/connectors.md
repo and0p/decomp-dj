@@ -217,6 +217,128 @@ again on the next frame shown.
 The comparison core's coverage functions are ignored for now. A test core with these
 functions is in `player/tests/testcore/`.
 
+### Events
+
+A comparison core may take **events** instead of `dj_sync`, `dj_write`, `dj_run` and
+`dj_check_parity`. It is then a kind of debugger client: it says where in the original it
+wants breakpoints, dj calls it each time the baseline gets to one, with the baseline
+stopped and readable, and the core runs itself, compares, and answers with a verdict. dj
+does not sync it or run its frames. A core that exports `dj_handle_event` is driven this
+way; the functions above are still read for a core that doesn't.
+
+```c
+struct dj_baseline {                 // version 2: read the baseline during a call
+    uint32_t version;                // 2
+    void    *ctx;
+    // A memory region by the name [WRITE] and [hash] use: "RAM", "SRAM", "VRAM", "RTC".
+    // NULL if the baseline has none. Read only.
+    const uint8_t *(*memory)(void *ctx, const char *name, size_t *size);
+    // The CPU's registers, as dj_read_registers lays them out. Returns the bytes written.
+    size_t (*registers)(void *ctx, void *out, size_t cap);
+};
+
+enum dj_event_kind  { DJ_EVENT_JUMP = 1, DJ_EVENT_CONSOLE_RESET, DJ_EVENT_BREAK,
+                      DJ_EVENT_FRAME_END };
+enum dj_jump_reason { DJ_JUMP_POWER_ON = 1, DJ_JUMP_STATE, DJ_JUMP_COPY_AGAIN };
+enum dj_verdict     { DJ_PENDING = 0, DJ_MATCH, DJ_MISMATCH, DJ_UNJUDGED, DJ_HALT };
+
+#define DJ_PREROLL 1u       // in `flags`: this frame is pre-roll (not sent yet)
+
+struct dj_event {
+    uint32_t size;          // sizeof(struct dj_event), so fields can be added later
+    uint32_t kind;          // enum dj_event_kind
+    uint32_t flags;
+    uint32_t breakpoint;    // DJ_EVENT_BREAK: the core's own id
+    uint32_t jump_reason;   // DJ_EVENT_JUMP: enum dj_jump_reason
+    const char *segment;    // the segment's id
+    uint64_t    frame;
+    const struct dj_baseline *baseline;   // valid during the call
+};
+
+// Returns an enum dj_verdict. `reason` is text for unjudged, mismatch and halt.
+int dj_handle_event(const struct dj_event *ev, char *reason, size_t reason_len);
+
+struct dj_breakpoint {
+    uint32_t    id;       // the core's own number, handed back in the event
+    const char *region;   // the baseline connector's region: "PRG", "RDRAM"
+    uint64_t    offset;
+    const char *name;     // for dj's messages
+};
+
+// Optional. Called once, after the game is loaded. Returns how many there are.
+size_t dj_breakpoints(const struct dj_breakpoint **out);
+
+struct dj_write {
+    uint32_t size, flags;
+    const char *segment;
+    uint64_t    frame;
+    const struct dj_baseline *baseline;
+    const char    *region;      // what was written: "RAM", "SRAM"
+    uint64_t       offset;
+    const uint8_t *bytes;
+    size_t         len;
+    const char    *at_region;   // the instruction it was made at, or NULL if the line had none
+    uint64_t       at_offset;
+};
+
+// Optional. A [WRITE] line was applied to the baseline. Returns an enum dj_verdict.
+int dj_handle_write(const struct dj_write *w, char *reason, size_t reason_len);
+```
+
+**When each is sent.** The frame an event carries is the one about to run, running, or
+just run.
+
+| Event | When | The baseline is |
+| --- | --- | --- |
+| jump | Before the first other event after the baseline's state was replaced (a seek, a snapshot, a power-on); and with the reason "copy again" after a halt, after a write the core can't follow, and for **Sync now** | Between frames |
+| console reset | A `[RESET]` line was applied to the baseline | Between frames |
+| break | The baseline is about to run the instruction at one of the core's breakpoints | Inside `retro_run` |
+| frame end | The baseline's `retro_run` returned | Between frames |
+| a write (`dj_handle_write`) | A `[WRITE]` line was applied: before the frame, or at the line's instruction | Between frames, or inside `retro_run` |
+
+Between frames they come in the order jump, console reset, write. A segment playing
+straight on into its child sends nothing: no state was replaced.
+
+**Verdicts.** dj takes the baseline's coverage flags once a frame and holds them until a
+verdict says what they are worth.
+
+| Verdict | Meaning | What dj does |
+| --- | --- | --- |
+| pending (0) | Nothing to say, and nothing unvouched for | Nothing |
+| match | What ran since my last verdict has parity | Credits the frames it holds |
+| mismatch | It does not | The first of a run: keeps a failure and stops playback at the frame's end. Later ones, with no match between: shown, and playback goes on |
+| unjudged | I can't vouch for what ran since my last verdict (a lag frame, an overlay not decompiled, or I have only just copied the baseline) | Drops the frames it holds, and this frame if the event is inside it |
+| halt | I can't go on | Keeps a failure, stops playback, and sends nothing until a jump. Playing on sends one, "copy again" |
+
+- **The core is not synced by dj.** After a jump it answers pending until it reaches an
+  event where it can copy what it needs through the handle. A core that judges at frame
+  ends can copy on the jump itself, and the frame that follows is checked. One that judges
+  at a breakpoint waits for it.
+- **The event at which it copies answers "unjudged":** what ran since the jump was compared
+  with nothing.
+- **After a mismatch the core is not touched.** It may carry on from its own state, or
+  copy the baseline again; a mismatch may put itself right.
+- **Coverage is credited by whole frames.** A verdict inside a frame speaks for the frames
+  before it; the frame it is in goes with the next one. So a core that judges inside the
+  frame gets its credit one verdict late, and the last frame or two of a segment, after
+  its last verdict, are credited to nothing.
+- **A write.** A core parked where the write lands applies the bytes and answers pending:
+  one at a frame boundary for a line with no instruction, one with a breakpoint at the
+  line's instruction otherwise (the write comes before that break). Any other copies the
+  baseline again. A core without `dj_handle_write` is sent a jump, "copy again", in its
+  place.
+- **A console reset** is the console's soft reset, which the game has logic for. A core
+  parked at a frame boundary runs its own reset path and stays in parity; one parked
+  inside a frame can't, and copies the baseline again.
+- **The picture.** The core calls the video callback whenever it has finished one, during
+  any event; dj shows the latest when the baseline's frame ends. `GET_AUDIO_VIDEO_ENABLE`
+  says whether one is wanted, so a core with costly graphics can skip drawing.
+- **What differed** for a mismatch or a halt comes from `dj_parity_diffs`, as [below](#parity).
+
+The test core in `player/tests/testcore/` built with `-DEVENTS` takes events, in three ways
+(at frame ends, at a breakpoint inside the frame, and copying at every event), and
+`player/tests/events.rs` drives it through each case.
+
 ### Parity
 
 ```c

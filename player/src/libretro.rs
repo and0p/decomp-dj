@@ -181,26 +181,135 @@ struct Breaks {
     /// A state is being saved or loaded: a core may run instructions meanwhile (Mupen64Plus
     /// does before a load), and those are not the game's play.
     busy: bool,
+    /// A comparison core's breakpoints in this core (`set_core_breakpoints`).
+    core_breaks: Vec<(i32, i64)>,
+    /// `[WRITE]` lines of the frame being run that name an instruction: each is made the
+    /// first time that instruction is about to run, then leaves this list.
+    writes: Vec<ArmedWrite>,
+}
+
+/// A `[WRITE]` line with an instruction address, waiting for that instruction.
+#[derive(Clone)]
+struct ArmedWrite {
+    at: (i32, i64),
+    /// The memory region written, as `[WRITE]` names it ("RAM", "BUS").
+    region: String,
+    address: u64,
+    bytes: Vec<u8>,
+    /// The line, for the warning if its instruction doesn't run.
+    label: String,
 }
 
 impl Breaks {
     const fn new() -> Breaks {
-        Breaks { tick: None, ticks: 0, hits: Vec::new(), capped: Vec::new(), busy: false }
+        Breaks { tick: None, ticks: 0, hits: Vec::new(), capped: Vec::new(), busy: false, core_breaks: Vec::new(), writes: Vec::new() }
+    }
+
+    /// Whether anything still wants to hear of `at`.
+    fn wants(&self, at: (i32, i64)) -> bool {
+        self.tick == Some(at) || self.core_breaks.contains(&at) || self.writes.iter().any(|w| w.at == at)
     }
 }
 
 thread_local! {
     static BREAKS: RefCell<[Breaks; SLOTS]> = const { RefCell::new([Breaks::new(), Breaks::new()]) };
+    /// What to tell while the baseline is stopped (`set_frame_hook`).
+    static FRAME_HOOK: RefCell<Option<Box<dyn FnMut(Stop)>>> = const { RefCell::new(None) };
+}
+
+/// A moment at which the baseline is stopped and may be read: what a frame hook is told.
+pub enum Stop<'a> {
+    /// The frame's lines are applied and `retro_run` is about to be called.
+    FrameStart,
+    /// The baseline is inside `retro_run`, about to run the instruction at one of the
+    /// comparison core's breakpoints (region index, offset).
+    Break { region: i32, offset: i64 },
+    /// The baseline is inside `retro_run`: a `[WRITE]` line that names this instruction has
+    /// just been made.
+    Write { at_region: i32, at_offset: i64, region: &'a str, address: u64, bytes: &'a [u8] },
+}
+
+/// Sets (or, with None, removes) the function told of each [`Stop`] of the baseline core.
+/// It is called from inside the core's `retro_run`, on this thread. It may read the
+/// baseline's memory and registers, and run the comparison core; it must not run, save,
+/// load or reset the baseline.
+pub fn set_frame_hook(hook: Option<Box<dyn FnMut(Stop)>>) {
+    FRAME_HOOK.with(|h| *h.borrow_mut() = hook);
+}
+
+/// Tells the frame hook, if there is one. The hook is taken out while it runs, so it may
+/// replace itself.
+fn tell_hook(stop: Stop) {
+    let Some(mut hook) = FRAME_HOOK.with(|h| h.borrow_mut().take()) else { return };
+    hook(stop);
+    FRAME_HOOK.with(|h| {
+        let mut h = h.borrow_mut();
+        if h.is_none() {
+            *h = Some(hook);
+        }
+    });
+}
+
+/// The address of byte `addr` of the emulated bus in slot `slot`, through the core's memory
+/// maps.
+fn bus_ptr(slot: usize, addr: usize) -> Option<*mut u8> {
+    with_host(slot, |h| {
+        for d in &h.bus {
+            if d.ptr == 0 {
+                continue;
+            }
+            let hit = if d.select != 0 { (addr & d.select) == (d.start & d.select) } else { addr >= d.start && addr < d.start + d.len.max(1) };
+            if !hit {
+                continue;
+            }
+            let mut a = (addr - d.start) & !d.disconnect;
+            if d.len > 0 {
+                a %= d.len;
+            }
+            return Some((d.ptr + d.offset + a) as *mut u8);
+        }
+        None
+    })
+    .flatten()
+}
+
+/// Makes an armed write, with the core stopped inside its frame. False: the region isn't
+/// there, or the write runs past its end.
+fn make_write(slot: usize, w: &ArmedWrite) -> bool {
+    if w.region == "BUS" {
+        let ptrs: Option<Vec<*mut u8>> = (0..w.bytes.len()).map(|i| bus_ptr(slot, w.address as usize + i)).collect();
+        let Some(ptrs) = ptrs else { return false };
+        for (p, b) in ptrs.iter().zip(&w.bytes) {
+            unsafe { **p = *b };
+        }
+        return true;
+    }
+    let Some(id) = region_memory_id(&w.region) else { return false };
+    let Some((ptr, len)) = with_host(slot, |h| h.memory).flatten().and_then(|(data, size)| unsafe {
+        let p = data(id) as *mut u8;
+        let n = size(id);
+        (!p.is_null() && n > 0).then_some((p, n))
+    }) else {
+        return false;
+    };
+    let a = w.address as usize;
+    if a + w.bytes.len() > len {
+        return false;
+    }
+    unsafe { std::ptr::copy_nonoverlapping(w.bytes.as_ptr(), ptr.add(a), w.bytes.len()) };
+    true
 }
 
 unsafe extern "C" fn break_cb<const S: usize>(_user: *mut c_void, region: i32, offset: i64) -> i32 {
-    BREAKS.with(|b| {
+    let at = (region, offset);
+    // Counted and sorted out with the state borrowed; the writes and the hook come after,
+    // since the hook runs other code (the comparison core) that may come back here.
+    let (off, writes, core_break) = BREAKS.with(|b| {
         let mut b = b.borrow_mut();
         let b = &mut b[S];
         if b.busy {
-            return 0;
+            return (0, vec![], false);
         }
-        let at = (region, offset);
         let n = match b.hits.iter_mut().find(|(k, _)| *k == at) {
             Some((_, n)) => {
                 *n += 1;
@@ -215,14 +324,39 @@ unsafe extern "C" fn break_cb<const S: usize>(_user: *mut c_void, region: i32, o
             b.capped.push(at);
             let what = if b.tick == Some(at) { "the [tick] address" } else { "a breakpoint" };
             crate::console::warn("dj", &format!("{what} (region {region}, offset {offset:#X}) ran more than {BREAK_CAP} times in one frame, so it is in a loop: it is off until the frame ends, and those runs aren't counted"));
-            return 1;
+            return (1, vec![], false);
         }
         if b.tick == Some(at) {
             b.ticks += 1;
         }
-        0
-    })
+        // The writes waiting for this instruction are made once, and leave the list.
+        let mut writes = vec![];
+        b.writes.retain(|w| {
+            if w.at == at {
+                writes.push(w.clone());
+                false
+            } else {
+                true
+            }
+        });
+        // Nothing left that wants this place: the connector may stop calling for it.
+        ((!b.wants(at)) as i32, writes, b.core_breaks.contains(&at))
+    });
+    for w in &writes {
+        if !make_write(S, w) {
+            crate::console::warn("dj", &format!("{}: the write couldn't be made (the region isn't there, or the write runs past its end)", w.label));
+            continue;
+        }
+        if S == BASELINE {
+            tell_hook(Stop::Write { at_region: region, at_offset: offset, region: &w.region, address: w.address, bytes: &w.bytes });
+        }
+    }
+    if core_break && S == BASELINE {
+        tell_hook(Stop::Break { region, offset });
+    }
+    off
 }
+
 
 type HwResetFn = unsafe extern "C" fn();
 
@@ -305,6 +439,12 @@ struct Host {
     hw: Option<Hw>,
     /// A GPU context the core asked for and was refused, and why.
     hw_refused: Option<String>,
+    /// The core's `retro_get_memory_data` and `retro_get_memory_size`, for a write made from
+    /// inside its frame.
+    memory: Option<(unsafe extern "C" fn(u32) -> *mut c_void, unsafe extern "C" fn(u32) -> usize)>,
+    /// Tell the core whether a picture is wanted (`GET_AUDIO_VIDEO_ENABLE`), so a core with
+    /// costly graphics can skip drawing. Off: video is always said to be on.
+    video_hint: bool,
 }
 
 /// How many cores may be loaded at once.
@@ -470,8 +610,10 @@ unsafe extern "C" fn env_cb<const S: usize>(cmd: u32, data: *mut c_void) -> bool
             true
         }
         ENV_GET_AUDIO_VIDEO_ENABLE => {
-            // bit 0: video, bit 1: audio. Keep video on so frames can be captured.
-            *(data as *mut i32) = 1;
+            // bit 0: video, bit 1: audio. Video is on so frames can be captured; a core that
+            // asked for the hint is told whether this frame's picture is wanted.
+            let wanted = with_host(S, |h| !h.video_hint || h.capture_next_frame).unwrap_or(true);
+            *(data as *mut i32) = wanted as i32;
             true
         }
         ENV_GET_FASTFORWARDING => {
@@ -770,6 +912,8 @@ impl Core {
                 av_info: SystemAvInfo::default(),
                 hw: None,
                 hw_refused: None,
+                memory: None,
+                video_hint: false,
             })
         });
 
@@ -890,6 +1034,7 @@ impl Core {
                 })
             });
 
+            with_host(slot, |h| h.memory = Some((api.get_memory_data, api.get_memory_size)));
             Ok(Core { _lib: lib, slot, api, library_name, library_version, connector, game_loaded: false })
         }
     }
@@ -1043,9 +1188,21 @@ impl Core {
                 h.last_frame = None;
             }
         });
+        if self.slot == BASELINE {
+            tell_hook(Stop::FrameStart);
+        }
         self.gl_enter();
         let out = tick();
         self.gl_leave();
+        // A write whose instruction didn't run this frame is dropped: it does not wait for a
+        // later frame (a save state taken meanwhile wouldn't know of it).
+        let left = BREAKS.with(|b| std::mem::take(&mut b.borrow_mut()[self.slot].writes));
+        if !left.is_empty() {
+            for w in &left {
+                crate::console::warn("dj", &format!("{}: its instruction didn't run in this frame, so the write was not made", w.label));
+            }
+            self.arm_breakpoints();
+        }
         let frame = if capture {
             with_host(self.slot, |h| {
                 h.capture_next_frame = false;
@@ -1098,10 +1255,86 @@ impl Core {
         BREAKS.with(|b| b.borrow_mut()[self.slot].busy = busy);
     }
 
-    /// Gives the connector dj's breakpoints: the `[tick]` address, if there is one.
+    /// A comparison core's breakpoints in this core: (region index, offset). The frame hook
+    /// is told when one is reached (`Stop::Break`).
+    pub fn set_core_breakpoints(&mut self, list: &[(usize, u64)]) {
+        BREAKS.with(|b| b.borrow_mut()[self.slot].core_breaks = list.iter().map(|(r, o)| (*r as i32, *o as i64)).collect());
+        self.arm_breakpoints();
+    }
+
+    /// Arms a `[WRITE]` line that names an instruction (`at_region`, `at_offset`: a connector
+    /// region and an offset): the bytes are written to `region` at `address` the first time
+    /// that instruction is about to run in the next frame. If it doesn't run in that frame,
+    /// the write is dropped with a warning. `label` names the line in messages.
+    pub fn arm_write(&mut self, at_region: &str, at_offset: u64, region: &str, address: u64, bytes: &[u8], label: &str) -> Result<()> {
+        if self.connector.is_none() {
+            bail!("{label}: a write at an instruction needs a core with a dj connector, and this core has none");
+        }
+        let i = self.coverage_region_index(at_region).ok_or_else(|| anyhow!("{label}: this core's connector has no region {at_region}"))?;
+        if region != "BUS" && region_memory_id(region).is_none() {
+            bail!("{label}: unknown region {region}");
+        }
+        BREAKS.with(|b| b.borrow_mut()[self.slot].writes.push(ArmedWrite { at: (i as i32, at_offset as i64), region: region.to_string(), address, bytes: bytes.to_vec(), label: label.to_string() }));
+        self.arm_breakpoints();
+        Ok(())
+    }
+
+    /// A memory region's address and size, without borrowing the core mutably: for the
+    /// handle a comparison core reads the baseline through while the baseline is mid-frame.
+    pub fn memory_ptr(&self, id: u32) -> Option<(*const u8, usize)> {
+        unsafe {
+            let ptr = (self.api.get_memory_data)(id) as *const u8;
+            let size = (self.api.get_memory_size)(id);
+            (!ptr.is_null() && size > 0).then_some((ptr, size))
+        }
+    }
+
+    /// Runs `f`, a call into this core that isn't one of libretro's (a comparison core's
+    /// event function), with its GL context current and the call named for a crash note.
+    pub fn in_core<T>(&mut self, call: usize, f: impl FnOnce() -> T) -> T {
+        let _call = CallGuard::enter(self.slot, call);
+        self.gl_enter();
+        let out = f();
+        self.gl_leave();
+        out
+    }
+
+    /// Whether the next picture the core hands over is kept (`capture_take`). With the
+    /// video hint on, the core is also told whether one is wanted.
+    pub fn capture_begin(&mut self, capture: bool) {
+        with_host(self.slot, |h| {
+            h.capture_next_frame = capture;
+            if capture {
+                h.last_frame = None;
+            }
+        });
+    }
+
+    /// The picture kept since `capture_begin`, if the core handed one over.
+    pub fn capture_take(&mut self) -> Option<Frame> {
+        with_host(self.slot, |h| {
+            h.capture_next_frame = false;
+            h.last_frame.take()
+        })
+        .flatten()
+    }
+
+    /// Tells the core, through `GET_AUDIO_VIDEO_ENABLE`, whether each picture is wanted.
+    pub fn set_video_hint(&mut self, on: bool) {
+        with_host(self.slot, |h| h.video_hint = on);
+    }
+
+    /// Gives the connector dj's breakpoints: the `[tick]` address, a comparison core's, and
+    /// the instructions this frame's writes wait for.
     fn arm_breakpoints(&mut self) {
         let Some(c) = &self.connector else { return };
-        let list: Vec<DjBreakC> = BREAKS.with(|b| b.borrow()[self.slot].tick.iter().map(|(region, offset)| DjBreakC { region: *region, offset: *offset }).collect());
+        let list: Vec<DjBreakC> = BREAKS.with(|b| {
+            let b = &b.borrow()[self.slot];
+            let mut places: Vec<(i32, i64)> = b.tick.iter().copied().chain(b.core_breaks.iter().copied()).chain(b.writes.iter().map(|w| w.at)).collect();
+            places.sort();
+            places.dedup();
+            places.into_iter().map(|(region, offset)| DjBreakC { region, offset }).collect()
+        });
         let cb: BreakFn = match self.slot {
             BASELINE => break_cb::<0>,
             _ => break_cb::<1>,
@@ -1164,24 +1397,7 @@ impl Core {
 
     /// Resolves an emulated bus address through the core's memory maps.
     pub fn bus_byte(&mut self, addr: usize) -> Option<*mut u8> {
-        with_host(self.slot, |h| {
-            for d in &h.bus {
-                if d.ptr == 0 {
-                    continue;
-                }
-                let hit = if d.select != 0 { (addr & d.select) == (d.start & d.select) } else { addr >= d.start && addr < d.start + d.len.max(1) };
-                if !hit {
-                    continue;
-                }
-                let mut a = (addr - d.start) & !d.disconnect;
-                if d.len > 0 {
-                    a %= d.len;
-                }
-                return Some((d.ptr + d.offset + a) as *mut u8);
-            }
-            None
-        })
-        .flatten()
+        bus_ptr(self.slot, addr)
     }
 
     pub fn coverage_clear(&mut self) {

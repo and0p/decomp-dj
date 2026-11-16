@@ -14,6 +14,7 @@ struct thw_ramsym {
 enum thw_bp_kind {
     THW_BP_WAIT = 1,       /* a wait loop's exit: the decomp runs a step here */
     THW_BP_NMIS_READ = 2,  /* game logic reads the NMI counter here */
+    THW_BP_INPUT = 3,      /* the original starts reading the controllers here */
 };
 
 /* A breakpoint in the original: a PRG offset. For a wait, [spin_lo, spin_hi) are the PC

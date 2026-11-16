@@ -159,7 +159,28 @@ contiguous block is one line, however long:
 ```
 
 Several writes on one frame apply top to bottom, so a later line wins where
-two overlap. Regions:
+two overlap.
+
+**At an instruction.** A line may end with `@<region>:<offset>`, an instruction in one of
+the connector's code regions ([connectors.md](connectors.md)):
+
+```
+812 [WRITE] RAM 0x0451 63 @PRG:0x0197
+```
+
+The write is then made inside frame 812, the first time the game is about to run that
+instruction, with the core stopped there. "Before the frame" is wherever the emulator
+ended the frame before, which can be the middle of the game's logic step; an instruction
+is a known place in the game's code.
+
+- It needs a core with a dj connector. Without one the segment doesn't play.
+- If the instruction doesn't run in that frame, the write is not made, and a warning in the
+  console names the line. It does not wait for a later frame. Move the line to a frame
+  where the instruction runs.
+- A comparison core that is the same emulator takes the write at the same instruction. A
+  decomp is told when it is made ([connectors.md](connectors.md#events)).
+
+Regions:
 
 | Region | libretro source |
 | --- | --- |

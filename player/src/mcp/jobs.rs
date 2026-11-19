@@ -353,7 +353,7 @@ impl Server {
             if started.elapsed() > EXPLAIN_TIMEOUT {
                 let _ = child.kill();
                 let _ = child.wait();
-                bail!("the replay took longer than {} s", EXPLAIN_TIMEOUT.as_secs());
+                bail!("playing it again took longer than {} s", EXPLAIN_TIMEOUT.as_secs());
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         };

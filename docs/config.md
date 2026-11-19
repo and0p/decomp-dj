@@ -132,7 +132,7 @@ What a state hash covers ([playback.md](playback.md#state-hashes)).
 algorithm = "blake3"
 regions = ["RAM", "SRAM"]
 exclude = [
-    "RAM:0x38F000-0x3FFFFF",   # WWF No Mercy: three 320x240 framebuffers
+    "RAM:0x38F800-0x3FFFFF",   # WWF No Mercy: three 320x240 framebuffers
 ]
 ```
 
@@ -246,10 +246,10 @@ that changes every frame, such as a framebuffer, makes its pages new in every sn
 ```toml
 [hash]
 regions = ["RAM", "SRAM"]
-exclude = ["RAM:0x38F000-0x3FFFFF"]
+exclude = ["RAM:0x38F800-0x3FFFFF"]
 
 [cache]
-exclude = ["RAM:0x38F000-0x3FFFFF"]
+exclude = ["RAM:0x38F800-0x3FFFFF"]
 ```
 
 - **Every range must also be left out by `[hash] exclude`,** or the project doesn't open
@@ -270,12 +270,17 @@ Check it before relying on it: play a segment that has a parent twice (`dj play 
 <segment>`). The first time fills the database; the second starts from the parent's
 stored state and must report the same hashes.
 
+**The range must hold the buffers and nothing else.** Work it out from their size: No
+Mercy's three 320 by 240 buffers of 16-bit pixels are 3 × 320 × 240 × 2 = 0x70800 bytes
+and end at 0x400000, so they start at 0x38F800. This page used to give 0x38F000, 2 KB too
+low. Those 2 KB are the end of the game's heap, and they hold the record of the graphics
+task the game is in the middle of sending. With them zeroed in a stored state, a segment
+started from it went wrong by its second frame and its match never began. The buffers
+themselves are never read back.
+
 Tried with WWF No Mercy (N64), a snapshot every 120 frames over 4,800 frames, with the
-GPU's copies to RDRAM on: the database was 70.6 MB without it and 35.4 MB with it. **It
-does not hold for that game any more.** On 2026-11-16, with the connector as it is now, a
-segment started from a stored state ended with other hashes than from power-on, and its
-match never began. The game, or the emulator on its behalf, reads the framebuffers back.
-The project no longer sets it.
+GPU's copies to RDRAM on, and the earlier, too wide range: the database was 70.6 MB
+without it and 35.4 MB with it. The 2 KB make little difference to that.
 
 ## .local/local.toml
 

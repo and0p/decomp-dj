@@ -339,15 +339,25 @@ impl Results {
 /// The connector's flags for the code region (PRG on the NES) since they were last cleared,
 /// clearing them: what one frame ran, when taken after every frame. None: the core has no
 /// such coverage, or nothing ran.
+///
+/// Only the code region is cleared, and only where it has flags: the connector's own clear
+/// wipes every region (40 MB on the N64), which is too much to do every frame. The other
+/// regions keep what they had, which a pass being recorded has gathered already.
 pub fn take_code_flags(core: &mut Core) -> Option<Vec<u8>> {
+    const BLOCK: usize = 4096;
     let i = core.code_region_index()?;
-    let flags = core.coverage_slice(i)?;
-    if !flags.iter().any(|b| *b != 0) {
-        return None;
+    let flags = core.coverage_slice_mut(i)?;
+    let mut out: Option<Vec<u8>> = None;
+    let len = flags.len();
+    for (bi, b) in flags.chunks_mut(BLOCK).enumerate() {
+        if !crate::coverage::any_set(b) {
+            continue;
+        }
+        let v = out.get_or_insert_with(|| vec![0; len]);
+        v[bi * BLOCK..bi * BLOCK + b.len()].copy_from_slice(b);
+        b.fill(0);
     }
-    let v = flags.to_vec();
-    core.coverage_clear();
-    Some(v)
+    out
 }
 
 /// How a frame came out on the comparison core.

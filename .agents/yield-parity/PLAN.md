@@ -41,10 +41,14 @@ Revisions, all 2026-11-15:
   ("Built so far", step 9).
 - 2026-11-16 14:08 EST: build step 10 is built: a stub comparison core for No Mercy with
   two breakpoints. It found that No Mercy's `[cache] exclude` breaks stored snapshots.
+- 2026-11-16 18:10 EST: why No Mercy's `[cache] exclude` broke stored snapshots: its range
+  was 2 KB too wide and covered the end of the game's heap ("Built so far", step 10).
 - 2026-11-16 15:44 EST: the Mupen64Plus connector has a trace hook, and `--explain` names
   writers on the N64 ("Built so far", after step 11).
 - 2026-11-16 14:55 EST: build steps 11 and 12 are built: a failure says which event it
   answered, `--explain` stops its search there, and the docs are brought up to date.
+- 2026-11-16 23:47 EST: two saves with no frame between them (open problem 8) no longer
+  move a frame's state hash: dj gives back the state it last saved or loaded.
 
 How to read it:
 
@@ -667,7 +671,8 @@ Checked:
 
 - **Thwaite, Tetris and gba-test are repinned** to the new builds. No Mercy is not: its ROM
   is outside what the thread could read.
-- **`player/examples/tick_check.rs`** is the tool that made the tick comparison.
+- **`player/examples/tick_check.rs`** is the tool that made the tick comparison. (Removed
+  2026-11-17 in the release clean-up; in git history up to commit `f5bfd2f`.)
 - **Only dj's own `[tick]` breakpoint is armed so far.** A comparison core's breakpoints
   come with step 6.
 - **The spike cores no longer load their connector:** they speak API 2. The commands under
@@ -992,6 +997,35 @@ three framebuffers, zeroed in stored snapshots. With the core as built now:
   its local database, whose snapshots were stored with it, was deleted.
 - **The project is repinned** to the core as built now (`dj.60c9c35b`, from
   `dj.4343e0a2`): all three segments reproduce their hashes from power-on.
+- **The cause, found 2026-11-16 18:10 EST** by a session started for it, with the new
+  trace hook: **the range starts 0x800 bytes too low.** Nothing reads the framebuffers
+  back.
+  - The three buffers are 3 × 320 × 240 × 2 = 0x70800 bytes and end at 0x400000, so they
+    start at 0x38F800. The 2 KB below them, 0x38F000 to 0x38F7FF, are the end of the
+    game's heap (2,234,368 bytes at 0x8016E000).
+  - At the end of the root segment that tail holds the record of the graphics task being
+    sent (an `OSTask` at 0x38F6E0), the last heap block's header (0x38F750) and a
+    viewport and display list (0x38F760 to 0x38F7F7) that the frame's main display list
+    points at.
+  - A trace of the four frames after a load shows CPU reads at 0x38F6D8 to 0x38F72B (the
+    task is copied by `mem_copy`, 0x80036710) and none at or above 0x38F800.
+  - Zeroing 0x38F800 to 0x3FFFFF alone leaves memory outside the buffers identical for
+    300 frames. Zeroing 0x38F6D0 to 0x38F75F alone makes it differ at the second frame.
+    Zeroing in the state and zeroing in memory after the load give the same result, so
+    loading is not involved.
+  - With `[cache] exclude = ["RAM:0x38F800-0x3FFFFF"]`, both child segments replay from
+    the stored root state with their recorded hashes. Checked again in this thread:
+    "start CPU vs CPU exhibition" twice and "4 CPU match", all ok.
+  - `docs/config.md` gave the too wide range as its example. It is corrected there, with
+    how to work a range out.
+  - The project's `[hash] exclude` has the same 2 KB too many, so its hashes ignore that
+    tail. Narrowing it changes every recorded hash; not done.
+  - `[cache] exclude` is back in the project's config with the corrected range, at the
+    developer's word.
+  - `[hash] exclude` is narrowed to the same range (2026-11-16, at the developer's word),
+    and the three segments' hashes recorded again from power-on. They reproduce on a
+    second run from power-on, and both children reproduce from the stored root state, so
+    the 2 KB of heap are stable and now hashed. The root's start hash did not change.
 
 Not checked, and what this leaves:
 
@@ -1219,10 +1253,30 @@ None is about breakpoints. Each affects dj as it is today.
    interrupt before it saves, so it holds a state from inside the frame, and that state
    did not load back identically. dj saves at a segment's end and may save again at the
    next segment's frame 0.
+   - **What it did to dj:** the second save, or a save right after a load, changed RAM, so
+     the same frame hashed two ways. On No Mercy the root's start hash went from
+     `19f776ca` to `6dafc72f` once the GUI had gone back to frame 0, which gave the root a
+     second entry in the database, and a stored frame 0 carried another hash than its
+     pass's start.
+   - **Fixed 2026-11-16** in dj, not the connector: `Core::serialize`
+     (`player/src/libretro.rs`) returns the state last saved or loaded for as long as no
+     frame has run, nothing has been written through `memory` or `bus_byte`, no port's
+     device has changed and no event function has been called. Reads go through
+     `memory_view` and `bus_read`, which leave it alone. A pass's frame 0 is stored under
+     its start hash.
+   - **Checked** on No Mercy: the start hash, the hash after a snapshot, and the hash after
+     loading that snapshot and saving again are the same, at power-on, at the exhibition's
+     frame 0 and at its frame 25. All three segments still reach their recorded hashes,
+     and parity against the stub gives the same counts as before.
+   - **Not done:** whether a state saved from inside a frame loads back identically was
+     not looked at again. dj no longer makes one unless memory is written between a load
+     and a save with no frame run.
 
 ### Where the spike code is
 
 - `player/examples/mesen_spike.rs` and `player/examples/n64_spike.rs`: the harnesses.
+  *Removed from the repository on 2026-11-17 with the other one-off tools (release
+  clean-up); they are in git history up to commit `f5bfd2f`.*
 - `build/mesen-spike-src` and `build/mupen64plus-spike-src`: the patched copies. `build/`
   is not in git, so the connector changes exist only there. They add
   `dj_spike_set_breaks` and `dj_spike_registers` (and `dj_spike_suppressed` on the N64).
@@ -1300,14 +1354,17 @@ game's save storage ("Spike results", existing problem 1).
    stub does it by the caller, and "pending" was enough for No Mercy.
 7. **GPU copies into RDRAM** ("Spike results", existing problem 2). An N64 project used
    for parity needs them off, or the picture's bytes left out of what is compared.
-8. **Two saves with no frame between them** ("Spike results", existing problem 3).
+8. *No longer open (2026-11-16 23:47 EST):* two saves with no frame between them
+   ("Spike results", existing problem 3). dj gives back the state it last saved or loaded
+   while nothing has run or been written, so the core is not asked twice.
 9. **The guard against hits during a load** never fired in the spike, so it is untested.
 10. *No longer open (step 12):* `ROADMAP.md` and `ISOLATION_PLAN.md` carry notes that say
     which of their passages describe the earlier API, and the docs are up to date.
 11. **No real decomp has a lag frame to test with.** Tetris has none (step 8). The rule
     for one rests on the test core.
-12. **No Mercy's `[cache] exclude` of its framebuffers breaks stored snapshots** ("Built
-    so far", step 10). Why the game's run depends on those bytes is not known.
+12. *No longer open (2026-11-16 18:10 EST):* No Mercy's `[cache] exclude` broke stored
+    snapshots because its range was 2 KB too wide ("Built so far", step 10). Both of the
+    project's ranges are corrected.
 
 ## Build order
 

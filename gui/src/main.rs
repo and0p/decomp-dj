@@ -417,8 +417,9 @@ struct Hydrating {
 enum Job {
     /// Run the selected segment forward until `to` frames have run.
     Seek { from: u64, to: u64 },
-    /// Play ancestors (`queue`) without a cached state to reach the start of `id`.
-    Enter { id: String, queue: Vec<String>, qi: usize, frame: u64, start_frame: u64, done: u64, total: u64, then_seek: Option<u64> },
+    /// Play ancestors (`queue`) without a cached state to reach the start of `id`. Each is
+    /// recorded as it plays (`rec`), so its end state is in the database the next time.
+    Enter { id: String, queue: Vec<String>, qi: usize, frame: u64, start_frame: u64, done: u64, total: u64, then_seek: Option<u64>, rec: Option<Recorder> },
     /// Pre-roll in the segments above the one shown (docs/gui.md#comparison-cores), unseen:
     /// the baseline plays the last frames of `above` (segment, from, to; in the order they
     /// play) with the comparison core told of them as pre-roll, and comes out at frame 0 of
@@ -1461,7 +1462,7 @@ impl App {
         let queue: Vec<String> = chain[first..n - 1].to_vec();
         let total = queue.iter().map(frames).sum();
         let start_frame = trunk_start_frame(&col.replays[&chain[0]]) + chain[..n - 1].iter().map(frames).sum::<u64>();
-        self.job = Some(Job::Enter { id: id.to_string(), queue, qi: 0, frame: 0, start_frame, done: 0, total, then_seek: None });
+        self.job = Some(Job::Enter { id: id.to_string(), queue, qi: 0, frame: 0, start_frame, done: 0, total, then_seek: None, rec: None });
         Ok(())
     }
 
@@ -1537,10 +1538,14 @@ impl App {
                 self.seeking = false;
                 r
             }
-            Job::Enter { id, queue, mut qi, mut frame, start_frame, mut done, total, then_seek } => {
+            Job::Enter { id, queue, mut qi, mut frame, start_frame, mut done, total, then_seek, mut rec } => {
+                let mut stored = false;
                 loop {
                     let (Some(col), Some(s)) = (&self.col, &mut self.session) else { return Ok(()) };
                     if qi == queue.len() {
+                        if stored {
+                            self.refresh_stored();
+                        }
                         self.begin_playback(&id, start_frame)?;
                         self.roll.follow_to(then_seek.unwrap_or(0));
                         self.seek(then_seek.unwrap_or(0));
@@ -1551,17 +1556,31 @@ impl App {
                     if frame < qframes {
                         if frame == 0 {
                             s.restore_inputs(col, q, 0)?;
+                            // Frames since power-on at this ancestor's start.
+                            let at = start_frame - (total - done);
+                            rec = Some(start_pass(s, col, q, at)?);
                         }
-                        s.step(col, q, frame, false)?;
+                        match &mut rec {
+                            Some(r) => { s.advance(col, r, false)?; }
+                            None => { s.step(col, q, frame, false)?; }
+                        }
                         frame += 1;
                         done += 1;
                     }
                     if frame >= qframes {
+                        // Its content, and the end state the segments below it start from.
+                        if let Some(r) = rec.take() {
+                            s.finish(col, r)?;
+                            stored = true;
+                        }
                         qi += 1;
                         frame = 0;
                     }
                     if t0.elapsed() > JOB_SLICE {
-                        self.job = Some(Job::Enter { id, queue, qi, frame, start_frame, done, total, then_seek });
+                        if stored {
+                            self.refresh_stored();
+                        }
+                        self.job = Some(Job::Enter { id, queue, qi, frame, start_frame, done, total, then_seek, rec });
                         return Ok(());
                     }
                 }

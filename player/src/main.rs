@@ -51,7 +51,7 @@ struct QueryArgs {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Create a collection pinned to a ROM and a core, with every core option recorded
+    /// Create a project pinned to a ROM and a core, with every core option recorded
     Init {
         dir: PathBuf,
         #[arg(long)]
@@ -131,7 +131,7 @@ enum Cmd {
         /// Play from the root segment instead of a stored ancestor state
         #[arg(long)]
         no_cache: bool,
-        /// Write the hashes this run produced into the replay files
+        /// Write the hashes this run produced into the segment files
         #[arg(long)]
         accept: bool,
     },
@@ -140,10 +140,10 @@ enum Cmd {
         dir: PathBuf,
         #[command(flatten)]
         local: Local,
-        /// Play each chain from its trunk instead of reusing parent states (determinism check)
+        /// Play each chain from its root segment instead of reusing parent states (determinism check)
         #[arg(long)]
         from_scratch: bool,
-        /// Write the hashes this run produced into the replay files
+        /// Write the hashes this run produced into the segment files
         #[arg(long)]
         accept: bool,
         /// Save each segment's last frame to .local/screenshots/
@@ -483,12 +483,12 @@ fn init(dir: &Path, name: &str, rom: &Path, core_path: &Path, core_build: Option
         core.run_frame(false);
         let mut regions = vec![];
         for r in ["RAM", "SRAM"] {
-            if core.memory(libretro::region_memory_id(r).unwrap()).is_some() {
+            if core.memory_view(libretro::region_memory_id(r).unwrap()).is_some() {
                 regions.push(r.to_string());
             }
         }
         if !core.has_connector() {
-            eprintln!("note: this core has no coverage connector; replays will play but record no coverage");
+            eprintln!("note: this core has no coverage connector; segments will play but record no coverage");
         } else {
             print_connector_regions(&mut core, rom)?;
         }
@@ -745,9 +745,9 @@ fn run(dir: &Path, local: &Local, from_scratch: bool, do_accept: bool, screensho
         for (res, _) in &accepted {
             accept(&mut col, res)?;
         }
-        println!("hashes written for {} replays", accepted.len());
+        println!("hashes written for {} segments", accepted.len());
     } else if bad > 0 {
-        bail!("{bad} replays differ from their recorded hashes (use --accept to record the new ones)");
+        bail!("{bad} segments differ from their recorded hashes (use --accept to record the new ones)");
     }
     Ok(())
 }

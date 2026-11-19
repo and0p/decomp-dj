@@ -1,12 +1,13 @@
 # The libretro core: the decomp (../decomp), drawn by the 3D port (../port),
 # plus this wrapper.
 #
-#   make                 builds tetris_decomp_libretro.so (.dylib on macOS,
+#   make ROM=tetris.nes  builds tetris_decomp_libretro.so (.dylib on macOS,
 #                        .dll on Windows) in ../../build/decomp, that is
-#                        examples/tetris/build/decomp
+#                        examples/tetris/build/decomp. The ROM is needed the first time
+#                        only, for the decomp's data tables (../decomp/Makefile)
 #   make BUILD=dir       builds in dir instead
 #
-# Needs a C11 compiler.
+# Needs a C11 compiler, and Python 3 the first time.
 
 CC ?= cc
 CFLAGS ?= -O2
@@ -40,7 +41,7 @@ $(BUILD)/tetris_libretro.o: tetris_libretro.c libretro_api.h $(DJ_INCLUDE)/dj_co
 
 # The libraries are built by their own Makefiles, position-independent for the shared library.
 $(DECOMP_LIB): FORCE | $(BUILD)
-	$(MAKE) -C ../decomp BUILD=$(ABS)/decomp CFLAGS="$(CFLAGS) -fPIC -fvisibility=hidden"
+	$(MAKE) -C ../decomp BUILD=$(ABS)/decomp CFLAGS="$(CFLAGS) -fPIC -fvisibility=hidden" $(if $(ROM),ROM="$(abspath $(ROM))")
 
 $(PORT_LIB): FORCE | $(BUILD)
 	$(MAKE) -C ../port BUILD=$(ABS)/port CFLAGS="$(CFLAGS) -fPIC -fvisibility=hidden" $(ABS)/port/libtetris_port.a

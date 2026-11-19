@@ -59,3 +59,9 @@ format = "ca65-dbg"
 name = "decomp"
 path = ".decomp/build/thwaite_decomp_libretro"
 content = false
+
+[compare.options]
+# How the decomp draws (.decomp/README.md): "flat" is the console's picture, "voxel" every
+# tile and sprite extruded one voxel deep, in perspective. Parity compares RAM, so this
+# only changes what you see.
+thwaite_decomp_render = "voxel"

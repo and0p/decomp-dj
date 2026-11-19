@@ -41,7 +41,9 @@ through EGL, so the runner needs no GPU.
 Three scratch tools in `player/examples/` help:
 
 - `thwaite_pictures` plays a segment with the decomp beside the original, as dj-gui does,
-  and saves both pictures side by side at the frames asked for.
+  and saves both pictures side by side at the frames asked for. A last list of frames
+  has the decomp copy the original again before each, as after a rewind, to check that
+  its picture is whole after a copy.
 - `thwaite_breaks` checks the breakpoint table on every segment.
 - `thwaite_bot` records a segment by playing the original itself: it clicks the practice
   menu, presses buttons, and shoots down missiles (letting those aimed at one building
@@ -83,6 +85,37 @@ name = "decomp (broken on purpose)"
 path = ".decomp/build/broken/thwaite_decomp_libretro"
 content = false
 ```
+
+## Render styles
+
+The core option `thwaite_decomp_render` picks how the decomp draws. The project sets it in
+`examples/thwaite/config.toml`, under the decomp's `[compare.options]`:
+
+- `flat`: the console's picture, 256x240, pixel for pixel.
+- `voxel` (the project's choice): every tile and sprite extruded one voxel deep and drawn in
+  perspective at 1024x960, each voxel with a faint outline (`src/voxel.c`). The colours are
+  still palette indices looked up in the frame's palette, so fades work as on the console.
+  The backdrop colour fills the screen's rectangle; around it is black.
+
+Options for the voxel picture:
+
+| Option | Values | |
+| --- | --- | --- |
+| `thwaite_decomp_voxel_tilt` | `22` (default), `0`-`40`, `-10`-`-30` | Degrees. Positive: the camera below, the ground nearest. Negative: the camera above |
+| `thwaite_decomp_voxel_fov` | `50` (default), `10`-`70` | Vertical field of view. The nearer edge of the screen always just fills the width |
+| `thwaite_decomp_voxel_outline` | `20` (default), `off`, `10`-`40` | How much a voxel's edges darken, in percent |
+
+Parity compares RAM, so the style changes only what you see. Two things don't carry over
+from the console to voxels:
+- the 8-sprites-a-line limit;
+- a sprite behind the BG hiding a higher-numbered one in front, which on the console
+  makes the cutscene's leaves cover the top of the trunk.
+
+`thwaite_pictures` draws flat whatever the project sets, so its pictures can be compared.
+To see voxels, give it `THW_OPTIONS=thwaite_decomp_render=voxel`. With
+`thwaite_decomp_voxel_tilt=0,thwaite_decomp_voxel_fov=10,thwaite_decomp_voxel_outline=off`
+the voxel picture is the flat one at 4x, apart from those two things. That is how
+`voxel.c`'s layering, palettes, flips and splits were checked.
 
 ## How it follows the original
 

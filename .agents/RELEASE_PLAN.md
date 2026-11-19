@@ -28,13 +28,45 @@ parts are different:
   Makefiles) are modifications of GPL code, and the patch carries upstream lines as context.
   Once applied they are part of a GPL work, and the built core is GPL in any case.
 
-So "the connectors are MIT like the rest of the repo" holds for the new files, not for the
-patches as a whole. A tidy layout: each connector's new files under `connectors/<core>/src/`
+So "the connectors are MIT" holds for the new files, not for the patches as a whole. (The
+repository itself is GPL-3.0-or-later, with the decoder header, the decoder crates and the
+headers in `connectors/include/` under MIT: README.md, "License".) A tidy layout: each connector's new files under `connectors/<core>/src/`
 with MIT headers, copied in by `build.sh`, and a small patch with only the hooks into
 upstream files, marked as under the core's licence. A shared MIT header for the API
 (`connectors/include/dj_connector.h`) would serve every connector. The connector READMEs
 now say "this patch and the core built from it are GPL"; they would say the above instead.
 Not legal advice; worth a second look before the release.
+
+**As it stands (looked at 2026-11-16):**
+
+| Connector | Core's licence | New files in the patch | Changes to upstream files | New files say |
+| --- | --- | --- | --- | --- |
+| Mesen | GPL-3.0 | 356 lines (`DjCoverage.cpp`, `.h`) | 151 lines in 5 files | nothing |
+| mGBA | MPL-2.0 | 284 lines (`dj_connector.c`, `.h`) | 88 lines in 3 files | MIT |
+| Mupen64Plus-Next | GPL-2.0 | 412 lines (`dj_connector.c`, `.h`) | 373 lines in 6 files | nothing |
+
+- **Each connector is still one patch.** Only the shared header exists
+  (`connectors/include/dj_connector.h`, MIT).
+- **Splitting a patch changes its build id** (`dj_build_id` hashes the patch file), so
+  every core has to be rebuilt and every project repinned: Thwaite, Tetris, the GBA test
+  and No Mercy. After a split the id should hash the hooks patch and the files under
+  `src/` together.
+- **A cheaper time to do it** is with the next change that needs a repin anyway (the
+  roadmap queues Mesen's lag counter fix for one).
+- **Decided 2026-11-17 (the developer): split later,** with that change. Licence headers
+  on the new files wait for it too, since any edit to a patch changes its build id.
+
+## Clean-up (started 2026-11-16)
+
+| Item | Status |
+| --- | --- |
+| Terminology in the CLI help and messages | Done: "segment", "project" and "root segment" in every `dj` help page and error message that said "replay", "collection" or "trunk". The code's own names (`Replay`, `Collection`, `start_trunk`) are unchanged |
+| `.gitignore` | Fixed: `scratchpad.md` and the comment after it had run into one line, so neither applied |
+| `scratchpad.md` (root) | The developer's notes and a README draft. Tracked since the CI commit, because of the line above. Left alone |
+| `player/examples/` spike tools | Done 2026-11-17 (the developer: delete): `mesen_spike`, `n64_spike`, `n64_roundtrip` and `tick_check` removed. The plans that name them say so. `ramtrace` stays: the Tetris example's README uses it |
+| `examples/tetris/.decomp/_old/` | Done 2026-11-17 (the developer: delete): the earlier ROM-based port, 26 files with three `.tgz` archives, removed |
+| The Tetris data tables | Done 2026-11-17 (the developer: generate at build): `decomp/src/data.c` is out of git and ignored. `tools/gen_data.py` reads the 29 tables from the user's ROM, after checking its sha256, using the names, addresses and lengths in `data.h`, which stays. `make ROM=...` the first time. Checked: the file it writes is byte for byte the one that was committed, and the 30 Tetris segments pass parity against the rebuilt decomp. The tables are still in git history |
+| `.agents/` | Plans, notes and archives (`_notes.md`, `REFACTOR.md`, `RESULTS.md`, `yield-parity/archive/`). Not looked at: whether a public repository should carry them is the developer's call |
 
 ## Steps
 

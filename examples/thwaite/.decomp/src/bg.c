@@ -6,6 +6,7 @@
 #include "bg.h"
 #include "data.h"
 #include "game.h"
+#include "m6502.h"
 
 #define BG_GRASSNUM 0xC0
 #define TILE_BETWEEN_HOUSES 0x8F
@@ -213,6 +214,31 @@ void build_level_reward_bar(struct game *g) {
     }
 }
 
+/* The tip bar as the original has it in VRAM, from the state alone. Two of its bars hold
+ * more than the tip: the level's reward, whose numbers are worked out again from what is
+ * left (as doStateLevelReward did), and the rebuilt house's villager, the building the
+ * cutscene's camera went to (houseToRebuild is cleared by then). */
+static void redraw_tip_bar(struct game *g) {
+    if (g->cur_tip == 2 && g->tip_time_left) {
+        uint8_t n = count_houses_left(g), c;
+        uint8_t a = asl((uint8_t)(n * 5), &c);
+        a = adc(a, g->silo_missiles_left[0], &c);
+        a = adc(a, g->silo_missiles_left[1], &c);
+        uint8_t left = g->tip_time_left;
+        g->zp[0] = n;
+        g->zp[1] = a;
+        build_level_reward_bar(g);
+        g->tip_time_left = left;
+        return;
+    }
+    uint8_t y = cut_house_shown(g);
+    if (g->cur_tip == 4 && g->tip_time_left && y < NUM_BUILDINGS) {
+        build_house_rebuilt_bar(g, y);
+        return;
+    }
+    build_tip_bar(g);
+}
+
 /* orig: buildBGUpdate */
 void build_bg_update(struct game *g) {
     if (g->sub_tenth == 2 && g->tip_time_left) {
@@ -259,8 +285,10 @@ void draw_playfield(struct game *g) {
     if (g->wait == W_PRACTICE) {
         /* the practice menu has the meter (ammo, speed, delay), and never a tip */
         build_practice_meter_bar(&t);
-    } else {
-        build_tip_bar(&t);
+    } else if (!(g->is_practice && g->cur_tip == 0)) {
+        /* (a practice game sets no tip, so until one comes, rows 8-9 are setupGameBG's,
+         * whose stars are a tile left of clearTipBar's) */
+        redraw_tip_bar(&t);
     }
     blit_bg_update(&t);
     memcpy(g->gfx.map, t.gfx.map, sizeof g->gfx.map);

@@ -249,6 +249,8 @@ enum thw_wait cut_step(struct game *g, const struct step_io *io);
 void cut_redraw(struct game *g);
 /* A villager's name (0-13), as tile numbers, NUL-terminated. */
 const uint8_t *cut_name(uint8_t id);
+/* The building the last cutscene's camera went to (from its scroll target), or 0xFF. */
+uint8_t cut_house_shown(const struct game *g);
 uint8_t undte_line(struct game *g, const uint8_t *src, size_t avail);
 /* levels.c */
 void load_level(struct game *g, uint8_t n);

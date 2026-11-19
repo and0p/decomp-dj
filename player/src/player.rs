@@ -131,7 +131,7 @@ impl Session {
         let rom_sha = sha256_file(rom)?;
         if !col.config.rom.sha256.is_empty() && rom_sha != col.config.rom.sha256 {
             bail!(
-                "ROM {} has sha256 {rom_sha}, but the collection is pinned to {}",
+                "ROM {} has sha256 {rom_sha}, but the project is pinned to {}",
                 rom.display(),
                 col.config.rom.sha256
             );
@@ -142,7 +142,7 @@ impl Session {
         }
         let core_sha = sha256_file(core_path)?;
         if !col.config.core.sha256.is_empty() && core_sha != col.config.core.sha256 {
-            bail!("core {} has sha256 {core_sha}, but the collection is pinned to {}", core_path.display(), col.config.core.sha256);
+            bail!("core {} has sha256 {core_sha}, but the project is pinned to {}", core_path.display(), col.config.core.sha256);
         }
         let work = col.local_dir();
         let mut core = Core::load(core_path, &work, &col.config.core.options)?;
@@ -174,7 +174,7 @@ impl Session {
                 core.serialize().context("saving the power-on state")?
             }
         };
-        let boot_sram = core.memory(crate::libretro::MEMORY_SAVE_RAM).map(|m| m.to_vec());
+        let boot_sram = core.memory_view(crate::libretro::MEMORY_SAVE_RAM).map(|m| m.to_vec());
         let mut h = blake3::Hasher::new();
         h.update(col.config.core.build.as_bytes());
         h.update(core_sha.as_bytes());
@@ -262,13 +262,13 @@ impl Session {
         let excluded = col.config.hash.excluded()?;
         for region in col.config.hash.regions.clone() {
             let bytes: Vec<u8> = if let Some(mid) = region_memory_id(&region) {
-                let mut bytes = self.core.memory(mid).map(|m| m.to_vec()).unwrap_or_default();
+                let mut bytes = self.core.memory_view(mid).map(|m| m.to_vec()).unwrap_or_default();
                 mask_excluded(&region, &mut bytes, &excluded)?;
                 bytes
             } else if let Some(range) = region.strip_prefix("BUS:") {
                 let (a, b) = range.split_once('-').ok_or_else(|| anyhow!("BUS hash ranges look like BUS:0x0000-0x07FF"))?;
                 let (a, b) = (parse_hex(a)? as usize, parse_hex(b)? as usize);
-                (a..=b).map(|addr| self.core.bus_byte(addr).map(|p| unsafe { *p }).unwrap_or(0)).collect()
+                (a..=b).map(|addr| self.core.bus_read(addr).unwrap_or(0)).collect()
             } else {
                 bail!("unknown hash region {region}");
             };
@@ -284,9 +284,20 @@ impl Session {
     pub fn start_trunk(&mut self, col: &Collection, r: &Replay) -> Result<()> {
         let boot = self.boot_state.clone();
         self.core.unserialize(&boot)?;
-        if let (Some(power_on), Some(mem)) = (&self.boot_sram, self.core.memory(crate::libretro::MEMORY_SAVE_RAM)) {
-            let n = power_on.len().min(mem.len());
-            mem[..n].copy_from_slice(&power_on[..n]);
+        // (Only when the boot state didn't bring it back itself: a write makes the core's
+        // state unknown again, `Core::serialize`.)
+        let same = match (&self.boot_sram, self.core.memory_view(crate::libretro::MEMORY_SAVE_RAM)) {
+            (Some(power_on), Some(mem)) => {
+                let n = power_on.len().min(mem.len());
+                mem[..n] == power_on[..n]
+            }
+            _ => true,
+        };
+        if !same {
+            if let (Some(power_on), Some(mem)) = (&self.boot_sram, self.core.memory(crate::libretro::MEMORY_SAVE_RAM)) {
+                let n = power_on.len().min(mem.len());
+                mem[..n].copy_from_slice(&power_on[..n]);
+            }
         }
         if let Some(snap) = r.get("snapshot") {
             let data = col.read_blob(snap, "snapshot")?;
@@ -398,7 +409,8 @@ impl Session {
             rec.checkpoints.push((f, h));
         }
         if rec.record && rec.store_at.contains(&f) {
-            let h = self.state_hash(col)?;
+            // Frame 0 is where the pass started: its hash is already known.
+            let h = if f == 0 { rec.start_hash.clone() } else { self.state_hash(col)? };
             let s = self.state_to_store()?;
             rec.rec.snapshots.push((f, h, s));
         }
@@ -428,15 +440,23 @@ impl Session {
                 if seen.len() < cur.len() {
                     seen.resize(cur.len(), 0);
                 }
-                for (ci, (a, b)) in cur.chunks(64).zip(seen.chunks_mut(64)).enumerate() {
-                    if a.iter().zip(b.iter()).all(|(x, y)| x & !y == 0) {
+                // Most of a region has nothing new in any one frame (a console's ROM and RAM
+                // can be tens of megabytes), so whole blocks are passed over a word at a time.
+                const BLOCK: usize = 4096;
+                for (bi, (a, b)) in cur.chunks(BLOCK).zip(seen.chunks_mut(BLOCK)).enumerate() {
+                    if !crate::coverage::any_set(a) || !crate::coverage::any_new(a, b) {
                         continue;
                     }
-                    for (j, (x, y)) in a.iter().zip(b.iter_mut()).enumerate() {
-                        if x & crate::coverage::FLAG_OPCODE != 0 && *y & crate::coverage::FLAG_OPCODE == 0 {
-                            rec.rec.first_hits.push((name.clone(), (ci * 64 + j) as u64, f));
+                    for (ci, (a, b)) in a.chunks(64).zip(b.chunks_mut(64)).enumerate() {
+                        if !crate::coverage::any_new(a, b) {
+                            continue;
                         }
-                        *y |= *x;
+                        for (j, (x, y)) in a.iter().zip(b.iter_mut()).enumerate() {
+                            if x & crate::coverage::FLAG_OPCODE != 0 && *y & crate::coverage::FLAG_OPCODE == 0 {
+                                rec.rec.first_hits.push((name.clone(), (bi * BLOCK + ci * 64 + j) as u64, f));
+                            }
+                            *y |= *x;
+                        }
                     }
                 }
             }
@@ -511,7 +531,7 @@ impl Session {
         }
         let regions: BTreeSet<String> = self.cache_exclude.iter().map(|(r, _, _)| r.clone()).collect();
         for region in regions {
-            let Some(mem) = region_memory_id(&region).and_then(|id| self.core.memory(id)).map(|m| m.to_vec()) else { continue };
+            let Some(mem) = region_memory_id(&region).and_then(|id| self.core.memory_view(id)).map(|m| m.to_vec()) else { continue };
             let Some(at) = locate_region(&state, &mem, self.exclude_at.get(&region).copied()) else {
                 if self.exclude_missed.insert(region.clone()) {
                     crate::console::warn("dj", &format!("[cache] exclude: {region} isn't in this core's save state as it is in memory (the state may be compressed), so snapshots are stored whole"));

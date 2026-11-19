@@ -91,6 +91,12 @@ static const uint8_t NAMES[] = {
 
 static uint8_t names_at(unsigned i) { return i < sizeof NAMES ? NAMES[i] : 0; }
 
+uint8_t cut_house_shown(const struct game *g) {
+    for (uint8_t y = 0; y < NUM_BUILDINGS; y++)
+        if (HOUSE_SCROLL_X[y] == g->cut_scroll_target) return y;
+    return 0xFF;
+}
+
 const uint8_t *cut_name(uint8_t id) { return &NAMES[NAME0 + NAMES[id < NUM_SPEAKERS ? id : 0]]; }
 
 /* character_sex: 0x80 female. Then the villagers each role is drawn from. */
@@ -575,8 +581,47 @@ enum thw_wait cut_step(struct game *g, const struct step_io *io) {
     return cut_main_loop(g, io);
 }
 
-/* The picture from the state alone, after a copy: the scenery and the fade's palette. The
- * dialogue box's text is in VRAM, not RAM, so it isn't there until the next paragraph. */
+/* Whether two states are at the same place in the script. */
+static bool same_place(const struct game *a, const struct game *b) {
+    return a->game_state == b->game_state && a->script_ptr[0] == b->script_ptr[0] &&
+           a->script_ptr[1] == b->script_ptr[1] && a->decomp_buf_pos == b->decomp_buf_pos &&
+           a->name_interp_pos == b->name_interp_pos && a->cut_dst_lo == b->cut_dst_lo &&
+           a->cut_dst_hi == b->cut_dst_hi && memcmp(a->dte_buf, b->dte_buf, sizeof a->dte_buf) == 0;
+}
+
+/* The dialogue box as the original has it in VRAM, which RAM doesn't hold: plays script `n`
+ * from its start on a copy of `g`, pressing A at each paragraph's end, until the copy is
+ * where `g` is in the script, and takes the copy's picture. False if it never gets there. */
+static bool replay_dialogue(struct game *g, unsigned n) {
+    static struct game t;   /* (big: not on the stack) */
+    t = *g;
+    size_t avail;
+    if (!script_bytes(thw_cut_scripts[n], &avail) || avail < 4) return false;
+    set_script_addr(&t, (uint16_t)(thw_cut_scripts[n] + 4));
+    popslide_init(&t);
+    cut_handle_state_new_graph(&t);
+    for (unsigned k = 0; k < 4000; k++) {
+        popslide_terminate_blit(&t);
+        if (same_place(&t, g)) {
+            memcpy(g->gfx.map, t.gfx.map, sizeof g->gfx.map);
+            return true;
+        }
+        if (t.game_state == CUT_STATE_SCRIPT) {
+            cut_handle_state_script(&t);
+        } else if (t.game_state == CUT_STATE_WAIT_A && t.script_ptr[1]) {
+            cut_clear_dialogue(&t);
+            cut_handle_state_new_graph(&t);
+        } else {
+            return false;   /* the script's end, and g isn't there */
+        }
+    }
+    return false;
+}
+
+/* The picture from the state alone, after a copy: the scenery, the fade's palette, and the
+ * dialogue box's text. The text is in VRAM, not RAM, so it is rebuilt by playing the script
+ * up to where the state is (replay_dialogue). The packets waiting in the transfer buffer are
+ * drawn too, as at the end of a step. */
 void cut_redraw(struct game *g) {
     if (g->wait == W_CUT1) return;   /* still the screen before */
     cut_draw_skyground(g);
@@ -587,12 +632,15 @@ void cut_redraw(struct game *g) {
     popslide_terminate_blit(&t);
     g->gfx = t.gfx;
     cut_draw_buildings(g);
+    for (unsigned n = 0; n < thw_cut_script_count; n++)
+        if (replay_dialogue(g, n)) break;
     uint8_t dim = g->cut_fade_amount & 0x30;
     for (unsigned y = 1; y < 32; y++) {
         uint8_t a = (uint8_t)(CUTSCENE_PALETTE[y] - dim);
         if (a & 0x80) a = a == 0xF0 ? 0x02 : 0x0F;
         vram_write(g, (uint16_t)(0x3F00 + y), a);
     }
+    popslide_draw(g);
     cut_screen_on(g);
 }
 

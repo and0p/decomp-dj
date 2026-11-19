@@ -3,10 +3,17 @@
 //! pictures side by side (original left, decomp right) at the frames asked for. The decomp
 //! draws with OpenGL from inside the baseline's frame, so this also checks nested contexts.
 //!
-//! Usage: thwaite_pictures <project> <rom> <baseline core> <segment> <frame,frame,...> <out dir>
+//! Usage: thwaite_pictures <project> <rom> <baseline core> <segment> <frame,frame,...> <out dir> [<frame,...>]
+//!
+//! The last list, if given: frames before which the decomp copies the original again, as
+//! after a rewind (Sync now in dj-gui).
+//!
+//! The decomp draws its flat picture here, whatever the project sets, so the pictures can be
+//! compared pixel for pixel. THW_OPTIONS="key=value,..." sets its core options instead (for
+//! example thwaite_decomp_render=voxel).
 use anyhow::{anyhow, Result};
 use decomp_dj::collection::Collection;
-use decomp_dj::compare::Comparison;
+use decomp_dj::compare::{Comparison, OpenSpec};
 use decomp_dj::libretro::{write_png, Frame};
 use decomp_dj::parity::{Checked, Checker};
 use decomp_dj::player::Session;
@@ -27,23 +34,33 @@ fn side_by_side(a: &Frame, b: &Frame) -> Frame {
 
 fn main() -> Result<()> {
     let a: Vec<String> = std::env::args().collect();
-    if a.len() != 7 {
-        return Err(anyhow!("usage: thwaite_pictures <project> <rom> <baseline core> <segment> <frame,...> <out dir>"));
+    if a.len() != 7 && a.len() != 8 {
+        return Err(anyhow!("usage: thwaite_pictures <project> <rom> <baseline core> <segment> <frame,...> <out dir> [<copy at frame,...>]"));
     }
     let col = Collection::open(Path::new(&a[1]))?;
     let id = col.resolve(&a[4])?.to_string();
     let shots: Vec<u64> = a[5].split(',').map(|s| s.parse()).collect::<std::result::Result<_, _>>()?;
+    let copies: Vec<u64> = a.get(7).map(|c| c.split(',').map(|s| s.parse()).collect()).transpose()?.unwrap_or_default();
     let out = Path::new(&a[6]);
     std::fs::create_dir_all(out)?;
     let n = col.replays[&id].frames()?;
     let mut s = Session::open_with(&col, Path::new(&a[2]), Path::new(&a[3]), false)?;
-    let mut cmp = Comparison::open(&col, "decomp", Path::new(&a[3]), Some(Path::new(&a[2])))?;
+    let mut spec = OpenSpec::resolve(&col, "decomp", Path::new(&a[3]), Some(Path::new(&a[2])))?;
+    spec.options.insert("thwaite_decomp_render".into(), "flat".into());
+    for kv in std::env::var("THW_OPTIONS").unwrap_or_default().split(',').filter(|s| !s.is_empty()) {
+        let (k, v) = kv.split_once('=').ok_or_else(|| anyhow!("THW_OPTIONS: {kv} isn't key=value"))?;
+        spec.options.insert(k.into(), v.into());
+    }
+    let mut cmp = Comparison::open_spec(&spec)?;
     let power_on = s.enter_replay(&col, &id)?;
     let mut ck = Checker::default();
     let mut last_decomp: Option<Frame> = None;
     for k in 0..n {
         if !ck.in_step(&id, k) {
             ck.sync(&mut cmp, &mut s.core, &col, &id, k, power_on + k).map_err(|e| anyhow!(e))?;
+        }
+        if copies.contains(&k) {
+            ck.copy_again();
         }
         let want = shots.contains(&k);
         ck.begin(&mut cmp, &mut s.core, &col, &id, k, true, true);

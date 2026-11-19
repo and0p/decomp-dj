@@ -383,9 +383,18 @@ parity in all they ran.
   practice menu. Getting there fixed three things outside the cutscene's logic: the
   picture was a frame late wherever VRAM updates wait for the next vblank (now drawn at
   the step's end); the console's sprite priority (above, "Graphics"); and the practice
-  menu's redraw after a copy (its meter, and no tip bar). One known gap: copied mid-
-  cutscene, the text already in the box is in VRAM, not RAM, so it shows from the next
-  paragraph on.
+  menu's redraw after a copy (its meter, and no tip bar).
+- **Pictures after a copy** (a rewind, or Sync now): some of what is on screen is only in
+  VRAM, so the redraw works it out from RAM. The cutscene's dialogue box: the script is
+  played from its start on a copy of the state, pressing A at each paragraph, until it is
+  where the state is. The level's reward bar: its numbers worked out again from the houses
+  and missiles left. The rebuilt house's bar: the villager of the building the cutscene's
+  camera went to (`houseToRebuild` is cleared by then). A practice game's rows 8-9:
+  `setupGameBG`'s stars until a tip comes. Checked with `thwaite_pictures`, copying every
+  37 frames (101 in the long day) in every segment: all pictures match but two, in the
+  poked segment, where the original's status bar still shows the day before the poke.
+  Still not matched: the two frames of the step that loads a cutscene, where the original
+  turns rendering off partway (the decomp draws at a step's end).
 - **Still not reached by a segment:** the cutscenes for houses lost (8, 9), the later
   clues (11-13), the end (14), `findRandomDestroyedHouse` (a house to rebuild is always
   already set when one falls), and the laid-back villager's re-pick in

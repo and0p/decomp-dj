@@ -219,7 +219,7 @@ impl Replay {
         r.id()?;
         r.frames()?;
         if r.get("parent").is_none() {
-            bail!("missing `parent` (use `parent: none` for a trunk)");
+            bail!("missing `parent` (use `parent: none` for a root segment)");
         }
         if let Some(last) = r.lines.last() {
             if last.frame >= r.frames()? {
@@ -504,7 +504,7 @@ impl Replay {
     pub fn split_at(&self, frame: u64, upstream_id: &str) -> Result<(Replay, Replay)> {
         let frames = self.frames()?;
         if frame == 0 || frame >= frames {
-            bail!("can only split inside the replay (1..{frames})");
+            bail!("can only split inside the segment (1..{frames})");
         }
         let mut held: BTreeMap<InputKey, i16> = BTreeMap::new();
         for l in self.lines.iter().take_while(|l| l.frame < frame) {

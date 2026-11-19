@@ -1,2 +1,4 @@
 .local/
 build/
+# The game's data tables, made from the ROM at build (.decomp/tools/gen_data.py)
+.decomp/decomp/src/data.c

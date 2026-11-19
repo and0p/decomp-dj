@@ -38,6 +38,7 @@ add_library(thwaite_decomp_libretro SHARED
   src/scurry.c
   src/missiles.c
   src/play.c
+  src/voxel.c
   src/practice.c
   src/cutscene.c
   src/gfx.c
@@ -63,3 +64,10 @@ else()
   target_compile_options(thwaite_decomp_libretro PRIVATE -Wall -Wextra -Wno-unused-parameter)
 endif()
 # The libretro entry points are exported by libretro.h's RETRO_API (visibility default).
+# The voxel picture's camera (sinf, tanf): libm, where it is its own library.
+if(NOT MSVC)
+  find_library(THW_LIBM m)
+  if(THW_LIBM)
+    target_link_libraries(thwaite_decomp_libretro PRIVATE ${THW_LIBM})
+  endif()
+endif()

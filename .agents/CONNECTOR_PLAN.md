@@ -245,7 +245,8 @@ so; the main segment is exact.
 
 Core built from commit 15bada8 with `make SYSTEM_ZLIB=1 SYSTEM_LIBPNG=1` (the bundled libpng
 and zlib misdetect macOS as classic Mac OS); on macOS the Makefile leaves the dynarec out.
-Harness: `player/examples/n64_roundtrip.rs` (blake3 of SYSTEM_RAM, 8 MB, after every frame;
+Harness: `player/examples/n64_roundtrip.rs` (removed 2026-11-17 in the release clean-up; in
+git history up to commit `f5bfd2f`) (blake3 of SYSTEM_RAM, 8 MB, after every frame;
 modes for power-on, save/load at K, a fresh-process load, and `exp`, which loads after J frames
 of running on and diffs RDRAM at the first difference). ROM: WWF No Mercy (USA) (Rev 1),
 sha256 `fc561fce…`. N = 600, K = 200 and 350, M = 200, J = 0, twice, 50, 100, 200.

@@ -74,9 +74,8 @@ static uint8_t wait_spinning_at(int64_t pc) {
     return W_NONE;
 }
 
-/* Waits the decomp can copy the original at: loops whose whole state is in RAM. (A
- * cutscene's text already drawn is in VRAM: the picture lacks it until the next paragraph,
- * but the state is whole.) */
+/* Waits the decomp can copy the original at: loops whose whole state is in RAM. (What is
+ * only in VRAM, such as a cutscene's text already drawn, the redraw works out from RAM.) */
 static bool copyable(uint8_t w) {
     return w == W_TODO || w == W_TITLE || w == W_MAIN || w == W_PAUSE || w == W_PRACTICE || w == W_CUT1 ||
            w == W_CUT2;

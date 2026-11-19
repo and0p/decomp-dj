@@ -674,7 +674,7 @@ pub fn print_report(rep: &Report, col: &Collection) {
         println!("  opcode bytes run in {region:<5} {n}");
     }
     println!();
-    println!("  {:<44} {:>7} {:>7} {:>7} {:>7}", "replay", "own", "new", "unique", "ticks");
+    println!("  {:<44} {:>7} {:>7} {:>7} {:>7}", "segment", "own", "new", "unique", "ticks");
     for r in &rep.replays {
         let name = format!("{}{} {}", "  ".repeat(r.depth), &r.id[..8], r.title);
         let name: String = name.chars().take(44).collect();
@@ -714,4 +714,55 @@ pub fn write_gaps_csv(rep: &Report, path: &Path) -> Result<()> {
     }
     std::fs::write(path, s)?;
     Ok(())
+}
+/// Whether any byte of `a` is not zero.
+pub fn any_set(a: &[u8]) -> bool {
+    let words = a.chunks_exact(8);
+    let rest = words.remainder();
+    words.fold(0u64, |acc, w| acc | u64::from_ne_bytes(w.try_into().unwrap())) != 0 || rest.iter().any(|x| *x != 0)
+}
+
+/// Whether `a` has a bit set that `b` (as long) has not.
+pub fn any_new(a: &[u8], b: &[u8]) -> bool {
+    let (wa, wb) = (a.chunks_exact(8), b.chunks_exact(8));
+    let (ra, rb) = (wa.remainder(), wb.remainder());
+    wa.zip(wb).fold(0u64, |acc, (x, y)| acc | (u64::from_ne_bytes(x.try_into().unwrap()) & !u64::from_ne_bytes(y.try_into().unwrap()))) != 0
+        || ra.iter().zip(rb).any(|(x, y)| x & !y != 0)
+}
+
+/// ORs `src` into `dst` (as long). Returns whether `dst` gained a bit. Flags are mostly
+/// zero and mostly seen before, so blocks with nothing new are passed over a word at a time.
+pub fn merge(dst: &mut [u8], src: &[u8]) -> bool {
+    let mut grew = false;
+    for (a, b) in src.chunks(4096).zip(dst.chunks_mut(4096)) {
+        if !any_set(a) || !any_new(a, b) {
+            continue;
+        }
+        grew = true;
+        for (x, y) in a.iter().zip(b.iter_mut()) {
+            *y |= *x;
+        }
+    }
+    grew
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    #[test]
+    fn merge_ors_and_says_whether_anything_was_new() {
+        let mut dst = vec![0u8; 10_000];
+        let mut src = vec![0u8; 10_000];
+        assert!(!merge(&mut dst, &src));
+        src[9_999] = 2;
+        src[4_100] = 1;
+        assert!(any_set(&src) && any_new(&src, &dst));
+        assert!(merge(&mut dst, &src));
+        assert_eq!((dst[9_999], dst[4_100]), (2, 1));
+        assert!(!merge(&mut dst, &src));
+        src[9_999] = 3;
+        assert!(merge(&mut dst, &src));
+        assert_eq!(dst[9_999], 3);
+    }
 }

@@ -546,6 +546,7 @@ jobs:
 2. Set the opcode flag on the first byte of each instruction and the operand flag on the rest. At the same place, test the breakpoints and call the frontend when one is hit.
 3. Expose the functions above through the proc address callback.
 4. Check that state hashes are identical with and without the patch, on every segment of a project, and measure the slowdown (about 5% for Mesen). With a symbol map, `dj check-connector` compares the flags with the decoder ([cli.md](cli.md)). A disagreement can also mean data inside a function that annotations.toml doesn't mark yet, such as inline arguments after a `JSR`.
+   Save states need a look too. A core may have to run on a little to reach a point where it can save: mupen64plus-next runs to its next interrupt when it is not at a frame's end, so a save taken right after a load or another save moves its memory, and the frame's state hash with it. What plays afterwards is the same, but the same frame would hash two ways. dj therefore keeps the state it last saved or loaded and gives it back, without asking the core, for as long as nothing has run or been written.
 5. Pin the upstream commit and ship a `build.sh` and the patch under `connectors/<core>/`, like Mesen's.
 6. If dj has no decoder for the CPU, write one ([decoders.md](decoders.md)): a plugin, or exported by the core itself (`dj_decoders`).
 

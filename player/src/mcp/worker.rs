@@ -767,10 +767,10 @@ impl Env for SessionEnv<'_> {
 
 fn read_bytes(s: &mut Session, region: &str, addr: u64, len: u64) -> Result<Vec<u8>> {
     if region == "BUS" {
-        return (addr..addr + len).map(|a| s.core.bus_byte(a as usize).map(|p| unsafe { *p }).ok_or_else(|| anyhow!("BUS address {a:#x} is not mapped"))).collect();
+        return (addr..addr + len).map(|a| s.core.bus_read(a as usize).ok_or_else(|| anyhow!("BUS address {a:#x} is not mapped"))).collect();
     }
     let id = decomp_dj::libretro::region_memory_id(region).ok_or_else(|| anyhow!("unknown region {region} (RAM, SRAM, VRAM, BUS)"))?;
-    let mem = s.core.memory(id).ok_or_else(|| anyhow!("the core exposes no {region}"))?;
+    let mem = s.core.memory_view(id).ok_or_else(|| anyhow!("the core exposes no {region}"))?;
     let (a, n) = (addr as usize, len as usize);
     if a + n > mem.len() {
         bail!("{region} has {} bytes", mem.len());

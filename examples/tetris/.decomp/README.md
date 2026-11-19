@@ -3,29 +3,37 @@
 Tetris (NES, USA) as C, translated from the annotated disassembly
 [CelestialAmber/TetrisNESDisasm](https://github.com/CelestialAmber/TetrisNESDisasm) at
 commit `94581c0`; a port that draws it in 3D; and a libretro core that puts the two
-together for decomp-dj. None of it needs the ROM.
+together for decomp-dj. The code holds none of the game's data: its tables are read from
+your own ROM the first time it is built.
 
 | Path | What it is |
 | --- | --- |
 | [decomp/](decomp/) | The game logic as a library: `tetris_init()`, `tetris_tick()`, all state in one struct. Builds to `libtetris.a` |
 | [port/](port/) | Draws a game state in 3D with [small3dlib](https://gitlab.com/drummyfish/small3dlib) (CC0). Builds to `libtetris_port.a` |
 | [libretro/](libretro/) | The libretro core: decomp + port, a decomp-dj comparison core that takes events (`dj_handle_event`). Builds to `tetris_decomp_libretro.dylib` / `.so` |
-| [tools/gen_decomp.py](tools/gen_decomp.py) | Regenerates the RAM layout and the game's data tables from a build of the disassembly |
+| [tools/gen_data.py](tools/gen_data.py) | Writes the game's data tables (`decomp/src/data.c`, not in git) from your ROM; the Makefile runs it |
+| [tools/gen_decomp.py](tools/gen_decomp.py) | Regenerates the RAM layout, `data.h` (which tables, where, how long) and the tables from a build of the disassembly |
 | [tools/gen_sites.py](tools/gen_sites.py) | Regenerates `decomp/src/sites.h`, the resume points the snapshot loader matches against the stack |
 | [tools/measure_draws.py](tools/measure_draws.py) | Measures, in a 6502 emulator, how long the original takes to draw each screen with NMIs off (needs the ROM and py65) |
 | [tools/dbg2csv.py](tools/dbg2csv.py), [tools/ramdiff/](tools/ramdiff/) | A decomp-dj symbol map from the reference build; a RAM differ for two cores |
-| [_old/](_old/) | The previous ROM-based port and core, its plan (PLAN.md, QUESTIONS.md, functions.csv) and its header generator, kept for reference |
 
 ## Building
 
 From the repository root:
 
 ```sh
-make -C examples/tetris/.decomp/libretro   # examples/tetris/build/decomp/tetris_decomp_libretro.dylib (.so on Linux)
+make -C examples/tetris/.decomp/libretro ROM=../../build/tetris_usa.nes   # examples/tetris/build/decomp/tetris_decomp_libretro.dylib (.so on Linux)
 ```
 
 That builds the two libraries too. They also build on their own (`make -C .../decomp`,
-`make -C .../port`). A C11 compiler is all it needs.
+`make -C .../port`). It needs a C11 compiler, and Python 3 the first time.
+
+`ROM` is your own dump of Tetris (USA), needed the first time only. The 29 tables the game
+logic reads (piece orientations, drop speeds, the demo's inputs and pieces, the default
+high scores, sprite lists; nothing graphical or musical) are the game's own data, so they
+are not in this repository. `tools/gen_data.py` reads them from the ROM into
+`decomp/src/data.c`, after checking the ROM's sha256, and `data.h` says where each one
+is. Once `data.c` is there, plain `make` is enough.
 
 ## The decomp
 

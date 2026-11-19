@@ -4,7 +4,8 @@ target/
 build/
 .local/
 .DS_Store
-scratchpad.md# Portable ZIPs (scripts/package.sh)
+scratchpad.md
+# Portable ZIPs (scripts/package.sh)
 dist/
 
 # Local-only example: WWF No Mercy (the ROM is not ours to ship)

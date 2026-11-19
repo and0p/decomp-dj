@@ -853,6 +853,15 @@ pub struct Core {
     pub library_version: String,
     connector: Option<Connector>,
     game_loaded: bool,
+    /// The save state the core is in right now, when it is known: the one last saved or
+    /// loaded, while nothing has run or been written since. Saving again then gives these
+    /// bytes back without asking the core. Besides the time saved, a core may have to run on
+    /// a little to reach a point where it can save (mupen64plus-next runs to its next
+    /// interrupt when it is not at a frame's end), so a second save of the same frame would
+    /// move its memory, and the frame's state hash with it.
+    state_now: Option<Vec<u8>>,
+    /// The device last set on each port: setting the same one again changes nothing.
+    port_devices: BTreeMap<u32, u32>,
 }
 
 /// The core library a configured `path` names (docs/config.md#core-paths). A file that
@@ -1044,7 +1053,7 @@ impl Core {
             });
 
             with_host(slot, |h| h.memory = Some((api.get_memory_data, api.get_memory_size)));
-            Ok(Core { _lib: lib, slot, api, library_name, library_version, connector, game_loaded: false })
+            Ok(Core { _lib: lib, slot, api, library_name, library_version, connector, game_loaded: false, state_now: None, port_devices: BTreeMap::new() })
         }
     }
 
@@ -1181,6 +1190,7 @@ impl Core {
     /// Runs one frame through `tick`, which calls `retro_run`, capturing the picture.
     fn run_frame_with<T>(&mut self, capture: bool, tick: impl FnOnce() -> T) -> (Option<Frame>, T) {
         let _call = CallGuard::enter(self.slot, 1);
+        self.state_now = None;
         // A new frame: the cap counts from nothing, and what it switched off is back on.
         let rearm = BREAKS.with(|b| {
             let b = &mut b.borrow_mut()[self.slot];
@@ -1225,6 +1235,7 @@ impl Core {
 
     pub fn reset(&mut self) {
         let _call = CallGuard::enter(self.slot, 5);
+        self.state_now = None;
         self.gl_enter();
         unsafe { (self.api.reset)() }
         self.gl_leave();
@@ -1245,16 +1256,26 @@ impl Core {
     }
 
     pub fn set_port_device(&mut self, port: u32, device: u32) {
+        // (A port nothing was set on yet has libretro's default, the joypad.)
+        if self.port_devices.insert(port, device).unwrap_or(crate::format::DEVICE_JOYPAD) != device {
+            self.state_now = None;
+        }
         unsafe { (self.api.set_controller_port_device)(port, device) }
     }
 
     pub fn serialize(&mut self) -> Result<Vec<u8>> {
+        if let Some(s) = &self.state_now {
+            return Ok(s.clone());
+        }
         let _call = CallGuard::enter(self.slot, 2);
         self.gl_enter();
         self.breaks_busy(true);
         let r = self.serialize_inner();
         self.breaks_busy(false);
         self.gl_leave();
+        if let Ok(s) = &r {
+            self.state_now = Some(s.clone());
+        }
         r
     }
 
@@ -1300,6 +1321,7 @@ impl Core {
     /// Runs `f`, a call into this core that isn't one of libretro's (a comparison core's
     /// event function), with its GL context current and the call named for a crash note.
     pub fn in_core<T>(&mut self, call: usize, f: impl FnOnce() -> T) -> T {
+        self.state_now = None;
         let _call = CallGuard::enter(self.slot, call);
         self.gl_enter();
         let out = f();
@@ -1386,12 +1408,26 @@ impl Core {
         self.breaks_busy(false);
         self.gl_leave();
         if !ok {
+            self.state_now = None;
             bail!("core failed to load state");
+        }
+        match &mut self.state_now {
+            Some(s) if s.len() == state.len() => s.copy_from_slice(state),
+            now => *now = Some(state.to_vec()),
         }
         Ok(())
     }
 
+    /// A memory region to read. (`memory` is for writing: after it, the core's state is no
+    /// longer the one last saved or loaded.)
+    pub fn memory_view(&self, id: u32) -> Option<&[u8]> {
+        let (ptr, size) = self.memory_ptr(id)?;
+        Some(unsafe { std::slice::from_raw_parts(ptr, size) })
+    }
+
+    /// A memory region to write to (to read, `memory_view`).
     pub fn memory(&mut self, id: u32) -> Option<&mut [u8]> {
+        self.state_now = None;
         unsafe {
             let ptr = (self.api.get_memory_data)(id) as *mut u8;
             let size = (self.api.get_memory_size)(id);
@@ -1404,8 +1440,15 @@ impl Core {
     }
 
     /// Resolves an emulated bus address through the core's memory maps.
+    /// To write through (to read, `bus_read`).
     pub fn bus_byte(&mut self, addr: usize) -> Option<*mut u8> {
+        self.state_now = None;
         bus_ptr(self.slot, addr)
+    }
+
+    /// The byte at an emulated bus address.
+    pub fn bus_read(&self, addr: usize) -> Option<u8> {
+        bus_ptr(self.slot, addr).map(|p| unsafe { *p })
     }
 
     pub fn coverage_clear(&mut self) {

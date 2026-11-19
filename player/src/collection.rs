@@ -461,7 +461,7 @@ impl Collection {
         for (id, r) in &self.replays {
             if let Some(p) = r.parent() {
                 if !self.replays.contains_key(p) {
-                    bail!("replay {id} names parent {p}, which is not in segments/");
+                    bail!("segment {id} names parent {p}, which is not in segments/");
                 }
             }
             // Cycle check.
@@ -469,13 +469,13 @@ impl Collection {
             let mut cur = r.parent();
             while let Some(p) = cur {
                 if seen.contains(&p) {
-                    bail!("replay {id} has a parent loop");
+                    bail!("segment {id} has a parent loop");
                 }
                 seen.push(p);
                 cur = self.replays[p].parent();
             }
             if r.parent().is_some() && (r.get("snapshot").is_some() || r.get("sram").is_some()) {
-                bail!("replay {id} has a parent, so it cannot also name `snapshot` or `sram` (only root segments start from blobs)");
+                bail!("segment {id} has a parent, so it cannot also name `snapshot` or `sram` (only root segments start from blobs)");
             }
         }
         Ok(())
@@ -619,8 +619,8 @@ impl Collection {
         let m: Vec<&str> = self.replays.keys().filter(|k| k.starts_with(id)).map(|k| k.as_str()).collect();
         match m.len() {
             1 => Ok(m[0]),
-            0 => Err(anyhow!("no replay with id {id}")),
-            _ => Err(anyhow!("id prefix {id} matches {} replays", m.len())),
+            0 => Err(anyhow!("no segment with id {id}")),
+            _ => Err(anyhow!("id prefix {id} matches {} segments", m.len())),
         }
     }
 

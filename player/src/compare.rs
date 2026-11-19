@@ -662,7 +662,7 @@ impl Comparison {
     /// Checks parity after a frame both cores ran from a synced state, for a `sync = "state"`
     /// core: the two cores' system RAM, byte for byte.
     pub fn check(&mut self, baseline: &mut Core) -> Result<Verdict> {
-        let base = baseline.memory(MEMORY_SYSTEM_RAM).map(|m| m.to_vec());
+        let base = baseline.memory_view(MEMORY_SYSTEM_RAM).map(|m| m.to_vec());
         let mine = self.core.memory(MEMORY_SYSTEM_RAM);
         Ok(match (base, mine) {
             (Some(a), Some(b)) if a.len() == b.len() => match a.iter().zip(b.iter()).position(|(x, y)| x != y) {

@@ -31,6 +31,8 @@ const EMPTY: Color32 = Color32::from_gray(58);
 const FLASH_SECS: f64 = 1.5;
 /// How long a square glows after its code runs (new or not).
 const GLOW_SECS: f64 = 0.5;
+/// In `CovState::cell_at`: no unit at this offset.
+const NO_CELL: u32 = u32::MAX;
 
 /// What the ROM map under the sidebar shows (its tabs).
 #[derive(Clone, Copy, PartialEq)]
@@ -97,6 +99,9 @@ pub struct CovState {
     pub cells: Vec<Cell>,
     /// Cell holding each PRG offset's unit, for live updates: (cell, unit offset).
     unit_cells: Vec<(usize, u64)>,
+    /// The same by offset: the cell of the unit at each PRG offset (`NO_CELL`: none), so
+    /// a frame's flags are looked up where they are set, not unit by unit.
+    cell_at: Vec<u32>,
     /// Unique instructions per segment (the tree's "+N" marks).
     pub unique: HashMap<String, usize>,
     pub sort: Sort,
@@ -123,6 +128,7 @@ impl Default for CovState {
             stale: true,
             cells: vec![],
             unit_cells: vec![],
+            cell_at: vec![],
             unique: HashMap::new(),
             sort: Sort::Rom,
             filter: String::new(),
@@ -248,6 +254,7 @@ impl CovState {
                 self.report = None;
                 self.cells.clear();
                 self.unit_cells.clear();
+                self.cell_at.clear();
                 self.unique.clear();
                 let msg = format!("{e:#}");
                 self.error = Some(if msg.contains("run `dj clean`") {
@@ -333,6 +340,11 @@ impl CovState {
                 off = end;
             }
         }
+        let len = self.unit_cells.iter().map(|(_, o)| *o as usize + 1).max().unwrap_or(0);
+        self.cell_at = vec![NO_CELL; len];
+        for (cell, off) in &self.unit_cells {
+            self.cell_at[*off as usize] = *cell as u32;
+        }
         self.live.new_per_cell = vec![0; self.cells.len()];
         self.parity_stale = true;
     }
@@ -379,29 +391,60 @@ impl CovState {
     /// ORs connector flags read just now into live coverage: the glow, and the flash where
     /// they reach new code.
     pub(crate) fn absorb(&mut self, flags: &[u8], now: f64) {
-        if !flags.iter().any(|b| *b != 0) {
+        if !decomp_dj::coverage::any_set(flags) {
             return;
         }
         let live = &mut self.live;
         if live.prg.len() < flags.len() {
             live.prg.resize(flags.len(), 0);
         }
-        let mut grew = false;
-        for (a, b) in live.prg.iter_mut().zip(flags) {
-            if *a | *b != *a {
-                *a |= *b;
-                grew = true;
+        // Only where this frame's flags are set (a few blocks of a region that can be
+        // megabytes): the glow for what ran, and the counts for what ran for the first time.
+        const BLOCK: usize = 4096;
+        let report = self.report.as_ref();
+        let own = report.and_then(|r| live.id.as_ref().and_then(|id| r.detail.unsaved_per_segment.get(id)));
+        let mut gained_opcode = false;
+        for (bi, (a, b)) in flags.chunks(BLOCK).zip(live.prg.chunks_mut(BLOCK)).enumerate() {
+            if !decomp_dj::coverage::any_set(a) {
+                continue;
+            }
+            for (j, (x, y)) in a.iter().zip(b.iter_mut()).enumerate() {
+                if *x == 0 {
+                    continue;
+                }
+                let off = bi * BLOCK + j;
+                let first = x & FLAG_OPCODE != 0 && *y & FLAG_OPCODE == 0;
+                *y |= *x;
+                if x & FLAG_OPCODE == 0 {
+                    continue;
+                }
+                let Some(cell) = self.cell_at.get(off).copied().filter(|c| *c != NO_CELL).map(|c| c as usize) else { continue };
+                live.glow.insert(cell, now);
+                if !first {
+                    continue;
+                }
+                gained_opcode = true;
+                // As `recount_live` counts, for the one unit that just ran for the first time.
+                let Some(r) = report else { continue };
+                let o = off as u64;
+                if r.detail.hit(o) {
+                    continue;
+                }
+                let own_hit = own.is_some_and(|p| p.get(off).is_some_and(|b| b & FLAG_OPCODE != 0));
+                if !own_hit {
+                    live.segment += 1;
+                    if !r.detail.unsaved_hit(o) {
+                        live.new += 1;
+                        if let Some(n) = live.new_per_cell.get_mut(cell) {
+                            *n += 1;
+                        }
+                        live.flash.insert(cell, now);
+                    }
+                }
             }
         }
-        for (cell, off) in &self.unit_cells {
-            if flags.get(*off as usize).is_some_and(|b| b & FLAG_OPCODE != 0) {
-                self.live.glow.insert(*cell, now);
-            }
-        }
-        if grew {
-            for c in self.recount_live() {
-                self.live.flash.insert(c, now);
-            }
+        if gained_opcode {
+            self.parity_stale = true;
         }
     }
 

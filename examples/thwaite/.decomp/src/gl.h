@@ -18,4 +18,8 @@ void gl_destroy(void);
 bool gl_draw(const struct gfx *g, uintptr_t fbo);
 const char *gl_error(void);
 
+struct voxel_opts;
+/* The voxel picture instead (voxel.c), w x h. */
+bool gl_draw_voxel(const struct gfx *g, uintptr_t fbo, int w, int h, const struct voxel_opts *o);
+
 #endif

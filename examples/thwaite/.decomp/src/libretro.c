@@ -3,12 +3,14 @@
  * Under dj the decomp is driven by events instead (events.c), and dj doesn't call
  * retro_run on it. */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "compare.h"
 #include "core.h"
 #include "gl.h"
 #include "libretro.h"
+#include "voxel.h"
 
 struct game thw_game;
 
@@ -37,6 +39,40 @@ static void refresh_ram_view(void) { compare_export(&thw_game, ram_view); }
 
 /* ---- Video ------------------------------------------------------------------------------ */
 
+/* The render style (thwaite_decomp_render): flat, the console's picture at 256x240, or
+ * voxel (voxel.c) at 4x. */
+#define VOXEL_SCALE 4
+static bool voxel_on;
+static struct voxel_opts voxel_opts = {22.0f, 50.0f, 0.2f};
+
+static const char *variable(const char *key) {
+    struct retro_variable v = {key, NULL};
+    return env && env(RETRO_ENVIRONMENT_GET_VARIABLE, &v) ? v.value : NULL;
+}
+
+/* Reads the options; true when the picture's size changed. */
+static bool read_options(void) {
+    bool was = voxel_on;
+    const char *v = variable("thwaite_decomp_render");
+    voxel_on = v && strcmp(v, "voxel") == 0;
+    if ((v = variable("thwaite_decomp_voxel_tilt"))) voxel_opts.tilt_deg = (float)atof(v);
+    if ((v = variable("thwaite_decomp_voxel_fov"))) voxel_opts.fov_deg = (float)atof(v);
+    if ((v = variable("thwaite_decomp_voxel_outline"))) voxel_opts.outline = strcmp(v, "off") == 0 ? 0.0f : (float)atof(v) / 100.0f;
+    return was != voxel_on;
+}
+
+static unsigned out_w(void) { return voxel_on ? GFX_W * VOXEL_SCALE : GFX_W; }
+static unsigned out_h(void) { return voxel_on ? GFX_H * VOXEL_SCALE : GFX_H; }
+
+static void options_changed(void) {
+    bool updated = false;
+    if (!env || !env(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) || !updated) return;
+    if (read_options()) {
+        struct retro_game_geometry geo = {out_w(), out_h(), GFX_W * VOXEL_SCALE, GFX_H * VOXEL_SCALE, 4.0f / 3.0f};
+        env(RETRO_ENVIRONMENT_SET_GEOMETRY, &geo);
+    }
+}
+
 static void context_reset(void) {
     gl_ready = gl_init((gl_get_proc)hw.get_proc_address);
     if (!gl_ready) core_log(RETRO_LOG_ERROR, gl_error() ? gl_error() : "OpenGL setup failed");
@@ -57,11 +93,15 @@ static bool video_wanted(void) {
 void core_present(void) {
     refresh_ram_view();
     if (!video) return;
-    if (gl_ready && video_wanted() && gl_draw(&thw_game.gfx, hw.get_current_framebuffer())) {
-        video(RETRO_HW_FRAME_BUFFER_VALID, GFX_W, GFX_H, 0);
-    } else {
-        video(NULL, GFX_W, GFX_H, 0);  /* duplicate the last frame */
+    options_changed();
+    if (!gl_ready || !video_wanted()) {
+        video(NULL, out_w(), out_h(), 0);   /* duplicate the last frame */
+        return;
     }
+    uintptr_t fbo = hw.get_current_framebuffer();
+    bool drawn = voxel_on ? gl_draw_voxel(&thw_game.gfx, fbo, (int)out_w(), (int)out_h(), &voxel_opts)
+                          : gl_draw(&thw_game.gfx, fbo);
+    video(drawn ? RETRO_HW_FRAME_BUFFER_VALID : NULL, out_w(), out_h(), 0);
 }
 
 /* ---- The libretro API ------------------------------------------------------------------- */
@@ -70,6 +110,10 @@ void retro_set_environment(retro_environment_t cb) {
     env = cb;
     static const struct retro_variable vars[] = {
         {"thwaite_decomp_flicker", "Explosion and smoke flicker; original|blend"},
+        {"thwaite_decomp_render", "Render style; flat|voxel"},
+        {"thwaite_decomp_voxel_tilt", "Voxel camera tilt in degrees, negative from above; 22|0|10|15|30|40|-10|-15|-22|-30"},
+        {"thwaite_decomp_voxel_fov", "Voxel camera field of view (degrees); 50|10|30|40|60|70"},
+        {"thwaite_decomp_voxel_outline", "Voxel outlines (darkening, percent); 20|off|10|30|40"},
         {NULL, NULL},
     };
     env(RETRO_ENVIRONMENT_SET_VARIABLES, (void *)vars);
@@ -97,7 +141,8 @@ void retro_get_system_info(struct retro_system_info *info) {
 }
 
 void retro_get_system_av_info(struct retro_system_av_info *info) {
-    info->geometry = (struct retro_game_geometry){GFX_W, GFX_H, GFX_W, GFX_H, 4.0f / 3.0f};
+    read_options();
+    info->geometry = (struct retro_game_geometry){out_w(), out_h(), GFX_W * VOXEL_SCALE, GFX_H * VOXEL_SCALE, 4.0f / 3.0f};
     info->timing = (struct retro_system_timing){FPS, RATE};
 }
 
@@ -115,6 +160,7 @@ bool retro_load_game(const struct retro_game_info *game) {
     hw.context_reset = context_reset;
     hw.context_destroy = context_destroy;
     hw.bottom_left_origin = true;
+    hw.depth = true;   /* the voxel picture */
     if (!env(RETRO_ENVIRONMENT_SET_HW_RENDER, &hw)) {
         core_log(RETRO_LOG_ERROR, "this frontend can't give an OpenGL 3.2 core context, which the decomp draws with");
         return false;

@@ -1,4 +1,4 @@
-//! Scratch tool for the Thwaite decomp (.agents/THWAITE_DECOMP_PLAN.md): plays the original
+//! Scratch tool for the Thwaite decomp (.agents/_archive/THWAITE_DECOMP_PLAN.md): plays the original
 //! from the start of an empty segment, choosing the joypad itself from what is in RAM, and
 //! writes what it pressed into that segment's file. Used to record segments that reach
 //! balloons, MIRVs and the end of a level, which take aimed shots.

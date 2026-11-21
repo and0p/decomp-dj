@@ -6,7 +6,7 @@ always gives the same answer. It is never committed and never "saved": any full 
 writes it the moment it finishes, whether you watch it in the GUI, clean or let an agent
 play, and everything in it can be rebuilt by playing the project. Cleaning fills in what
 is missing as it goes ([below](#in-the-gui)). The design and its reasons are in
-[CACHE_PLAN.md](../.agents/CACHE_PLAN.md).
+[CACHE_PLAN.md](../.agents/_archive/CACHE_PLAN.md).
 
 The database is optional. Without it (`--no-db`, or `database = false` in
 `.local/local.toml`), the tools play from power-on, or from the nearest snapshot in
@@ -22,8 +22,9 @@ lines (for a root, also its `sram` and `snapshot` blob ids). An edit gives a seg
 - **Coverage** flags for each segment, and the frame at which each ROM byte first ran in it, which `dj xref` reads ([coverage.md](coverage.md)).
 - **Parity** with comparison cores ([gui.md](gui.md#parity)), not keyed by content:
   `parity_passed` holds, per `[[compare]]` entry and build, the PRG coverage flags of every
-  frame that passed; `parity_failures` holds each failing frame with its build, where the
-  comparison core was synced (and how many frames from there were pre-roll), where in the
+  frame that passed; `parity_failures` holds each failing frame with its build, the last
+  jump before it (`synced_segment`, `synced_frame`: the columns keep an earlier name; and
+  how many frames from there were pre-roll), where in the
   frame the core gave its verdict (`at`: a breakpoint's name or "the frame end"), the
   reason and that frame's flags; `parity_runs` holds, per
   entry, build and segment content, how a `dj parity` check of that segment went, so the next
@@ -37,18 +38,21 @@ in `config.toml` or per machine in `.local/local.toml` ([config.md](config.md#ca
 ## From the command line
 
 ```sh
-dj clean <dir> [SEGMENT] [--accept] [--all]                 # clean, filling in what the database is missing
-dj hydrate <dir> [SEGMENT [--children]] [--force]            # fill it in without recording hashes
-dj cache stats <dir>                                         # size, and how well pages share
-dj cache gc <dir>                                            # drop what no segment uses
-dj sql <dir> "SELECT ..."                                    # query it directly
+dj clean [SEGMENT [--children]] [--accept] [--force]  # clean, filling in what the database is missing
+dj cache fill [SEGMENT [--children]] [--force]        # fill it in without recording hashes
+dj cache stats                                         # size, and how well pages share
+dj cache gc                                            # drop what no segment uses
+dj cache export [SEGMENT...] [--tag NAME] --out DIR    # the states checking them starts from
+dj cache seed FILE...                                  # store such states, checked by hash
+dj sql "SELECT ..."                                    # query it directly
 ```
 
-- `clean` plays the segments that aren't clean or whose content isn't stored yet, and writes the hashes they reach ([playback.md](playback.md#checking-hashes)). Running it again is nearly instant. `--all` plays every segment, stored or not.
-- `hydrate` fills the database the same way but never writes a file, for scripts that only want the database. `SEGMENT --children` limits it to a subtree; `--force` plays even what is stored.
+- `clean` plays the segments that aren't clean or whose content isn't stored yet, and writes the hashes they reach ([playback.md](playback.md#checking-hashes)). Running it again is nearly instant. `SEGMENT` limits it to one segment, `--children` adds those below it, and `--force` plays even what is stored.
+- `cache fill` fills the database the same way but never writes a file, for scripts that only want the database. It records no hashes, so it doesn't wait for a dirty segment's parent: it plays dirty segments too, from wherever they start now.
 - `cache stats` warns when the file is larger than `budget_gb`.
+- `cache export` and `cache seed` carry the states that checking segments starts from to another machine, such as CI ([ci.md](ci.md#states-to-start-from)). A seeded state is stored like any other.
 - `cache gc` deletes contents that no current segment uses (and snapshots of passes that never finished, for content no segment has now), then unused snapshots and pages, and compacts the file. It refuses while a dj-gui has the project open, since an unsaved edit's snapshots belong to content no saved segment has yet (the GUI keeps a `gui-<pid>.open` file in `.local/` while open); `--force` runs it anyway.
-- Every command that plays takes `--no-db` to run without the database.
+- `dj check` and `dj snapshot` take `--no-db` to run without the database.
 
 ### Views
 
@@ -60,7 +64,7 @@ views, whose columns stay:
 | `v_first_hits` | ROM offset first run in a current segment | `segment_id`, `status` (`clean` or `dirty`), `region`, `rom_offset`, `frame` (the first frame of that segment where it ran), `content` (the content key) |
 
 ```sh
-dj sql <dir> "SELECT segment_id, status, frame FROM v_first_hits WHERE region = 'PRG' AND rom_offset = 0x1C3A ORDER BY status, frame"
+dj sql "SELECT segment_id, status, frame FROM v_first_hits WHERE region = 'PRG' AND rom_offset = 0x1C3A ORDER BY status, frame"
 ```
 
 "Current" means the saved segment files. `dj sql` brings the list up to date before each

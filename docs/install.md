@@ -82,8 +82,8 @@ game. Its README walks through it; in short, from the repository root:
 
 ```sh
 (cd examples/thwaite && ./build-rom.sh)          # the ROM and symbols, into examples/thwaite/build/
-dj run examples/thwaite --rom examples/thwaite/build/thwaite.nes --core build/cores/mesen_libretro   # the .so/.dylib/.dll suffix is added
-dj report examples/thwaite
+dj -C examples/thwaite check --rom examples/thwaite/build/thwaite.nes --core build/cores/mesen_libretro   # the .so/.dylib/.dll suffix is added
+dj -C examples/thwaite summary --segments
 gui/target/release/dj-gui examples/thwaite
 ```
 
@@ -91,10 +91,11 @@ gui/target/release/dj-gui examples/thwaite
 
 ```sh
 dj init my-game --name "My Game" --rom game.nes --core build/cores/mesen_libretro.so
-dj new my-game --title "Boot to title" --frames 240
+cd my-game
+dj new --title "Boot to title" --frames 240
 ```
 
-`init` writes `config.toml` with every core option pinned, remembers the ROM and core
+Every command after `init` works on the project it is run in (or the one `-C DIR` names). `init` writes `config.toml` with every core option pinned, remembers the ROM and core
 paths in `.local/local.toml`, and creates a `.gitignore` that lists `.local/` when the project has none. Pass `--symbols FILE` to
 add a symbol map ([coverage.md](coverage.md#symbol-maps)). Then open the project in the
 GUI to record inputs, or edit the segment file by hand ([segments.md](segments.md)).

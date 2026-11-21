@@ -106,7 +106,7 @@ only `[EVENT]` lines changes no state, so it keeps every hash.
 Saving a dirty segment is allowed, but the GUI offers to clean first: a saved dirty
 segment says only that it hasn't been checked. Hand-edited hashes that agree with each
 other, or an input edit that kept the old hashes, look clean from the files alone; only a
-play (`dj run`, `dj clean`) proves them.
+play (`dj check`, `dj clean`) proves them.
 
 ## Recording hashes
 
@@ -132,11 +132,11 @@ the command line `dj clean` writes them to the files (changed endings only with 
 
 From the command line:
 
-- `dj play <dir> <id>` plays one segment and its chain. `--accept` writes the new hashes.
-- `dj run <dir>` plays every segment and exits with an error when a segment's hashes differ from the recorded ones. `--accept` writes the new hashes instead.
-- `dj run --from-scratch` plays every chain from power-on instead of from cached parent states, which checks that snapshots round-trip exactly.
-- `dj status <dir>` prints the tree with clean and dirty marks: `?` for a dirty segment with no recorded hashes, `~` for one that starts somewhere its parent no longer ends (or below such a segment).
-- `dj clean <dir> [segment]` plays every segment that isn't clean or whose content isn't in the local database (or that segment and those below it; `--all` plays every one), top down, and [records](#recording-hashes) the hashes each reaches in its file. The command line has no **!** to review, so a changed ending is listed and not written, the segments below it wait, and the command exits with an error. `--accept` writes changed endings too and carries on below them, as `--accept` does for `dj play` and `dj run`.
+- `dj check` plays every segment and exits with status 1 when a segment's hashes differ from the recorded ones. A segment with no hashes yet proves nothing: it passes with a note, or with `--strict` fails too, which is what CI wants. It writes no file.
+- `dj check --from-power-on` plays every chain from power-on instead of from each parent's end state, which checks that snapshots round-trip exactly.
+- `dj check SEGMENT...` checks only those segments (`--tag NAME` those with a tag, `--children` adds the ones below), each from the nearest state stored for a segment above it, or with `--from-power-on` from power-on. `--screenshots DIR` saves each one's last frame, and `--shot 60,120` other frames of it.
+- `dj status` prints the tree with clean and dirty marks: `?` for a dirty segment with no recorded hashes, `~` for one that starts somewhere its parent no longer ends (or below such a segment).
+- `dj clean [SEGMENT [--children]]` plays every segment that isn't clean or whose content isn't in the local database (or that segment, and with `--children` those below it; `--force` plays even what is stored), top down, and [records](#recording-hashes) the hashes each reaches in its file. It is the one command that writes hashes. The command line has no **!** to review, so a changed ending is listed and not written, the segments below it wait, and the command exits with an error. `--accept` writes changed endings too and carries on below them.
 
 In the GUI, the segment tree shows clean (green) and dirty (orange) dots. Reaching a
 segment's last frame [records its hashes](#recording-hashes) as an unsaved change.

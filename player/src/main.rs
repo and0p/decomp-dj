@@ -1,4 +1,5 @@
 mod mcp;
+mod junit;
 mod parity_cmd;
 mod queries;
 use decomp_dj::{cache, coverage, libretro};
@@ -14,23 +15,78 @@ use decomp_dj::hydrate::Hydrator;
 use decomp_dj::player::{PlayOptions, ReplayResult, Session};
 
 #[derive(Parser)]
-#[command(name = "dj", version, about = "Play trees of libretro input segments, check state hashes, and measure ROM code coverage")]
+#[command(name = "dj", version, about = "Play trees of libretro input segments, check state hashes, measure ROM code coverage, and check a decomp's parity with the original")]
 struct Cli {
+    /// The project folder (default: the nearest folder with a dj config.toml, from the
+    /// current one up)
+    #[arg(short = 'C', long = "project", global = true, value_name = "DIR")]
+    project: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
 }
 
-#[derive(clap::Args, Clone)]
-struct Local {
-    /// ROM file (default: the one saved in .local/local.toml)
-    #[arg(long, global = true)]
+/// The ROM, for commands that read it but run no core.
+#[derive(clap::Args, Clone, Default)]
+struct RomArg {
+    /// ROM file (default: $DJ_ROM, else the one saved in .local/local.toml)
+    #[arg(long)]
     rom: Option<PathBuf>,
-    /// libretro core library (default: the one saved in .local/local.toml)
-    #[arg(long, global = true)]
+}
+
+impl RomArg {
+    fn local(&self) -> Local {
+        Local { rom: self.rom.clone(), core: None, no_db: false }
+    }
+}
+
+/// The ROM and the core, for commands that run one.
+#[derive(clap::Args, Clone, Default)]
+struct CoreArgs {
+    /// ROM file (default: $DJ_ROM, else the one saved in .local/local.toml). Given here, it
+    /// is saved there
+    #[arg(long)]
+    rom: Option<PathBuf>,
+    /// libretro core library (default: $DJ_CORE, else the one saved in .local/local.toml).
+    /// Given here, it is saved there
+    #[arg(long)]
     core: Option<PathBuf>,
-    /// Run without the local database (.local/cache.db), playing everything from power-on
-    #[arg(long, global = true)]
-    no_db: bool,
+}
+
+impl CoreArgs {
+    fn local(&self, no_db: bool) -> Local {
+        Local { rom: self.rom.clone(), core: self.core.clone(), no_db }
+    }
+}
+
+/// Where a command finds the ROM and the core (given as flags, else `Collection::settings`:
+/// `DJ_ROM` and `DJ_CORE`, then .local/local.toml), and whether it plays without the local
+/// database.
+#[derive(Clone, Default)]
+pub struct Local {
+    pub rom: Option<PathBuf>,
+    pub core: Option<PathBuf>,
+    pub no_db: bool,
+}
+
+/// Which segments a command works on: these, those with these tags, and with --children
+/// those below them. None of either: every one.
+#[derive(clap::Args, Clone, Default)]
+struct Pick {
+    /// These segments (ids or unique prefixes); none: all of them
+    #[arg(value_name = "SEGMENT")]
+    segments: Vec<String>,
+    /// Also the segments with this tag in their `tags:` header (repeatable: any of them)
+    #[arg(long = "tag", value_name = "NAME")]
+    tags: Vec<String>,
+    /// Also every segment below each one chosen
+    #[arg(long)]
+    children: bool,
+}
+
+impl From<Pick> for parity_cmd::Pick {
+    fn from(p: Pick) -> Self {
+        parity_cmd::Pick { segments: p.segments, tags: p.tags, children: p.children }
+    }
 }
 
 #[derive(clap::Args, Clone)]
@@ -44,15 +100,15 @@ struct QueryArgs {
     /// Skip this many rows (the `next_cursor` of a previous page)
     #[arg(long, default_value_t = 0)]
     cursor: usize,
-    /// ROM file (default: the one saved in .local/local.toml)
-    #[arg(long)]
-    rom: Option<PathBuf>,
+    #[command(flatten)]
+    rom: RomArg,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
     /// Create a project pinned to a ROM and a core, with every core option recorded
     Init {
+        /// The folder to create the project in
         dir: PathBuf,
         #[arg(long)]
         name: String,
@@ -72,7 +128,6 @@ enum Cmd {
     },
     /// Create an empty segment
     New {
-        dir: PathBuf,
         #[arg(long)]
         parent: Option<String>,
         #[arg(long, default_value = "")]
@@ -81,10 +136,9 @@ enum Cmd {
         frames: u64,
     },
     /// Show the segment tree with clean and dirty marks (no emulation)
-    Status { dir: PathBuf },
+    Status,
     /// Import a BizHawk TAS movie (.bk2) as a new root segment, and print its id
     ImportTas {
-        dir: PathBuf,
         file: PathBuf,
         /// Title of the new segment (default: the game and the movie's author)
         #[arg(long)]
@@ -92,13 +146,12 @@ enum Cmd {
         /// Refuse a movie made with a different ROM, instead of warning
         #[arg(long)]
         strict: bool,
-        /// ROM to check the movie against (default: the one in .local/local.toml)
+        /// ROM to check the movie against
         #[command(flatten)]
-        local: Local,
+        rom: RomArg,
     },
     /// Export the chain from the root segment down to SEGMENT as a BizHawk TAS movie (.bk2)
     ExportTas {
-        dir: PathBuf,
         segment: String,
         /// The movie to write (.bk2)
         #[arg(long)]
@@ -112,162 +165,104 @@ enum Cmd {
         /// Refuse a chain with what the movie can't carry (resets, [WRITE], [RNG], [DEVICE], a snapshot start), instead of leaving it out with a warning
         #[arg(long)]
         strict: bool,
-        /// ROM the movie names (default: the one in .local/local.toml)
+        /// ROM the movie names
         #[command(flatten)]
-        local: Local,
+        rom: RomArg,
     },
-    /// Play one segment (and its ancestors), check hashes, and save screenshots
-    Play {
-        dir: PathBuf,
-        id: String,
+    /// Play segments (every one, or those chosen, with the segments above them) and compare
+    /// their hashes with the recorded ones; fails when one differs. Writes no file: `dj
+    /// clean` records hashes
+    Check {
         #[command(flatten)]
-        local: Local,
-        /// Save the last frame (and any [SCREENSHOT] frames) as PNGs here
+        core: CoreArgs,
+        #[command(flatten)]
+        pick: Pick,
+        /// Run without the local database (.local/cache.db)
         #[arg(long)]
+        no_db: bool,
+        /// Play each chain from its root segment instead of from its parent's end state, or
+        /// a stored state of a segment above (checks that states save and load exactly)
+        #[arg(long)]
+        from_power_on: bool,
+        /// Save each segment's last frame (and any [SCREENSHOT] frames) as PNGs in this folder
+        #[arg(long, value_name = "DIR")]
         screenshots: Option<PathBuf>,
-        /// Also capture these frames (relative to the segment)
-        #[arg(long, value_delimiter = ',')]
+        /// With --screenshots: also these frames of each segment (counted from its start)
+        #[arg(long, value_delimiter = ',', requires = "screenshots")]
         shot: Vec<u64>,
-        /// Play from the root segment instead of a stored ancestor state
+        /// Also fail on a segment with no recorded hashes ("new": never cleaned), as CI
+        /// should: it proves nothing
         #[arg(long)]
-        no_cache: bool,
-        /// Write the hashes this run produced into the segment files
-        #[arg(long)]
-        accept: bool,
-    },
-    /// Play every segment, check hashes, and record coverage
-    Run {
-        dir: PathBuf,
-        #[command(flatten)]
-        local: Local,
-        /// Play each chain from its root segment instead of reusing parent states (determinism check)
-        #[arg(long)]
-        from_scratch: bool,
-        /// Write the hashes this run produced into the segment files
-        #[arg(long)]
-        accept: bool,
-        /// Save each segment's last frame to .local/screenshots/
-        #[arg(long)]
-        screenshots: bool,
-    },
-    /// Fill the local database without recording hashes: play the segments whose current
-    /// content isn't stored yet (dj clean does this too, and records hashes)
-    Hydrate {
-        dir: PathBuf,
-        #[command(flatten)]
-        local: Local,
-        /// Only this segment (id or unique prefix)
-        segment: Option<String>,
-        /// With a segment: also every segment below it
-        #[arg(long)]
-        children: bool,
-        /// Play segments again even if their content is stored
-        #[arg(long)]
-        force: bool,
-    },
-    /// Check segments against a comparison core ([[compare]]) frame by frame, as Check parity
-    /// does in dj-gui, each from its own start, stopping a segment at its first failure.
-    /// Segments already checked with this build are skipped (unless --all). Exits 1 when a
-    /// frame fails. With --report, --rerun or --clear, works with the results kept instead
-    Parity {
-        dir: PathBuf,
-        #[command(flatten)]
-        local: Local,
-        /// Only this segment (id or unique prefix)
-        segment: Option<String>,
-        /// With a segment: also every segment below it
-        #[arg(long)]
-        children: bool,
-        /// The [[compare]] entry to check against (needed when there are several)
-        #[arg(long, value_name = "NAME")]
-        compare: Option<String>,
-        /// Check segments again even if they were checked with this build
-        #[arg(long)]
-        all: bool,
-        /// Also check segments that aren't clean
-        #[arg(long)]
-        dirty: bool,
-        /// Print JSON instead of text
-        #[arg(long)]
-        json: bool,
-        /// Report the results kept (per function, and the failures) without running a core
-        #[arg(long, conflicts_with_all = ["rerun", "clear"])]
-        report: bool,
-        /// Play failures again with the build there is now: these ids, or every failure from
-        /// an older build. One that passes is cleared
-        #[arg(long, value_name = "ID", num_args = 0.., conflicts_with = "clear")]
-        rerun: Option<Vec<i64>>,
-        /// Forget these failures
-        #[arg(long, value_name = "ID", num_args = 1..)]
-        clear: Vec<i64>,
-        /// With --report: functions to list
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-        /// One JSON line per segment as it finishes (for the MCP server's parity jobs)
-        #[arg(long, hide = true)]
-        events: bool,
-        /// Play this failure again and say what differed, and which instruction of the
-        /// original wrote each value (needs a trace hook in the baseline's connector)
-        #[arg(long, value_name = "ID", conflicts_with_all = ["rerun", "clear", "report"])]
-        explain: Option<i64>,
-        /// With --explain: also trace this many frames before the failing one
-        #[arg(long, default_value_t = 10, value_name = "N")]
-        frames_back: u64,
+        strict: bool,
+        /// Also write a JUnit XML report here, one test case per segment (default: in the
+        /// folder $DJ_JUNIT names, if set)
+        #[arg(long, value_name = "FILE")]
+        junit: Option<PathBuf>,
     },
     /// Play, top down, the segments that aren't clean or whose content isn't in the local
     /// database, and write the hashes they reach into their files (as Clean all segments does
     /// in dj-gui, which leaves them unsaved instead). A changed ending is listed, not written,
     /// and the command fails, unless --accept
     Clean {
-        dir: PathBuf,
         #[command(flatten)]
-        local: Local,
-        /// Only this segment and every segment below it (id or unique prefix)
+        core: CoreArgs,
+        /// Only this segment (id or unique prefix)
         segment: Option<String>,
+        /// With a segment: also every segment below it
+        #[arg(long, requires = "segment")]
+        children: bool,
         /// Also write changed endings (and go on below them)
         #[arg(long)]
         accept: bool,
-        /// Replay every segment, even those whose content is stored
+        /// Play segments again even if their content is stored
         #[arg(long)]
-        all: bool,
+        force: bool,
+    },
+    /// Check segments against a comparison core ([[compare]]), and work with the results kept
+    Parity {
+        #[command(subcommand)]
+        cmd: ParityCmd,
     },
     /// Which segments first run an address, at which frame, nearest snapshot first
     #[command(alias = "where")]
     Xref {
-        dir: PathBuf,
         /// PRG:0x1F3A, 0x1F3A (a PRG offset), $C123 (a CPU address) or a symbol name (name+0x10 works)
         what: String,
         #[command(flatten)]
         query: QueryArgs,
     },
-    /// Coverage headline numbers
+    /// Coverage of the current, clean, saved segments: the headline numbers, and what was
+    /// left out
     Summary {
-        dir: PathBuf,
+        /// Also each segment's own share, and the smallest set of segments that keeps all
+        /// the coverage
+        #[arg(long)]
+        segments: bool,
         #[command(flatten)]
         query: QueryArgs,
     },
     /// Functions with uncovered code, largest or nearest first
     Gaps {
-        dir: PathBuf,
         /// size (most uncovered instructions) or nearness (skipped by a covered branch first)
         #[arg(long, default_value = "size")]
         sort: decomp_dj::query::GapSort,
         /// all, never (functions never entered) or partial
         #[arg(long, default_value = "all")]
         only: decomp_dj::query::GapFilter,
+        /// Write every uncovered block to this CSV file instead (needs a symbol map)
+        #[arg(long, value_name = "FILE", conflicts_with = "json")]
+        csv: Option<PathBuf>,
         #[command(flatten)]
         query: QueryArgs,
     },
     /// One function: its blocks, which run, which segments enter it, its callers
     Function {
-        dir: PathBuf,
         what: String,
         #[command(flatten)]
         query: QueryArgs,
     },
     /// Covered branches and calls that lead into uncovered code, with the segments that reach them
     Frontier {
-        dir: PathBuf,
         /// An address in uncovered code, or a function; leave out for the whole ROM
         what: Option<String>,
         #[command(flatten)]
@@ -275,170 +270,365 @@ enum Cmd {
     },
     /// Developer tool: check the connector's coverage flags against the decoder, inside the
     /// symbol maps' functions (docs/cli.md)
-    CheckConnector {
-        dir: PathBuf,
+    ConnectorCheck {
         #[command(flatten)]
         query: QueryArgs,
     },
     /// Serve the project to an agent over MCP (stdio); see docs/mcp.md
     Mcp {
-        dir: PathBuf,
         /// What the agent may do: query, draft (the default) or save
         #[arg(long)]
         allow: Option<mcp::tools::Allow>,
     },
     /// Internal: one core driven by `dj mcp` over a pipe
     #[command(hide = true)]
-    Worker { dir: PathBuf },
+    Worker,
     /// After rebuilding or updating the core: play every segment from power-on with it and,
     /// if every hash still matches, record its build in config.toml ([core] build)
     Repin {
-        dir: PathBuf,
         #[command(flatten)]
-        local: Local,
+        core: CoreArgs,
     },
     /// Rewrite every segment file in this dj's format (the first line, older field names) and
     /// record this dj in config.toml. What the segments play doesn't change
-    Upgrade { dir: PathBuf },
+    Upgrade,
     /// Write the core state at a frame of a segment, to start a trace from
     Snapshot {
-        dir: PathBuf,
         segment: String,
         frame: u64,
         #[arg(long)]
         out: PathBuf,
         #[command(flatten)]
-        local: Local,
+        core: CoreArgs,
+        /// Run without the local database (.local/cache.db)
+        #[arg(long)]
+        no_db: bool,
     },
     /// Run an SQL query on the local database
-    Sql { dir: PathBuf, query: String },
+    Sql { query: String },
     /// Local database size, or clean it up
     Cache {
         #[command(subcommand)]
         cmd: CacheCmd,
     },
-    /// Report coverage of the current segments
-    Report {
-        dir: PathBuf,
-        #[command(flatten)]
-        local: Local,
-        /// Write the full report as JSON
-        #[arg(long)]
-        json: Option<PathBuf>,
-        /// Write a CSV of uncovered blocks for collaborators
-        #[arg(long)]
-        gaps: Option<PathBuf>,
-    },
     /// List annotations.toml's entries, and check them against the coverage
     Annotations {
-        dir: PathBuf,
         #[command(flatten)]
-        local: Local,
+        rom: RomArg,
+    },
+}
+
+#[derive(Subcommand)]
+enum ParityCmd {
+    /// Check segments, each from its own start, at every verdict the comparison core gives
+    /// (at its breakpoints in the original, or at frame ends), stopping a segment at its
+    /// first failure, as Check parity does in dj-gui. Segments already checked with this
+    /// build are skipped (unless --again). Exits 1 when one fails
+    Check {
+        #[command(flatten)]
+        core: CoreArgs,
+        #[command(flatten)]
+        pick: Pick,
+        /// The [[compare]] entry to check against (needed when there are several)
+        #[arg(long, value_name = "NAME")]
+        compare: Option<String>,
+        /// Check segments again even if they were checked with this build
+        #[arg(long)]
+        again: bool,
+        /// Also check segments that aren't clean
+        #[arg(long)]
+        dirty: bool,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+        /// One JSON line per segment as it finishes (for the MCP server's parity jobs)
+        #[arg(long, hide = true)]
+        events: bool,
+        /// Also write a JUnit XML report here, one test case per segment (default: in the
+        /// folder $DJ_JUNIT names, if set)
+        #[arg(long, value_name = "FILE")]
+        junit: Option<PathBuf>,
+    },
+    /// The results kept: instructions and functions by parity, and the failures with
+    /// their ids. Runs no core
+    Report {
+        #[command(flatten)]
+        rom: RomArg,
+        /// The [[compare]] entry (needed when there are several)
+        #[arg(long, value_name = "NAME")]
+        compare: Option<String>,
+        /// Functions to list
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Play failures again, each from its last jump, with the build there is now: these ids,
+    /// or with none every failure from an older build. One from an older build that passes
+    /// is cleared. Exits 1 when one still fails
+    Rerun {
+        /// Failure ids (`dj parity report` lists them)
+        ids: Vec<i64>,
+        #[command(flatten)]
+        core: CoreArgs,
+        /// The [[compare]] entry (needed when there are several)
+        #[arg(long, value_name = "NAME")]
+        compare: Option<String>,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+        /// One JSON line per failure as it finishes (for the MCP server's parity jobs)
+        #[arg(long, hide = true)]
+        events: bool,
+    },
+    /// Forget failures. Runs no core
+    Clear {
+        /// Failure ids (`dj parity report` lists them)
+        #[arg(required = true)]
+        ids: Vec<i64>,
+        /// The [[compare]] entry (needed when there are several)
+        #[arg(long, value_name = "NAME")]
+        compare: Option<String>,
+    },
+    /// Play a failure again and say what differed, and which instruction of the original
+    /// wrote each value (needs a trace hook in the baseline's connector). Keeps no results
+    Explain {
+        /// The failure's id (`dj parity report` lists them)
+        id: i64,
+        #[command(flatten)]
+        core: CoreArgs,
+        /// The [[compare]] entry (needed when there are several)
+        #[arg(long, value_name = "NAME")]
+        compare: Option<String>,
+        /// Also trace this many frames before the failing one
+        #[arg(long, default_value_t = 10, value_name = "N")]
+        frames_back: u64,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Load the comparison core and say what it is: how it follows the baseline, whether it
+    /// follows [WRITE] lines, its pre-roll, its build, and its breakpoints in the original,
+    /// each checked against the baseline connector's regions. Exits 1 when one can't be set
+    Core {
+        #[command(flatten)]
+        core: CoreArgs,
+        /// The [[compare]] entry (needed when there are several)
+        #[arg(long, value_name = "NAME")]
+        compare: Option<String>,
+        /// Print JSON instead of text
+        #[arg(long)]
+        json: bool,
     },
 }
 
 #[derive(Subcommand)]
 enum CacheCmd {
     /// What the local database holds
-    Stats { dir: PathBuf },
+    Stats,
     /// Drop content no current segment uses, and pages no snapshot uses. Refuses while a
     /// dj-gui has the project open (its unsaved edits' snapshots would go), unless --force
     Gc {
-        dir: PathBuf,
         #[command(flatten)]
-        local: Local,
+        core: CoreArgs,
         /// Run even while a dj-gui has the project open
         #[arg(long)]
         force: bool,
     },
+    /// Fill the local database: play the segments whose content isn't stored yet, top down,
+    /// and write no file. Unlike `dj clean` it records no hashes, so it plays segments that
+    /// aren't clean too, from wherever they start now
+    Fill {
+        #[command(flatten)]
+        core: CoreArgs,
+        /// Only this segment (id or unique prefix)
+        segment: Option<String>,
+        /// With a segment: also every segment below it
+        #[arg(long, requires = "segment")]
+        children: bool,
+        /// Play segments again even if their content is stored
+        #[arg(long)]
+        force: bool,
+    },
+    /// Write the states that checking these segments starts from, one file each, named by
+    /// state hash: for `dj cache seed` on another machine (CI: docs/ci.md). Each segment's
+    /// start (its parent's end) and, with a [[compare]] preroll, the start of the segment its
+    /// pre-roll begins in. They hold the game's memory: keep them where the ROM is kept
+    Export {
+        #[command(flatten)]
+        core: CoreArgs,
+        #[command(flatten)]
+        pick: Pick,
+        /// The [[compare]] entry whose preroll to allow for (default: the largest of all)
+        #[arg(long, value_name = "NAME")]
+        compare: Option<String>,
+        /// The folder to write them into
+        #[arg(long, value_name = "DIR")]
+        out: PathBuf,
+    },
+    /// Store states written by `dj cache export`, checked by hash: each is loaded into the
+    /// core and kept only if its state hash is a clean segment's recorded end hash. Exits 1
+    /// when one is refused
+    Seed {
+        /// State files, or folders of them
+        #[arg(required = true, value_name = "FILE")]
+        files: Vec<PathBuf>,
+        #[command(flatten)]
+        core: CoreArgs,
+    },
 }
 
 fn main() {
-    // Started as a worker for code dj doesn't trust (.agents/ISOLATION_PLAN.md)?
+    // Started as a worker for code dj doesn't trust (docs/decoders.md, docs/cli.md)?
     decomp_dj::isolate::run_if_worker();
     if let Err(e) = real_main() {
-        eprintln!("error: {e:#}");
+        eprintln!("{} {e:#}", decomp_dj::style::err("error:", decomp_dj::style::Tone::Bad));
         std::process::exit(2);
     }
 }
 
+/// Ends the process with a command's exit status when it isn't 0. Every command uses the
+/// same three: 0 all is well, 1 the command ran and found something wrong (hashes that
+/// differ, a parity failure, an annotation that ran), 2 it couldn't do its job (an error).
+fn exit_with(code: i32) -> Result<()> {
+    if code != 0 {
+        std::process::exit(code);
+    }
+    Ok(())
+}
+
+/// The end of a command that ran and found something wrong: says so on stderr, and gives
+/// exit status 1 (an error, which can't do its job, is 2).
+fn found(what: String) -> Result<i32> {
+    eprintln!("{} {what}", decomp_dj::style::err("failed:", decomp_dj::style::Tone::Bad));
+    Ok(1)
+}
+
 fn real_main() -> Result<()> {
+    if let Some(d) = old_form(std::env::args_os().skip(1)) {
+        eprintln!("{} {d} is a project folder, which dj no longer takes as an argument: run dj inside it, or pass -C {d} (as in dj -C {d} check)", decomp_dj::style::err("error:", decomp_dj::style::Tone::Bad));
+        std::process::exit(2);
+    }
     let cli = Cli::parse();
+    if let Cmd::Init { dir, name, rom, core, core_build, options, symbols } = &cli.cmd {
+        if cli.project.is_some() {
+            bail!("dj init takes the folder to create as its argument, not -C");
+        }
+        return init(dir, name, rom, core, core_build.clone(), options, symbols.as_deref());
+    }
+    let dir = project_dir(cli.project.as_deref())?;
     // Batch commands play in a child dj, so a core that crashes or hangs costs a segment,
-    // not the command (.agents/ISOLATION_PLAN.md).
-    let parity_plays = matches!(&cli.cmd, Cmd::Parity { report: false, clear, .. } if clear.is_empty());
-    // `dj parity` plays only when it checks or re-runs (its reports and clears run no core).
-    let plays = !matches!(&cli.cmd, Cmd::Parity { .. }) || parity_plays;
-    if let Cmd::Run { dir, .. } | Cmd::Clean { dir, .. } | Cmd::Hydrate { dir, .. } | Cmd::Parity { dir, .. } = &cli.cmd {
-        if plays {
-            if let Some(code) = decomp_dj::isolate::supervise(dir)? {
-                std::process::exit(code);
-            }
+    // not the command (docs/cli.md). The parity commands that run no core don't need one.
+    let batch = matches!(
+        &cli.cmd,
+        Cmd::Check { .. } | Cmd::Clean { .. } | Cmd::Cache { cmd: CacheCmd::Fill { .. } } | Cmd::Parity { cmd: ParityCmd::Check { .. } | ParityCmd::Rerun { .. } | ParityCmd::Explain { .. } }
+    );
+    if batch {
+        if let Some(code) = decomp_dj::isolate::supervise(&dir)? {
+            std::process::exit(code);
         }
     }
     // A project a newer dj wrote, or settings this dj doesn't know: said once, here (in the
     // batch child when supervised, so not twice).
-    if let Some(dir) = cmd_dir(&cli.cmd) {
-        if let Ok(t) = decomp_dj::collection::layered_table(dir) {
-            for w in decomp_dj::collection::check_versions(&t).unwrap_or_default() {
-                eprintln!("warning: {w}");
-            }
+    if let Ok(t) = decomp_dj::collection::layered_table(&dir) {
+        for w in decomp_dj::collection::check_versions(&t).unwrap_or_default() {
+            eprintln!("warning: {w}");
         }
     }
     match cli.cmd {
-        Cmd::Init { dir, name, rom, core, core_build, options, symbols } => init(&dir, &name, &rom, &core, core_build, &options, symbols.as_deref()),
-        Cmd::New { dir, parent, title, frames } => new_replay(&dir, parent, &title, frames),
-        Cmd::Status { dir } => status(&dir),
-        Cmd::ImportTas { dir, file, title, strict, local } => import_tas(&dir, &file, title.as_deref(), strict, &local),
-        Cmd::ExportTas { dir, segment, out, through, author, strict, local } => export_tas(&dir, &segment, &out, through, author.as_deref(), strict, &local),
-        Cmd::Play { dir, id, local, screenshots, shot, no_cache, accept } => play(&dir, &id, &local, screenshots, shot, no_cache, accept),
-        Cmd::Run { dir, local, from_scratch, accept, screenshots } => run(&dir, &local, from_scratch, accept, screenshots),
-        Cmd::Report { dir, local, json, gaps } => report(&dir, &local, json, gaps),
-        Cmd::Annotations { dir, local } => annotations(&dir, &local),
-        Cmd::Hydrate { dir, local, segment, children, force } => hydrate(&dir, &local, segment, children, force),
-        Cmd::Clean { dir, local, segment, accept, all } => clean(&dir, &local, segment, accept, all),
-        Cmd::Parity { dir, local, segment, children, compare, all, dirty, json, report, rerun, clear, limit, events, explain, frames_back } => {
-            let code = parity_cmd::parity(&dir, &local, parity_cmd::Args { segment, children, compare, all, dirty, json, events, report, rerun, clear, limit, explain, frames_back })?;
-            if code != 0 {
-                std::process::exit(code);
-            }
-            Ok(())
-        }
-        Cmd::Xref { dir, what, query } => queries::xref(&dir, &what, &query),
-        Cmd::Summary { dir, query } => queries::summary(&dir, &query),
-        Cmd::Gaps { dir, sort, only, query } => queries::gaps(&dir, sort, only, &query),
-        Cmd::Function { dir, what, query } => queries::function(&dir, &what, &query),
-        Cmd::Frontier { dir, what, query } => queries::frontier(&dir, what.as_deref(), &query),
-        Cmd::CheckConnector { dir, query } => queries::check_connector(&dir, &query),
-        Cmd::Snapshot { dir, segment, frame, out, local } => snapshot_cmd(&dir, &segment, frame, &out, &local),
-        Cmd::Sql { dir, query } => sql(&dir, &query),
-        Cmd::Worker { dir } => mcp::worker::run(dir),
-        Cmd::Repin { dir, local } => repin(&dir, &local),
-        Cmd::Upgrade { dir } => upgrade(&dir),
-        Cmd::Mcp { dir, allow } => mcp::serve(dir, mcp::tools::Options { allow }),
-        Cmd::Cache { cmd: CacheCmd::Stats { dir } } => cache_stats(&dir),
-        Cmd::Cache { cmd: CacheCmd::Gc { dir, local, force } } => cache_gc(&dir, &local, force),
+        Cmd::Init { .. } => unreachable!("dj init is handled above"),
+        Cmd::New { parent, title, frames } => new_replay(&dir, parent, &title, frames),
+        Cmd::Status => status(&dir),
+        Cmd::ImportTas { file, title, strict, rom } => import_tas(&dir, &file, title.as_deref(), strict, &rom.local()),
+        Cmd::ExportTas { segment, out, through, author, strict, rom } => export_tas(&dir, &segment, &out, through, author.as_deref(), strict, &rom.local()),
+        Cmd::Check { core, pick, no_db, from_power_on, screenshots, shot, strict, junit } => exit_with(check(&dir, &core.local(no_db), pick.into(), from_power_on, screenshots.as_deref(), shot, strict, junit.as_deref())?),
+        Cmd::Annotations { rom } => exit_with(annotations(&dir, &rom.local())?),
+        Cmd::Clean { core, segment, children, accept, force } => exit_with(clean(&dir, &core.local(false), segment, children, accept, force)?),
+        Cmd::Parity { cmd } => exit_with(match cmd {
+            ParityCmd::Check { core, pick, compare, again, dirty, json, events, junit } => parity_cmd::check(&dir, &core.local(false), parity_cmd::CheckArgs { pick: pick.into(), compare, again, dirty, json, events, junit })?,
+            ParityCmd::Report { rom, compare, limit, json } => parity_cmd::report(&dir, &rom.local(), compare.as_deref(), limit, json)?,
+            ParityCmd::Rerun { ids, core, compare, json, events } => parity_cmd::rerun(&dir, &core.local(false), compare.as_deref(), &ids, json, events)?,
+            ParityCmd::Clear { ids, compare } => parity_cmd::clear(&dir, compare.as_deref(), &ids)?,
+            ParityCmd::Explain { id, core, compare, frames_back, json } => parity_cmd::explain(&dir, &core.local(false), compare.as_deref(), id, frames_back, json)?,
+            ParityCmd::Core { core, compare, json } => parity_cmd::core(&dir, &core.local(true), compare.as_deref(), json)?,
+        }),
+        Cmd::Xref { what, query } => queries::xref(&dir, &what, &query),
+        Cmd::Summary { segments, query } => queries::summary(&dir, segments, &query),
+        Cmd::Gaps { sort, only, csv, query } => queries::gaps(&dir, sort, only, csv.as_deref(), &query),
+        Cmd::Function { what, query } => queries::function(&dir, &what, &query),
+        Cmd::Frontier { what, query } => queries::frontier(&dir, what.as_deref(), &query),
+        Cmd::ConnectorCheck { query } => exit_with(queries::connector_check(&dir, &query)?),
+        Cmd::Snapshot { segment, frame, out, core, no_db } => snapshot_cmd(&dir, &segment, frame, &out, &core.local(no_db)),
+        Cmd::Sql { query } => sql(&dir, &query),
+        Cmd::Worker => mcp::worker::run(dir.clone()),
+        Cmd::Repin { core } => exit_with(repin(&dir, &core.local(false))?),
+        Cmd::Upgrade => upgrade(&dir),
+        Cmd::Mcp { allow } => mcp::serve(dir.clone(), mcp::tools::Options { allow }),
+        Cmd::Cache { cmd: CacheCmd::Stats } => cache_stats(&dir),
+        Cmd::Cache { cmd: CacheCmd::Gc { core, force } } => cache_gc(&dir, &core.local(false), force),
+        Cmd::Cache { cmd: CacheCmd::Fill { core, segment, children, force } } => fill(&dir, &core.local(false), segment, children, force),
+        Cmd::Cache { cmd: CacheCmd::Export { core, pick, compare, out } } => cache_export(&dir, &core.local(false), pick.into(), compare.as_deref(), &out),
+        Cmd::Cache { cmd: CacheCmd::Seed { files, core } } => exit_with(cache_seed(&dir, &core.local(false), &files)?),
     }
 }
 
-/// The project a command works on, if any.
-fn cmd_dir(cmd: &Cmd) -> Option<&Path> {
-    Some(match cmd {
-        Cmd::Init { .. } => return None,
-        Cmd::ImportTas { dir, .. } | Cmd::ExportTas { dir, .. } => dir,
-        Cmd::New { dir, .. } | Cmd::Status { dir } | Cmd::Play { dir, .. } | Cmd::Run { dir, .. } | Cmd::Report { dir, .. } | Cmd::Annotations { dir, .. } | Cmd::Hydrate { dir, .. } | Cmd::Clean { dir, .. } | Cmd::Parity { dir, .. } => dir,
-        Cmd::Xref { dir, .. } | Cmd::Summary { dir, .. } | Cmd::Gaps { dir, .. } | Cmd::Function { dir, .. } | Cmd::Frontier { dir, .. } | Cmd::CheckConnector { dir, .. } => dir,
-        Cmd::Snapshot { dir, .. } | Cmd::Sql { dir, .. } | Cmd::Worker { dir } | Cmd::Mcp { dir, .. } | Cmd::Repin { dir, .. } | Cmd::Upgrade { dir } => dir,
-        Cmd::Cache { cmd: CacheCmd::Stats { dir } } | Cmd::Cache { cmd: CacheCmd::Gc { dir, .. } } => dir,
-        #[allow(unreachable_patterns)]
-        _ => return None,
-    })
+/// Whether `d` holds a dj project: a config.toml with dj's `[rom]` and `[core]` tables
+/// (another tool's config.toml is not one), or an older project's collection.toml.
+fn is_project(d: &Path) -> bool {
+    if d.join("collection.toml").is_file() {
+        return true;
+    }
+    let Ok(text) = std::fs::read_to_string(d.join("config.toml")) else { return false };
+    let Ok(t) = text.parse::<toml::Table>() else { return false };
+    t.get("rom").is_some_and(|v| v.is_table()) && t.get("core").is_some_and(|v| v.is_table())
+}
+
+/// The project a command works on: `-C DIR`, else the nearest folder with a project, from
+/// the current one up. Other relative paths stay relative to the current folder.
+fn project_dir(given: Option<&Path>) -> Result<PathBuf> {
+    if let Some(d) = given {
+        if !is_project(d) {
+            bail!("{} isn't a dj project (no config.toml with [rom] and [core])", d.display());
+        }
+        return Ok(d.to_path_buf());
+    }
+    let here = std::env::current_dir().context("finding the current folder")?;
+    for d in here.ancestors() {
+        if is_project(d) {
+            return Ok(if d == here { PathBuf::from(".") } else { d.to_path_buf() });
+        }
+    }
+    bail!("not in a dj project (no config.toml here or in a folder above); run dj inside one, or pass -C DIR")
+}
+
+/// The old way of naming the project, `dj check examples/thwaite`: the first argument that
+/// isn't a flag's value and is a project folder. dj init is left alone.
+fn old_form(args: impl Iterator<Item = std::ffi::OsString>) -> Option<String> {
+    let mut skip = false;
+    for a in args {
+        let a = a.to_string_lossy().into_owned();
+        if std::mem::take(&mut skip) {
+            continue;
+        }
+        if a == "-C" || a == "--project" {
+            skip = true;
+            continue;
+        }
+        if a == "init" {
+            return None;
+        }
+        if !a.starts_with('-') && is_project(Path::new(&a)) {
+            return Some(a);
+        }
+    }
+    None
 }
 
 fn resolve_local(col: &Collection, local: &Local) -> Result<(PathBuf, PathBuf)> {
     let saved = col.settings()?;
-    let rom = local.rom.clone().or(saved.rom).ok_or_else(|| anyhow!("no ROM given; pass --rom (it is then remembered)"))?;
-    let core = local.core.clone().or(saved.core).ok_or_else(|| anyhow!("no core given; pass --core (it is then remembered)"))?;
+    let rom = local.rom.clone().or(saved.rom).ok_or_else(|| anyhow!("no ROM given; pass --rom (it is then remembered) or set DJ_ROM"))?;
+    let core = local.core.clone().or(saved.core).ok_or_else(|| anyhow!("no core given; pass --core (it is then remembered) or set DJ_CORE"))?;
     if local.rom.is_some() || local.core.is_some() {
         let mut saved = col.load_local()?;
         saved.rom = Some(std::fs::canonicalize(&rom).with_context(|| format!("the ROM {}", rom.display()))?);
@@ -537,8 +727,8 @@ fn new_replay(dir: &Path, parent: Option<String>, title: &str, frames: u64) -> R
     Ok(())
 }
 
-/// The project's ROM, for checking a movie against or naming in one: `--rom`, else the one
-/// in the settings. None when neither is set.
+/// The project's ROM, for a command that reads it but runs no core: `--rom`, else the one in
+/// the settings. None when neither is set.
 fn tas_rom(col: &Collection, local: &Local) -> Result<Option<Vec<u8>>> {
     match local.rom.clone().or(col.settings()?.rom) {
         Some(p) => Ok(Some(std::fs::read(&p).with_context(|| format!("reading the ROM {}", p.display()))?)),
@@ -560,11 +750,10 @@ fn import_tas(dir: &Path, file: &Path, title: Option<&str>, strict: bool, local:
     col.replays.insert(id.clone(), imp.replay);
     col.save_replay(&id)?;
     eprintln!(
-        "imported {} frames ({lines} lines, {} subtitles) from {} as a root segment; play it (dj play {} {}) to record its hashes and see how far it stays in sync",
+        "imported {} frames ({lines} lines, {} subtitles) from {} as a root segment; clean it (dj clean {}) to record its hashes, and watch it in dj-gui to see how far it stays in sync",
         frames,
         imp.movie.markers.len(),
         imp.movie.meta.emulator,
-        dir.display(),
         &id[..8]
     );
     println!("{id}");
@@ -604,41 +793,10 @@ fn status(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Compares a result with the replay's recorded hashes. Returns the outcome label.
+/// What a play of a segment produced, compared with the hashes its file records: ok, new
+/// (none recorded yet), dirty (it started somewhere else) or changed.
 fn judge(col: &Collection, res: &ReplayResult) -> &'static str {
-    let r = &col.replays[&res.id];
-    if let Some(s) = r.get("start-hash") {
-        if s != res.start_hash {
-            return "dirty";
-        }
-    }
-    let cps = r.checkpoints().unwrap_or_default();
-    for (f, h) in &cps {
-        if let Some((_, got)) = res.checkpoints.iter().find(|(gf, _)| gf == f) {
-            if got != h {
-                return "changed";
-            }
-        }
-    }
-    match r.get("end-hash") {
-        None => "new",
-        Some(e) if e == res.end_hash => "ok",
-        Some(_) => "changed",
-    }
-}
-
-fn accept(col: &mut Collection, res: &ReplayResult) -> Result<()> {
-    let r = col.replays.get_mut(&res.id).unwrap();
-    r.set("start-frame", &res.start_frame.to_string());
-    r.set("start-hash", &res.start_hash);
-    r.set("end-hash", &res.end_hash);
-    if !res.checkpoints.is_empty() {
-        r.remove_all("checkpoint");
-        for (f, h) in &res.checkpoints {
-            r.add("checkpoint", &format!("{f} {h}"));
-        }
-    }
-    col.save_replay(&res.id)
+    decomp_dj::hydrate::judge_hashes(col, &res.id, &res.start_hash, &res.end_hash, Some(&res.checkpoints))
 }
 
 fn save_shots(res: &ReplayResult, dir: &Path) -> Result<()> {
@@ -650,144 +808,121 @@ fn save_shots(res: &ReplayResult, dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn play(dir: &Path, id: &str, local: &Local, shots: Option<PathBuf>, extra: Vec<u64>, no_cache: bool, do_accept: bool) -> Result<()> {
-    let mut col = Collection::open(dir)?;
-    let id = col.resolve(id)?.to_string();
-    let results = {
-        let mut s = open_session(&col, local)?;
-        let opts = PlayOptions { end_screenshot: shots.is_some(), extra_shots: extra, record: true };
-        s.play_chain(&col, &id, &opts, !no_cache)?
-    };
-    let mut bad = false;
-    for res in &results {
-        let outcome = judge(&col, res);
-        println!("{:<8} {} {}  end {}", outcome, &res.id[..8], col.replays[&res.id].title(), &res.end_hash[..23]);
-        if let Some(d) = &shots {
-            save_shots(res, d)?;
-        }
-        if matches!(outcome, "dirty" | "changed") {
-            bad = true;
-        }
-    }
-    if do_accept {
-        for res in &results {
-            accept(&mut col, res)?;
-        }
-        println!("hashes written");
-    } else if bad {
-        bail!("hashes differ from the recorded ones (use --accept to record the new ones)");
-    }
-    Ok(())
+/// What `check_tree` found: segments whose hashes differ (dirty or changed), and segments
+/// with none recorded ("new").
+#[derive(Default)]
+struct Checked {
+    differ: usize,
+    new: usize,
+    /// One per segment, for a JUnit report.
+    cases: Vec<junit::Case>,
 }
 
-fn run(dir: &Path, local: &Local, from_scratch: bool, do_accept: bool, screenshots: bool) -> Result<()> {
+/// Plays every segment, or those `pick` chooses, and compares each with its recorded hashes,
+/// writing no file. A chosen segment plays from the nearest stored state of a segment above
+/// it (unless `from_power_on`); every one plays from its parent's end, reached in this run.
+fn check_tree(dir: &Path, local: &Local, pick: &parity_cmd::Pick, from_power_on: bool, shots: Option<&Path>, extra_shots: Vec<u64>) -> Result<Checked> {
     let col = Collection::open(dir)?;
-    let shot_dir = col.local_dir().join("screenshots");
-    // What --accept needs, kept after the session (which borrows the collection) ends.
-    let mut accepted: Vec<(ReplayResult, &'static str)> = vec![];
+    let chosen = if pick.segments.is_empty() && pick.tags.is_empty() && !pick.children { None } else { Some(pick.resolve(&col)?) };
     let started = std::time::Instant::now();
-    let mut total_frames = 0u64;
-    {
-        let mut s = open_session(&col, local)?;
-        if !s.core.has_connector() {
-            eprintln!("note: this core has no coverage connector; recording hashes only");
-        }
-        let run_id = match &s.cache {
-            Some(c) => Some(c.begin_run(&col.config.core.build, if from_scratch { "run --from-scratch" } else { "run" })?),
-            None => None,
+    let (mut total_frames, mut found) = (0u64, Checked::default());
+    let mut s = open_session(&col, local)?;
+    if !s.core.has_connector() {
+        eprintln!("note: this core has no coverage connector; checking hashes only");
+    }
+    let opts = PlayOptions { end_screenshot: shots.is_some(), extra_shots, record: true };
+    let mut last = std::time::Instant::now();
+    let mut report = |res: &ReplayResult| -> Result<()> {
+        let outcome = judge(&col, res);
+        let seconds = std::mem::replace(&mut last, std::time::Instant::now()).elapsed().as_secs_f64();
+        let o = match outcome {
+            "ok" => junit::Outcome::Pass,
+            "new" => junit::Outcome::Skip { message: "no recorded hashes: nothing to compare with (dj clean records them)".into() },
+            _ => junit::Outcome::Fail {
+                message: format!("{outcome}: it doesn't reproduce its recorded hashes"),
+                body: format!("start {}\nend {}\nrecorded start {}\nrecorded end {}", res.start_hash, res.end_hash, col.replays[&res.id].get("start-hash").unwrap_or("-"), col.replays[&res.id].get("end-hash").unwrap_or("-")),
+            },
         };
-        let opts = PlayOptions { end_screenshot: screenshots, extra_shots: vec![], record: true };
-        s.play_all(&col, &opts, from_scratch, |s, res| {
-            let outcome = judge(&col, res);
-            let depth = col.chain(&res.id)?.len() - 1;
-            println!(
-                "{:<8} {}{} {}  {}f{}",
-                outcome,
-                "  ".repeat(depth),
-                &res.id[..8],
-                col.replays[&res.id].title(),
-                res.frames,
-                res.ticks.map(|t| format!(", {t} ticks")).unwrap_or_default()
-            );
-            if screenshots {
-                save_shots(res, &shot_dir)?;
+        found.cases.push(junit::Case::segment(&col, &res.id, seconds, o));
+        let depth = col.chain(&res.id)?.len() - 1;
+        println!("{} {}{} {}  {}f{}", decomp_dj::style::verdict(outcome, 8), "  ".repeat(depth), &res.id[..8], col.replays[&res.id].title(), res.frames, res.ticks.map(|t| format!(", {t} ticks")).unwrap_or_default());
+        if let Some(d) = shots {
+            save_shots(res, d)?;
+        }
+        total_frames += res.frames;
+        found.differ += matches!(outcome, "dirty" | "changed") as usize;
+        found.new += (outcome == "new") as usize;
+        Ok(())
+    };
+    match &chosen {
+        None => s.play_all(&col, &opts, from_power_on, |_, res| report(res))?,
+        Some(ids) => {
+            for id in ids {
+                if decomp_dj::isolate::batch_skipped(&col, id).is_some() {
+                    continue;
+                }
+                if let Some(res) = s.play_chain(&col, id, &opts, !from_power_on)?.last() {
+                    report(res)?;
+                }
             }
-            if let (Some(c), Some(run)) = (&s.cache, run_id) {
-                let key = s.content_key(&col, &res.id, &res.start_hash)?;
-                c.run_result(run, &res.id, &key, outcome)?;
-            }
-            total_frames += res.frames;
-            accepted.push((
-                ReplayResult {
-                    id: res.id.clone(),
-                    start_frame: res.start_frame,
-                    frames: res.frames,
-                    start_hash: res.start_hash.clone(),
-                    end_hash: res.end_hash.clone(),
-                    checkpoints: res.checkpoints.clone(),
-                    ticks: res.ticks,
-                    poked: res.poked,
-                    coverage: vec![],
-                    screenshots: vec![],
-                    end_state: vec![],
-                },
-                outcome,
-            ));
-            Ok(())
-        })?;
+        }
+    }
+    // Left out after crashing or hanging the core in an earlier batch child (docs/cli.md).
+    for (id, _) in col.tree_order().into_iter().filter(|(id, _)| chosen.as_ref().is_none_or(|c| c.iter().any(|x| x == id))) {
+        if let Some(why) = decomp_dj::isolate::batch_skipped(&col, id) {
+            found.cases.push(junit::Case::segment(&col, id, 0.0, junit::Outcome::Fail { message: format!("{why}: the core crashed or hung here, or above"), body: String::new() }));
+        }
     }
     let secs = started.elapsed().as_secs_f64();
     println!("played {total_frames} frames in {secs:.2}s ({:.0} frames/s)", total_frames as f64 / secs.max(1e-9));
+    decomp_dj::console::print_inside_frame_summary();
+    Ok(found)
+}
 
-    let mut col = col;
-    let bad = accepted.iter().filter(|(_, o)| matches!(*o, "dirty" | "changed")).count();
-    if do_accept {
-        for (res, _) in &accepted {
-            accept(&mut col, res)?;
+/// `dj check`: exit 1 when a segment doesn't reproduce its recorded hashes, or with
+/// `strict` has none recorded.
+#[allow(clippy::too_many_arguments)]
+fn check(dir: &Path, local: &Local, pick: parity_cmd::Pick, from_power_on: bool, shots: Option<&Path>, extra_shots: Vec<u64>, strict: bool, junit_to: Option<&Path>) -> Result<i32> {
+    if let Some(d) = shots {
+        std::fs::create_dir_all(d).with_context(|| format!("creating {}", d.display()))?;
+    }
+    let mut c = check_tree(dir, local, &pick, from_power_on, shots, extra_shots)?;
+    if let Some(path) = junit::target(junit_to, "dj-check.xml") {
+        if strict {
+            for case in &mut c.cases {
+                if let junit::Outcome::Skip { message } = &case.outcome {
+                    case.outcome = junit::Outcome::Fail { message: message.clone(), body: "--strict: a segment with no recorded hashes fails".into() };
+                }
+            }
         }
-        println!("hashes written for {} segments", accepted.len());
-    } else if bad > 0 {
-        bail!("{bad} segments differ from their recorded hashes (use --accept to record the new ones)");
+        junit::write(&path, "dj check", &c.cases)?;
     }
-    Ok(())
+    if c.differ > 0 {
+        return found(format!("{} segment(s) differ from their recorded hashes (`dj clean --accept` records the new ones)", c.differ));
+    }
+    if c.new > 0 {
+        let what = format!("{} segment(s) have no recorded hashes, so nothing was checked for them (`dj clean` records them)", c.new);
+        if strict {
+            return found(what);
+        }
+        eprintln!("note: {what}");
+    }
+    Ok(0)
 }
 
-fn report(dir: &Path, local: &Local, json: Option<PathBuf>, gaps: Option<PathBuf>) -> Result<()> {
-    let col = Collection::open(dir)?;
-    let rom = match resolve_local(&col, local) {
-        Ok((rom, _)) => Some(std::fs::read(&rom).with_context(|| format!("reading {}", rom.display()))?),
-        Err(_) => None,
-    };
-    let conn = cache::Cache::open_readonly(&col)?;
-    let rep = coverage::build_report(&col, &conn, rom.as_deref(), None)?;
-    coverage::print_report(&rep, &col);
-    if let Some(j) = json {
-        std::fs::write(&j, serde_json::to_string_pretty(&rep)?)?;
-        println!("wrote {}", j.display());
-    }
-    if let Some(g) = gaps {
-        coverage::write_gaps_csv(&rep, &g)?;
-        println!("wrote {}", g.display());
-    }
-    Ok(())
-}
-
-fn annotations(dir: &Path, local: &Local) -> Result<()> {
+fn annotations(dir: &Path, local: &Local) -> Result<i32> {
     use decomp_dj::annotations::{Annotations, Kind};
     let col = Collection::open(dir)?;
     let ann = Annotations::load(&col.root)?;
     if ann.is_empty() {
         println!("no annotations ({} not found or empty)", col.root.join(decomp_dj::annotations::FILE).display());
-        return Ok(());
+        return Ok(0);
     }
-    let rom = match resolve_local(&col, local) {
-        Ok((rom, _)) => Some(std::fs::read(&rom).with_context(|| format!("reading {}", rom.display()))?),
-        Err(_) => None,
-    };
+    let rom = tas_rom(&col, local)?;
     // What the maps alone say, to tell a rename from a new function.
     let maps = decomp_dj::analysis::project_functions(&col, rom.as_deref(), &Annotations::default())?;
     let merged = decomp_dj::analysis::project_functions(&col, rom.as_deref(), &ann)?;
-    let rep = match cache::Cache::open_readonly(&col) {
+    let rep = match cache::Cache::open_existing(&col) {
         Ok(conn) => match coverage::build_report(&col, &conn, rom.as_deref(), None) {
             Ok(r) => Some(r),
             Err(e) => {
@@ -835,21 +970,18 @@ fn annotations(dir: &Path, local: &Local) -> Result<()> {
         println!("left out of coverage: {} unreachable {}, {} data bytes", t.unreachable_instructions, if r.symbols { "instructions" } else { "bytes" }, t.data_bytes);
     }
     if problems > 0 {
-        bail!("{problems} annotated range(s) ran as code");
+        return found(format!("{problems} annotated range(s) ran as code"));
     }
-    Ok(())
+    Ok(0)
 }
 
 /// `dj repin`: checks the whole tree with the core as it is now, then records its build.
-fn repin(dir: &Path, local: &Local) -> Result<()> {
-    // `run`'s own error tells the reader to "use --accept", which is `dj run`'s flag: repin
-    // has none, since its job is to record the build only when nothing changed.
-    if let Err(e) = run(dir, local, true, false, false) {
-        let what = format!("{e:#}").replace(" (use --accept to record the new ones)", "");
-        bail!(
-            "not repinned: some segments don't reproduce their hashes with this core: {what}. If the new hashes are the right ones, record them with `dj run {} --from-scratch --accept`, then run `dj repin` again",
-            dir.display()
-        );
+fn repin(dir: &Path, local: &Local) -> Result<i32> {
+    let bad = check_tree(dir, local, &parity_cmd::Pick::default(), true, None, vec![])?.differ;
+    if bad > 0 {
+        return found(format!(
+            "not repinned: {bad} segment(s) don't reproduce their hashes with this core. If the new hashes are the right ones, record them with `dj clean --force --accept`, then run `dj repin` again"
+        ));
     }
     let mut col = Collection::open(dir)?;
     let (_, core) = resolve_local(&col, local)?;
@@ -857,12 +989,12 @@ fn repin(dir: &Path, local: &Local) -> Result<()> {
     let sha = sha256_file(&libretro::library_path(&core))?;
     if build == col.config.core.build {
         println!("every segment matches; [core] build is already \"{build}\"");
-        return Ok(());
+        return Ok(0);
     }
     let was = col.config.core.build.clone();
     col.set_core_build(&build, Some(&sha))?;
     println!("every segment matches: [core] build \"{was}\" -> \"{build}\" in config.toml{}", if col.config.core.sha256.is_empty() { "" } else { " (and its sha256)" });
-    Ok(())
+    Ok(0)
 }
 
 /// `dj upgrade`: every segment file and config.toml in this dj's format.
@@ -889,10 +1021,9 @@ fn upgrade(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn hydrate(dir: &Path, local: &Local, segment: Option<String>, children: bool, force: bool) -> Result<()> {
-    if local.no_db {
-        bail!("hydrate fills the local database, so it can't run with --no-db");
-    }
+/// `dj cache fill`: fills the local database with what isn't stored yet. Unlike a
+/// clean it records no hashes, and so plays dirty segments too, from wherever they start now.
+fn fill(dir: &Path, local: &Local, segment: Option<String>, children: bool, force: bool) -> Result<()> {
     let mut col = Collection::open(dir)?;
     let seg = match &segment {
         Some(s) => Some(col.resolve(s)?.to_string()),
@@ -904,11 +1035,12 @@ fn hydrate(dir: &Path, local: &Local, segment: Option<String>, children: bool, f
     while !h.done() {
         for ev in h.step(&mut s, &mut col, std::time::Duration::from_secs(3600), 0)? {
             let depth = col.chain(&ev.id)?.len() - 1;
-            println!("{:<7} {:<9} {}{} {}", ev.action, ev.verdict, "  ".repeat(depth), &ev.id[..8.min(ev.id.len())], col.replays[&ev.id].title());
+            println!("{:<7} {} {}{} {}", ev.action, decomp_dj::style::verdict(ev.verdict, 9), "  ".repeat(depth), &ev.id[..8.min(ev.id.len())], col.replays[&ev.id].title());
         }
     }
     let played = h.events.iter().filter(|e| e.action == "played").count();
     println!("{played} played ({} frames in {:.1}s), {} already stored", h.frames_played, started.elapsed().as_secs_f64(), h.events.len() - played);
+    decomp_dj::console::print_inside_frame_summary();
     let problems = h.problems();
     if !problems.is_empty() {
         println!("{} segments don't match their recorded hashes:", problems.len());
@@ -920,16 +1052,13 @@ fn hydrate(dir: &Path, local: &Local, segment: Option<String>, children: bool, f
 }
 
 /// `dj clean`: what Clean all segments does in the GUI, saving each segment it records.
-fn clean(dir: &Path, local: &Local, segment: Option<String>, accept: bool, all: bool) -> Result<()> {
-    if local.no_db {
-        bail!("clean uses the local database, so it can't run with --no-db");
-    }
+fn clean(dir: &Path, local: &Local, segment: Option<String>, children: bool, accept: bool, force: bool) -> Result<i32> {
     let mut col = Collection::open(dir)?;
     let seg = match &segment {
         Some(s) => Some(col.resolve(s)?.to_string()),
         None => None,
     };
-    let mut h = Hydrator::verify(&col, seg.as_deref().map(|s| (s, true)), false, all)?;
+    let mut h = Hydrator::verify(&col, seg.as_deref().map(|s| (s, children)), false, force)?;
     let mut s = open_session(&col, local)?;
     let started = std::time::Instant::now();
     while !h.done() {
@@ -942,7 +1071,7 @@ fn clean(dir: &Path, local: &Local, segment: Option<String>, accept: bool, all: 
                 col.replays.insert(ev.id.clone(), Replay::load(&p)?);
             }
             let depth = col.chain(&ev.id)?.len() - 1;
-            println!("{:<7} {:<9} {}{} {}", ev.action, ev.verdict, "  ".repeat(depth), &ev.id[..8.min(ev.id.len())], col.replays[&ev.id].title());
+            println!("{:<7} {} {}{} {}", ev.action, decomp_dj::style::verdict(ev.verdict, 9), "  ".repeat(depth), &ev.id[..8.min(ev.id.len())], col.replays[&ev.id].title());
         }
     }
     let n = |v: &str| h.events.iter().filter(|e| e.verdict == v).count();
@@ -956,6 +1085,7 @@ fn clean(dir: &Path, local: &Local, segment: Option<String>, accept: bool, all: 
         h.frames_played,
         started.elapsed().as_secs_f64()
     );
+    decomp_dj::console::print_inside_frame_summary();
     let changed: Vec<&str> = h.events.iter().filter(|e| e.verdict == "changed").map(|e| e.id.as_str()).collect();
     if !changed.is_empty() {
         println!("{}", if accept { "endings changed (written; check them, e.g. with git diff):" } else { "endings changed (not written; check them, then run again with --accept):" });
@@ -967,9 +1097,9 @@ fn clean(dir: &Path, local: &Local, segment: Option<String>, accept: bool, all: 
         println!("blocked: segments below one that couldn't be cleaned (a segment above is still dirty)");
     }
     if !accept && !changed.is_empty() {
-        bail!("{} segment(s) end differently from their files", changed.len());
+        return found(format!("{} segment(s) end differently from their files", changed.len()));
     }
-    Ok(())
+    Ok(0)
 }
 
 fn snapshot_cmd(dir: &Path, segment: &str, frame: u64, out: &Path, local: &Local) -> Result<()> {
@@ -1001,7 +1131,7 @@ fn snapshot_cmd(dir: &Path, segment: &str, frame: u64, out: &Path, local: &Local
 
 fn sql(dir: &Path, query: &str) -> Result<()> {
     let col = Collection::open(dir)?;
-    let mut conn = cache::Cache::open_readonly(&col)?;
+    let mut conn = cache::Cache::open_existing(&col)?;
     // Bring segments_now (and the v_ views on it) up to date with the segment files, for the
     // setup played last. A database nothing has been played into yet has no setup to use.
     let setup: Option<String> = rusqlite::OptionalExtension::optional(conn.query_row("SELECT setup FROM contents ORDER BY played_at DESC LIMIT 1", [], |r| r.get(0)))?;
@@ -1047,7 +1177,7 @@ fn human(bytes: i64) -> String {
 
 fn cache_stats(dir: &Path) -> Result<()> {
     let col = Collection::open(dir)?;
-    let conn = cache::Cache::open_readonly(&col)?;
+    let conn = cache::Cache::open_existing(&col)?;
     let size = std::fs::metadata(cache::cache_path(&col)).map(|m| m.len()).unwrap_or(0);
     println!("{} ({})", cache::cache_path(&col).display(), human(size as i64));
     let settings = cache::CacheSettings::resolve(col.config.cache.as_ref(), col.settings()?.cache.as_ref())?;
@@ -1101,6 +1231,114 @@ fn cache_gc(dir: &Path, local: &Local, force: bool) -> Result<()> {
     Ok(())
 }
 
+
+/// `dj cache export`: the start states that checking the chosen segments needs.
+fn cache_export(dir: &Path, local: &Local, pick: parity_cmd::Pick, compare: Option<&str>, out: &Path) -> Result<()> {
+    let col = Collection::open(dir)?;
+    let ids = pick.resolve(&col)?;
+    let preroll = match compare {
+        Some(name) => {
+            let name = decomp_dj::parity::compare_name(&col, Some(name))?;
+            col.config.compare.iter().find(|c| c.name == name).map(|c| c.preroll).unwrap_or(0)
+        }
+        None => col.config.compare.iter().map(|c| c.preroll).max().unwrap_or(0),
+    };
+    // The segments whose start state is wanted: a root starts at power-on, or from its own
+    // snapshot blob, so needs none.
+    let mut wanted: Vec<String> = vec![];
+    let mut want = |x: &str| {
+        if col.replays[x].parent().is_some() && !wanted.iter().any(|w| w == x) {
+            wanted.push(x.to_string());
+        }
+    };
+    for id in &ids {
+        want(id);
+        if preroll > 0 {
+            if let Some((first, _, _)) = decomp_dj::parity::preroll_route(&col, id, 0, preroll)?.first() {
+                want(first);
+            }
+        }
+    }
+    let unclean: Vec<&String> = wanted.iter().filter(|x| col.replays[x.as_str()].parent().is_some_and(|p| col.tree_status(p) != Status::Clean)).collect();
+    if !unclean.is_empty() {
+        bail!(
+            "the start of {} isn't known: the segment above isn't clean (dj clean)",
+            unclean.iter().map(|x| format!("{} {}", &x[..8.min(x.len())], col.replays[x.as_str()].title())).collect::<Vec<_>>().join(", ")
+        );
+    }
+    std::fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
+    let mut s = open_session(&col, local)?;
+    let mut bytes = 0;
+    for x in &wanted {
+        let parent = col.replays[x.as_str()].parent().unwrap_or_default().to_string();
+        let expected = col.replays[&parent].get("end-hash").unwrap_or_default().to_string();
+        s.enter_replay(&col, x)?;
+        let h = s.state_hash(&col)?;
+        if h != expected {
+            bail!("{}: the state it starts from has hash {h}, but {} records {expected}: clean the project (dj clean)", &x[..8.min(x.len())], &parent[..8.min(parent.len())]);
+        }
+        let state = s.state_to_store()?;
+        let p = out.join(format!("{h}.state"));
+        std::fs::write(&p, &state).with_context(|| format!("writing {}", p.display()))?;
+        bytes += state.len();
+        println!("{h}  start of {} {}", &x[..8.min(x.len())], col.replays[x.as_str()].title());
+    }
+    println!("{} state(s), {} into {}{}", wanted.len(), human(bytes as i64), out.display(), if preroll > 0 { format!(" (with {preroll} frames of pre-roll)") } else { String::new() });
+    Ok(())
+}
+
+/// `dj cache seed`: stores the states given that are a clean segment's recorded end.
+fn cache_seed(dir: &Path, local: &Local, paths: &[PathBuf]) -> Result<i32> {
+    let col = Collection::open(dir)?;
+    let mut files = vec![];
+    for p in paths {
+        if p.is_dir() {
+            let mut inside: Vec<PathBuf> = std::fs::read_dir(p).with_context(|| format!("reading {}", p.display()))?.filter_map(|e| e.ok().map(|e| e.path())).filter(|f| f.is_file()).collect();
+            inside.sort();
+            files.extend(inside);
+        } else {
+            files.push(p.clone());
+        }
+    }
+    // Where each recorded end hash is: what `dj parity check`, `dj clean` and the rest load
+    // a child's start from.
+    let mut ends: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (id, r) in &col.replays {
+        if let (Some(h), Status::Clean) = (r.get("end-hash"), col.tree_status(id)) {
+            ends.entry(h.to_string()).or_default().push(id.clone());
+        }
+    }
+    let mut s = open_session(&col, local)?;
+    if s.cache.is_none() {
+        bail!("seeding fills the local database, which is turned off in .local/local.toml");
+    }
+    let (mut stored, mut refused) = (0, vec![]);
+    for f in &files {
+        let data = std::fs::read(f).with_context(|| format!("reading {}", f.display()))?;
+        if let Err(e) = s.load_state(&data) {
+            refused.push(format!("{}: the core can't load it ({e:#}): another core build, or not a state", f.display()));
+            continue;
+        }
+        let h = s.state_hash(&col)?;
+        let Some(ids) = ends.get(&h) else {
+            refused.push(format!("{}: its state hash {h} is no clean segment's end: from an older project, or another core build that plays differently", f.display()));
+            continue;
+        };
+        let state = s.state_to_store()?;
+        s.cache.as_mut().unwrap().put_snapshot(&h, &state)?;
+        stored += 1;
+        let names: Vec<String> = ids.iter().map(|id| format!("{} {}", &id[..8.min(id.len())], col.replays[id].title())).collect();
+        println!("{}  {h}  end of {}", decomp_dj::style::out("stored ", decomp_dj::style::Tone::Good), names.join(", "));
+    }
+    for r in &refused {
+        println!("{} {r}", decomp_dj::style::verdict("refused", 7));
+    }
+    println!("{stored} stored, {} refused", refused.len());
+    if !refused.is_empty() {
+        return found(format!("{} state(s) refused", refused.len()));
+    }
+    Ok(0)
+}
 
 /// Prints what the connector reports about its regions (docs/connectors.md), and checks
 /// that the bytes it hands out match the ROM file where it says they lie.

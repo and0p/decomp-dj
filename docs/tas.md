@@ -12,11 +12,11 @@ and Mupen64Plus, the same emulators as dj's `mgba` and `mupen64plus-next` cores.
 ## Importing
 
 ```sh
-dj import-tas <dir> movie.bk2 [--title TEXT] [--strict] [--rom ROM]
+dj import-tas movie.bk2 [--title TEXT] [--strict] [--rom ROM]
 ```
 
 This adds one **root segment**, holding the whole movie, and prints its id. It has no
-hashes yet. Play it once (`dj play <dir> <id> --accept`, or in the GUI) to record them.
+hashes yet. Clean it (`dj clean <id>`), or play it to its end in the GUI, to record them.
 
 What the segment gets:
 
@@ -99,7 +99,7 @@ N64 input goes through Mupen64Plus-Next's core options:
 ## Exporting
 
 ```sh
-dj export-tas <dir> SEGMENT --out movie.bk2 [--through FRAME] [--author NAME] [--strict] [--rom ROM]
+dj export-tas SEGMENT --out movie.bk2 [--through FRAME] [--author NAME] [--strict] [--rom ROM]
 ```
 
 This writes the chain from the root segment down to SEGMENT as one movie, ending with

@@ -121,7 +121,7 @@ why = "$A540 ending_typeBConcert: jump table, 6 entries"
 
 # Inline pointers. `jsr bulkCopyToPpu` ($AA98) calls copyAddrAtReturnAddressToTmp_incrReturnAddrBy2,
 # which reads the 16-bit address after the JSR and returns past it, so the two bytes after
-# each call are data. Found by `dj check-connector` (Mesen's flags show the real path).
+# each call are data. Found by `dj connector-check` (Mesen's flags show the real path).
 
 [[data]]
 range = "PRG:0x021A-0x021B"

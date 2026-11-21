@@ -705,7 +705,7 @@ pub enum Loads {
 }
 
 /// Everything needed to load a comparison core, resolved from the project: what a
-/// comparison worker gets (.agents/ISOLATION_PLAN.md).
+/// comparison worker gets (.agents/_archive/ISOLATION_PLAN.md).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct OpenSpec {
     pub name: String,
@@ -958,7 +958,7 @@ impl CompareWorker {
 const OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// A comparison core running in a worker process (.agents/ISOLATION_PLAN.md): the same
+/// A comparison core running in a worker process (.agents/_archive/ISOLATION_PLAN.md): the same
 /// calls as [`Comparison`], and a crash or hang in the core ends the worker, not dj.
 pub struct RemoteComparison {
     pub name: String,
@@ -1053,7 +1053,7 @@ mod tests {
     use super::*;
 
     /// A diff with a symbol keeps its address: the symbol is for reading, the address is
-    /// what `dj parity --explain` traces.
+    /// what `dj parity explain` traces.
     #[test]
     fn a_symbol_goes_beside_the_address() {
         let d = Diff { region: Some("RAM".into()), address: Some(0x45), symbol: Some("fallTimer".into()), len: 1, ..Default::default() };

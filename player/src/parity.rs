@@ -46,7 +46,7 @@ pub struct Failure {
     pub reason: String,
     /// Unix seconds.
     pub created: i64,
-    /// While the baseline is traced (`dj parity --explain`): how many trace events it had
+    /// While the baseline is traced (`dj parity explain`): how many trace events it had
     /// made when the verdict came. The baseline runs on to the frame's end after it, and
     /// what it does there is not what the core judged. Not kept in the database.
     pub trace_at: Option<usize>,

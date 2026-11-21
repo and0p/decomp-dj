@@ -15,7 +15,7 @@ and the rest) come later: [ROADMAP.md](ROADMAP.md#project-and-cli).
 | Example ROM | Not shipped. The Thwaite README says how to build it (`build-rom.sh`) |
 | Core paths | A bare name (`mesen_libretro`) is looked for in the project folder, then `<exe dir>/cores/`. Relative paths are from the project folder, absolute paths are used as they are, so a `local.toml` can always override |
 | First version | `v0.1.0`, after projects record the format and tool version (ROADMAP, "Versioning projects") |
-| Decoders | Explore loadable decoders before the release: [DECODER_PLAN.md](DECODER_PLAN.md) |
+| Decoders | Explore loadable decoders before the release: [DECODER_PLAN.md](_archive/DECODER_PLAN.md) |
 
 ## Licensing of the connectors (to settle)
 
@@ -66,7 +66,8 @@ Not legal advice; worth a second look before the release.
 | `player/examples/` spike tools | Done 2026-11-17 (the developer: delete): `mesen_spike`, `n64_spike`, `n64_roundtrip` and `tick_check` removed. The plans that name them say so. `ramtrace` stays: the Tetris example's README uses it |
 | `examples/tetris/.decomp/_old/` | Done 2026-11-17 (the developer: delete): the earlier ROM-based port, 26 files with three `.tgz` archives, removed |
 | The Tetris data tables | Done 2026-11-17 (the developer: generate at build): `decomp/src/data.c` is out of git and ignored. `tools/gen_data.py` reads the 29 tables from the user's ROM, after checking its sha256, using the names, addresses and lengths in `data.h`, which stays. `make ROM=...` the first time. Checked: the file it writes is byte for byte the one that was committed, and the 30 Tetris segments pass parity against the rebuilt decomp. The tables are still in git history |
-| `.agents/` | Plans, notes and archives (`_notes.md`, `REFACTOR.md`, `RESULTS.md`, `yield-parity/archive/`). Not looked at: whether a public repository should carry them is the developer's call |
+| Dead code | To do: remove code only its own tests reach. The comparison worker (`RemoteComparison`, `CompareWorker`, the `"compare"` worker kind) is the first known case; [ROADMAP.md](ROADMAP.md#code), "Remove dead code before the release" |
+| `.agents/` | Plans, notes and archives (`_notes.md`, `REFACTOR.md`, `RESULTS.md`, `_archive/yield-parity/`). Not looked at: whether a public repository should carry them is the developer's call |
 
 ## Steps
 
@@ -83,7 +84,7 @@ Not legal advice; worth a second look before the release.
    dependencies stubbed): no errors. As planned:
    - Linux (ubuntu-22.04, for an older glibc) and macOS (arm64): build, `cargo test`,
      `cargo clippy`, build the Mesen core and the Thwaite ROM (cached by their pinned
-     commits), then `dj run examples/thwaite` to check all 12 hashes. Determinism becomes a
+     commits), then `dj -C examples/thwaite check --from-power-on` to check every hash. Determinism becomes a
      check on every change.
    - Windows: the same jobs, `continue-on-error: true` until tested by hand. Rust with MSVC,
      Mesen and cc65 with MinGW under MSYS2 (`msys2/setup-msys2`), the OpenGL test skipped

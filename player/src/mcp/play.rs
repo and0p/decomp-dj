@@ -31,7 +31,7 @@ impl WorkerProc {
     pub fn spawn(dir: &Path) -> Result<WorkerProc> {
         let exe = std::env::current_exe()?;
         let mut cmd = Proc::new(exe);
-        cmd.arg("worker").arg(dir).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+        cmd.arg("-C").arg(dir).arg("worker").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
         let mut child = cmd.spawn().context("starting a dj worker")?;
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
@@ -490,12 +490,12 @@ impl Server {
             }
             "save_draft" => self.save_draft(a)?,
             "trace" | "calls" => self.trace(name, a)?,
-            "snapshot_at" => {
+            "snapshot" => {
                 let p = self.project()?;
                 let seg = p.col.resolve(&a.str("segment")?)?.to_string();
                 let frame = a.opt_u64("frame")?.unwrap_or(0);
                 let out = self.root().join(".local").join("snapshots").join(format!("{}-{frame}.state", &seg[..8]));
-                let v = self.util()?.call("snapshot_at", json!({"segment": seg, "frame": frame, "out": out}))?;
+                let v = self.util()?.call("snapshot", json!({"segment": seg, "frame": frame, "out": out}))?;
                 Reply::Json(v)
             }
             _ => return Ok(None),
@@ -620,7 +620,7 @@ impl Server {
             None => p.hits(&addr.region, addr.offset, addr.offset, limit, 0)?.items.into_iter().map(|h| (h.segment, h.frame)).collect(),
         };
         if hits.is_empty() {
-            bail!("no segment runs {} yet (where_runs is empty); open a session and get there first", addr.text);
+            bail!("no segment runs {} yet (xref is empty); open a session and get there first", addr.text);
         }
         let mut results = vec![];
         for (seg, frame) in hits {

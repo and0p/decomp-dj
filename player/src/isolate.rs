@@ -1,6 +1,6 @@
 //! Workers: native code dj doesn't trust (decoder plugins; cores, later) run in a child
 //! process that dj watches, so a crash or a hang there can't take dj down
-//! (.agents/ISOLATION_PLAN.md).
+//! (.agents/_archive/ISOLATION_PLAN.md).
 //!
 //! A worker is the same program started again with a hidden first argument,
 //! `__dj-worker <kind>`; `dj` and `dj-gui` both call [`run_if_worker`] before anything
@@ -500,9 +500,9 @@ pub fn batch_progress(id: &str, frame: u64) {
 const BATCH_START_TIMEOUT: Duration = Duration::from_secs(60);
 const BATCH_HANG_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Runs this batch command (`dj run`, `clean`, `hydrate`) in a child `dj` that plays the
+/// Runs this batch command (`dj check`, `clean`, the `dj parity` ones that play) in a child `dj` that plays the
 /// segments, so a core that crashes or hangs costs that segment, not the command
-/// (.agents/ISOLATION_PLAN.md, step 3). A crash, or no progress for 30 s, ends the child;
+/// (.agents/_archive/ISOLATION_PLAN.md, step 3). A crash, or no progress for 30 s, ends the child;
 /// the segment it was playing is reported, and a new child runs the command again without
 /// it and the segments below it. Returns the exit code to end with, or None when this
 /// process should run the command itself (it's the child, or `DJ_IN_PROCESS` is set).

@@ -33,13 +33,14 @@ Boot, skip the legal screen
 ../../connectors/mesen/build.sh                  # core with the coverage connector
 cd ../../player && cargo build --release && cd -
 E=../../player/target/release/dj
-$E run . --rom build/thwaite.nes --core ../../build/cores/mesen_libretro.so   # .so/.dylib/.dll
-$E report . --gaps gaps.csv
+$E check . --rom build/thwaite.nes --core ../../build/cores/mesen_libretro.so   # .so/.dylib/.dll
+$E summary . --segments
+$E gaps . --csv gaps.csv
 ```
 
-Every segment has recorded start and end hashes, so `run` doubles as a
+Every segment has recorded start and end hashes, so `check` is a
 determinism check: on a matching setup each line reads `ok`. Add
-`--from-scratch` to replay every chain from power-on instead of from cached
+`--from-power-on` to replay every chain from power-on instead of from cached
 parent states.
 
 `[tick]` in `config.toml` counts executions of `doStateAction`, the

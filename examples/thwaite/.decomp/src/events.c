@@ -1,6 +1,6 @@
 /* The comparison-core API: breakpoints, events, writes, diffs, coverage and traces.
  *
- * How the decomp follows the original (.agents/THWAITE_DECOMP_PLAN.md, "How it runs"):
+ * How the decomp follows the original (.agents/_archive/THWAITE_DECOMP_PLAN.md, "How it runs"):
  * it is parked at a wait loop's exit. When the original reaches the next wait's exit, the
  * decomp runs its own step to there, with the raw input and NMI-counter values the
  * original read on the way (queued at their breakpoints), and compares. */

@@ -31,7 +31,7 @@ core = "../../build/cores/mgba_libretro"
 rom = "build/gba-test.gba"
 ```
 
-and play it: `dj run examples/gba-test`, `dj summary examples/gba-test`.
+and play it: `dj -C examples/gba-test check`, `dj -C examples/gba-test summary`.
 
 ## The project
 

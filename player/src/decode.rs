@@ -1,6 +1,6 @@
 //! Instruction decoders, one per instruction set, behind one interface, and the sweep that
 //! splits symbol-map functions into instructions and basic blocks with any of them
-//! (.agents/DECODER_PLAN.md).
+//! (.agents/_archive/DECODER_PLAN.md).
 //!
 //! A decoder only answers "what is this one instruction?": its length, how control leaves
 //! it, and its delay slots. Everything built from those answers (blocks, successors, call
@@ -161,7 +161,7 @@ impl Decoder for PluginDecoder {
 }
 
 /// A plugin decoder as the parent knows it: what a worker's `describe` read from its table.
-/// Its code only ever runs in a worker (.agents/ISOLATION_PLAN.md).
+/// Its code only ever runs in a worker (.agents/_archive/ISOLATION_PLAN.md).
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RemoteDecoder {
     pub library: PathBuf,

@@ -42,7 +42,7 @@ Deleting removes the whole branch (`delete_nodes`) as one undo step.
 ## Coverage
 
 The Coverage tab shows `decomp_dj::coverage::build_report`, the same report as
-`dj report`, rebuilt after any edit, undo, save or hydration. Live coverage reads the
+`dj summary`, rebuilt after any edit, undo, save or hydration. Live coverage reads the
 connector's flags on every screen refresh and then clears them, so they say what ran
 since the last refresh. The flags are OR'd into a running total that restarts when a
 segment starts playing, when playback continues into a child and after an edit.

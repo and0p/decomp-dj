@@ -20,7 +20,7 @@ What it does:
 - **Byte order.** The baseline's RAM is 32-bit words in the host's order, so the stub
   reads bytes through whole words.
 - **What differed.** `dj_parity_diffs` gives the 48 bytes of each side, in region `RDRAM`
-  at the console's address, so `dj parity --explain` can name the instruction that wrote
+  at the console's address, so `dj parity explain` can name the instruction that wrote
   them.
 
 Build (macOS; use `-shared` and `.so` on Linux):
@@ -44,7 +44,8 @@ path = "/path/to/nomercy_stub_libretro"
 ```
 
 ```bash
-dj parity <project> --compare stub
+dj parity core --compare stub     # its breakpoints, checked against the connector
+dj parity check --compare stub
 ```
 
 Environment variables, for testing:

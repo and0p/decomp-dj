@@ -2,7 +2,7 @@
 
 How the tree and a segment's inputs change. The tree edits are normative: any tool that
 makes the same edit must write the same files. The GUI is the only tool that makes them
-today. `dj new <dir> [--parent ID] [--title TEXT] [--frames N]` adds a segment from the
+today. `dj new [--parent ID] [--title TEXT] [--frames N]` adds a segment from the
 command line and prints its path.
 
 ## Tree edits

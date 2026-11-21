@@ -266,7 +266,7 @@ exclude = ["RAM:0x38F800-0x3FFFFF"]
 - Unlike `[hash] exclude` it changes no hash, so it can be set per machine in
   `local.toml`.
 
-Check it before relying on it: play a segment that has a parent twice (`dj play <dir>
+Check it before relying on it: play a segment that has a parent twice (`dj check
 <segment>`). The first time fills the database; the second starts from the parent's
 stored state and must report the same hashes.
 
@@ -300,7 +300,7 @@ diff_every = 300
 | --- | --- | --- |
 | `rom` | none | Path to the ROM (short for `[rom] path`). Set by `--rom`, remembered after the first use. |
 | `core` | none | Path to the core library (short for `[core] path`). Set by `--core`, remembered after the first use. |
-| `database` | `true` | `false` plays without the local database, like `--no-db` on every command. The GUI's Project > Use the local database writes it. |
+| `database` | `true` | `false` plays without the local database, like `--no-db` on the commands that take it. The GUI's Project > Use the local database writes it. |
 | `max_memory_mb` | `512` | How much memory the GUI's in-memory snapshots for the current segment may use (Emulation > Snapshot memory). |
 | `[cache]` | none | Any key from `config.toml`'s `[cache]`, overriding it on this machine only. |
 | `[keyboard]`, `[record]` | defaults | The GUI's recording keys and options ([gui.md](gui.md#recording)). |
@@ -351,13 +351,13 @@ region is `PRG` when left out.
 
 A function the symbol maps describe that these entries leave nothing of (every instruction
 unreachable, or all of it data) isn't counted at all: it drops out of the function totals,
-the lists in `dj report`, `dj summary`, `dj gaps` and the Functions tab, and the map. The
+the lists in `dj summary`, `dj gaps` and the Functions tab, and the map. The
 report says how many were left out. A function only partly annotated stays, counted on
 what's left.
 
 If code runs inside a `[[data]]` or `[[unreachable]]` range, the annotation is wrong (or the
-segment does something the game can't): `dj report`, `dj summary` and the Functions tab warn,
-naming the entry and the segments. `dj annotations <dir>` lists every entry, what each
+segment does something the game can't): `dj summary` and the Functions tab warn,
+naming the entry and the segments. `dj annotations` lists every entry, what each
 `[[function]]` changed, and which ranges ran, and fails if any did. A mistake in the file is
 reported with the entry it is in, such as `annotations.toml, data entry 3: range ...`.
 

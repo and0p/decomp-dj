@@ -2,7 +2,7 @@
 //! coverage of the segment being played (docs/coverage.md).
 //!
 //! The project's coverage comes from `decomp_dj::coverage::build_report`, the same numbers
-//! as `dj report`: segments that aren't dirty and whose current content has been played into
+//! as `dj summary`: segments that aren't dirty and whose current content has been played into
 //! the local database. Live coverage is what the core's connector has seen since the
 //! selected segment started playing (or was last edited); it never counts towards the
 //! project until the segment is clean and stored.
@@ -947,7 +947,7 @@ impl App {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     if !notes.is_empty() {
                         ui.label(RichText::new(format!("Left out: {}", notes.join(", "))).small().weak())
-                            .on_hover_text("Only saved segments that aren't dirty and whose current content is in the local database count, as in `dj report`.");
+                            .on_hover_text("Only saved segments that aren't dirty and whose current content is in the local database count, as in `dj summary`.");
                     }
                     if t.unreachable_instructions > 0 {
                         ui.label(RichText::new(format!("{} unreachable", t.unreachable_instructions)).small().color(UNREACHABLE)).on_hover_text("Inside annotations.toml's [[unreachable]] ranges, left out of the counts");

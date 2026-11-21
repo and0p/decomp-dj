@@ -247,7 +247,7 @@ pub fn describe(c: &Counts) -> String {
     format!("Parity: {}", parts.join(", "))
 }
 
-/// Re-running failures one at a time: sync where each was synced and play to its frame.
+/// Re-running failures one at a time: jump to where each one's run started and play to its frame.
 pub struct Rerun {
     pub queue: VecDeque<i64>,
     pub current: Option<RerunAt>,
@@ -506,7 +506,7 @@ impl App {
                                 .link(RichText::new(format!("{title}, frame {}", f.frame)).small())
                                 .on_hover_text({
                                     let differed = if f.diffs.is_empty() { String::new() } else { format!("\n\nWhat differed:\n{}", f.diffs.lines(8).iter().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n")) };
-                                    format!("{}{differed}\n\nFailed with {when}, synced at {synced}. Click to show the frame.", f.reason)
+                                    format!("{}{differed}\n\nFailed with {when}{}, from the jump at {synced}. Click to show the frame.", f.reason, if f.at.is_empty() { String::new() } else { format!(" at {}", f.at) })
                                 })
                                 .clicked()
                             {
@@ -520,7 +520,7 @@ impl App {
                                     ui.label(RichText::new("running…").small().weak());
                                 } else if ui
                                     .add_enabled(self.rerun.is_none(), egui::Button::new(RichText::new("Re-run").small()))
-                                    .on_hover_text(format!("Sync at {synced} and play to frame {} with Check parity on", f.frame))
+                                    .on_hover_text(format!("Jump to {synced} and play to frame {} with Check parity on", f.frame))
                                     .clicked()
                                 {
                                     rerun = Some(vec![f.id]);

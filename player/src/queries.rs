@@ -8,7 +8,7 @@ use std::path::Path;
 use crate::QueryArgs;
 
 fn open(dir: &Path, q: &QueryArgs) -> Result<Project> {
-    Project::open(dir, q.rom.as_deref())
+    Project::open(dir, q.rom.rom.as_deref())
 }
 
 fn json<T: Serialize>(v: &T) -> Result<()> {
@@ -57,12 +57,20 @@ pub fn xref(dir: &Path, what: &str, q: &QueryArgs) -> Result<()> {
     Ok(())
 }
 
-pub fn summary(dir: &Path, q: &QueryArgs) -> Result<()> {
+pub fn summary(dir: &Path, segments: bool, q: &QueryArgs) -> Result<()> {
     let mut p = open(dir, q)?;
     let s = p.summary()?;
+    let (shares, smallest) = if segments { (p.segment_shares()?, p.smallest_set()?) } else { (vec![], vec![]) };
     if q.json {
-        return json(&s);
+        if !segments {
+            return json(&s);
+        }
+        let mut v = serde_json::to_value(&s)?;
+        v["per_segment"] = serde_json::to_value(&shares)?;
+        v["smallest_set"] = serde_json::to_value(&smallest)?;
+        return json(&v);
     }
+    println!("coverage of the current, clean, saved segments (setup {})", s.setup);
     if s.symbols {
         println!("instructions  {:>6} / {:<6} {:.1}%", s.instructions.covered, s.instructions.total, s.instructions.percent);
         println!("blocks        {:>6} / {:<6} {:.1}%", s.blocks.covered, s.blocks.total, s.blocks.percent);
@@ -81,15 +89,45 @@ pub fn summary(dir: &Path, q: &QueryArgs) -> Result<()> {
     for n in &s.notes {
         println!("note: {n}");
     }
-    println!("{} segments ({} dirty and {} unplayed left out)", s.segments, s.segments_left_out.dirty, s.segments_left_out.unplayed);
-    for t in &s.top_segments {
-        println!("  {t}");
+    if s.symbols && s.executed_outside_symbols > 0 {
+        println!("opcode bytes run outside the symbol maps' functions: {}", s.executed_outside_symbols);
     }
+    for (region, n) in &s.executed_bytes_by_region {
+        println!("opcode bytes run in {region:<5} {n}");
+    }
+    let out = &s.segments_left_out;
+    println!("{} segments counted; left out: {} dirty, {} not played with their current content, {} unsaved (drafts)", s.segments, out.dirty, out.unplayed, out.unsaved);
+    if out.unsaved > 0 {
+        println!("  +{} the unsaved ones would add once saved", s.unsaved_would_add);
+    }
+    if s.if_cleaned > 0 {
+        println!("  +{} the dirty ones ran when last played: it counts once they are clean (dj clean)", s.if_cleaned);
+    }
+    if !segments {
+        for t in &s.top_segments {
+            println!("  {t}");
+        }
+        return Ok(());
+    }
+    println!();
+    println!("  {:<44} {:>7} {:>7} {:>7} {:>7}", "segment", "own", "new", "unique", "ticks");
+    for r in &shares {
+        let name: String = format!("{}{} {}", "  ".repeat(r.depth), r.short, r.title).chars().take(44).collect();
+        let ticks = r.ticks.map(|t| t.to_string()).unwrap_or_else(|| "-".into());
+        println!("  {:<44} {:>7} {:>7} {:>7} {:>7}{}", name, r.own, r.new_vs_ancestors, r.unique, ticks, if r.poked { "  poked" } else { "" });
+    }
+    println!();
+    println!("smallest set keeping all coverage ({} of {}): {}", smallest.len(), s.segments, smallest.join("; "));
     Ok(())
 }
 
-pub fn gaps(dir: &Path, sort: GapSort, only: GapFilter, q: &QueryArgs) -> Result<()> {
+pub fn gaps(dir: &Path, sort: GapSort, only: GapFilter, csv: Option<&Path>, q: &QueryArgs) -> Result<()> {
     let mut p = open(dir, q)?;
+    if let Some(path) = csv {
+        let rows = p.write_gaps_csv(path)?;
+        println!("wrote {} ({rows} uncovered blocks)", path.display());
+        return Ok(());
+    }
     if !p.has_symbols()? {
         let g = p.uncovered_ranges(sort, q.limit, q.cursor)?;
         if q.json {
@@ -170,11 +208,11 @@ pub fn frontier(dir: &Path, what: Option<&str>, q: &QueryArgs) -> Result<()> {
     Ok(())
 }
 
-/// `dj check-connector`: prints what the check found and fails when the flags disagree with
+/// `dj connector-check`: prints what the check found and fails when the flags disagree with
 /// the decoder.
-pub fn check_connector(dir: &Path, q: &QueryArgs) -> Result<()> {
+pub fn connector_check(dir: &Path, q: &QueryArgs) -> Result<i32> {
     let mut p = open(dir, q)?;
-    let r = p.check_connector()?;
+    let r = p.connector_check()?;
     if q.json {
         json(&r)?;
     } else {
@@ -192,7 +230,8 @@ pub fn check_connector(dir: &Path, q: &QueryArgs) -> Result<()> {
     }
     let bad = r.opcode_not_at_start.len() + r.operand_unexpected.len() + r.operand_missing.len();
     if bad > 0 {
-        anyhow::bail!("{bad} bytes where the connector's flags and the decoder disagree");
+        eprintln!("failed: {bad} bytes where the connector's flags and the decoder disagree");
+        return Ok(1);
     }
-    Ok(())
+    Ok(0)
 }

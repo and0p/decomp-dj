@@ -58,7 +58,7 @@ How to read it:
   before changing a rule here, and add the case there.
 - **"Developer"** marks what the developer proposed or chose.
 - **"Thread"** marks a recommendation the developer has not confirmed.
-- **Everything in [archive/](archive/) is older:** two earlier plans, their charts, and a
+- **Everything in [archive/](../_archive/yield-parity/) is older:** two earlier plans, their charts, and a
   long design discussion. Agents: do not read those files unless the developer tells you
   to. This file does not depend on them.
 
@@ -539,7 +539,7 @@ have differed inside a frame, so nothing is compared there.
 
 Decided by the developer 2026-11-13: in dj's process, in the GUI and in `dj parity`. A
 breakpoint in the middle of a frame then needs no copy of the baseline. This reverses
-step 2 of `ISOLATION_PLAN.md`.
+step 2 of `_archive/ISOLATION_PLAN.md`.
 
 What that needs:
 
@@ -1158,7 +1158,7 @@ the hidden pre-roll looked right there).
 | `docs/database.md`, `docs/mcp.md` | `at` and pre-roll in a failure |
 | `docs/segments.md` | Read through; it was already right (writes at an instruction came with step 5) |
 | `.agents/ROADMAP.md` | A note at "Comparison and parity" that the API was replaced and which names are gone; the two rows of the release table; three places that named `DJ_SYNC_BOOT`; what is still to do after this work |
-| `.agents/ISOLATION_PLAN.md` | The worker serves only `sync = "state"` cores now |
+| `.agents/_archive/ISOLATION_PLAN.md` | The worker serves only `sync = "state"` cores now |
 
 The roadmap's older entries still name the earlier functions. They are the record of what
 shipped then, and the note above them says so.
@@ -1358,7 +1358,7 @@ game's save storage ("Spike results", existing problem 1).
    ("Spike results", existing problem 3). dj gives back the state it last saved or loaded
    while nothing has run or been written, so the core is not asked twice.
 9. **The guard against hits during a load** never fired in the spike, so it is untested.
-10. *No longer open (step 12):* `ROADMAP.md` and `ISOLATION_PLAN.md` carry notes that say
+10. *No longer open (step 12):* `ROADMAP.md` and `_archive/ISOLATION_PLAN.md` carry notes that say
     which of their passages describe the earlier API, and the docs are up to date.
 11. **No real decomp has a lag frame to test with.** Tetris has none (step 8). The rule
     for one rests on the test core.
@@ -1424,7 +1424,7 @@ protection.
 11. **Failures and the tools** *(done 2026-11-16: see "Built so far")* (section 9). Done when a failure at a breakpoint inside a
     frame can be re-run and explained from the command line.
 12. **The docs** *(done 2026-11-16: see "Built so far")*: `connectors.md`, `segments.md`, `config.md`, `gui.md`, `cli.md`, and
-    the notes on `ROADMAP.md` and `ISOLATION_PLAN.md`.
+    the notes on `ROADMAP.md` and `_archive/ISOLATION_PLAN.md`.
 
 A real decomp of a game whose ticks cross frames is the last test, and the only one that
 proves the design. None is at hand as a libretro core.

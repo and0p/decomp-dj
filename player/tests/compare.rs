@@ -9,17 +9,6 @@ use decomp_dj::player::Session;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The test core's diffs where `testcore_break = "mismatch"` goes wrong: RAM 0x02 (XOR'd with
-/// 0x55), then a diff with a label alone.
-fn assert_diffs(d: &decomp_dj::compare::Diffs) {
-    assert_eq!(d.total, 2, "{d:?}");
-    let ram = &d.list[0];
-    assert_eq!((ram.label.as_deref(), ram.region.as_deref(), ram.address, ram.len), (Some("mixed state"), Some("RAM"), Some(2), 1));
-    assert_eq!(ram.expected[0] ^ 0x55, ram.actual[0]);
-    let only = &d.list[1];
-    assert_eq!((only.label.as_deref(), only.region.as_deref(), only.address, only.expected.len()), (Some("checksum of the state"), None, None, 0));
-}
-
 fn build(out: &Path, name: &str, defs: &[&str]) -> Option<PathBuf> {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/testcore/testcore.c");
     let lib = out.join(name);
@@ -120,7 +109,7 @@ fn comparison_cores() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
-/// A `sync = "state"` comparison core in its own worker process (.agents/ISOLATION_PLAN.md).
+/// A `sync = "state"` comparison core in its own worker process (.agents/_archive/ISOLATION_PLAN.md).
 /// dj doesn't run them this way; the worker is kept so that going back is cheap. A core that
 /// takes events can't run in one.
 #[test]
@@ -237,38 +226,61 @@ fn dj_parity_command() {
     project(&dir, &core, &nodj);
     let dj = |args: &[&str]| -> (i32, String, String) {
         // `dj <command> <dir> [options]`: the folder first, so a list option can't take it.
-        let out = Command::new(env!("CARGO_BIN_EXE_dj")).arg(args[0]).arg(&dir).args(&args[1..]).arg("--rom").arg(dir.join("rom.bin")).arg("--core").arg(&core).output().unwrap();
+        // (`dj parity <what> <dir> ...` for the parity commands.) The ones that run no core
+        // take no --core.
+        let n = if args[0] == "parity" { 2 } else { 1 };
+        let mut c = Command::new(env!("CARGO_BIN_EXE_dj"));
+        c.env("NO_COLOR", "1");
+        c.args(&args[..n]).arg("-C").arg(&dir).args(&args[n..]);
+        if !matches!(args[n - 1], "report" | "clear") {
+            c.arg("--rom").arg(dir.join("rom.bin")).arg("--core").arg(&core);
+        }
+        let out = c.output().unwrap();
         (out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned())
     };
     let (code, out, err) = dj(&["clean"]);
     assert_eq!(code, 0, "{out}{err}");
 
     // Several comparison cores: one must be picked.
-    let (code, _, err) = dj(&["parity"]);
+    let (code, _, err) = dj(&["parity", "check"]);
     assert_eq!(code, 2);
     assert!(err.contains("--compare"), "{err}");
 
-    // Every frame passes; checked again only with --all.
-    let (code, out, err) = dj(&["parity", "--compare", "dj"]);
+    // Every frame passes; checked again only with --again.
+    let (code, out, err) = dj(&["parity", "check", "--compare", "dj"]);
     assert_eq!(code, 0, "{out}{err}");
     assert!(out.contains("passed") && out.contains("20 passed") && out.contains("0 failed"), "{out}");
-    let (code, out, _) = dj(&["parity", "--compare", "dj"]);
+    let (code, out, _) = dj(&["parity", "check", "--compare", "dj"]);
     assert_eq!(code, 0);
     assert!(out.contains("checked with this build before") && out.contains("0 segment(s) checked"), "{out}");
-    let (code, out, _) = dj(&["parity", "--compare", "dj", "--all"]);
+    let (code, out, _) = dj(&["parity", "check", "--compare", "dj", "--again"]);
     assert_eq!(code, 0);
     assert!(out.contains("1 segment(s) checked"), "{out}");
 
     // A mismatch at frame 9: exit 1, kept, and still failing when not checked again.
-    let (code, out, err) = dj(&["parity", "--compare", "dj-mismatch"]);
+    let (code, out, err) = dj(&["parity", "check", "--compare", "dj-mismatch"]);
     assert_eq!(code, 1, "{out}{err}");
     assert!(out.contains("FAILED") && out.contains("frame 9") && out.contains("RAM 0x02"), "{out}");
-    let (code, out, _) = dj(&["parity", "--compare", "dj-mismatch"]);
+    // Where in the frame the verdict came, and the jump its run started from.
+    assert!(out.contains("frame 9 at the frame end") && out.contains("(from the jump at frame 0)"), "{out}");
+    let (_, out, _) = dj(&["parity", "check", "--compare", "dj-mismatch", "--again", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!((v["failures"][0]["at"].as_str(), v["failures"][0]["jump"]["frame"].as_u64()), (Some("the frame end"), Some(0)), "{out}");
+    // A JUnit report: one failed test case, pointing at the segment's line for frame 9.
+    let report = tmp.join("parity.xml");
+    let (code, out, err) = dj(&["parity", "check", "--compare", "dj-mismatch", "--again", "--junit", report.to_str().unwrap()]);
+    assert_eq!(code, 1, "{out}{err}");
+    let x = std::fs::read_to_string(&report).unwrap();
+    assert!(x.contains(r#"tests="1" failures="1""#) && x.contains("<failure message=") && x.contains("frame 9 at the frame end") && x.contains("segments/seg.segment"), "{x}");
+    let line: usize = x.split("line=\"").nth(1).and_then(|r| r.split('"').next()).and_then(|n| n.parse().ok()).expect("a line");
+    let text = std::fs::read_to_string(dir.join("segments/seg.segment")).unwrap();
+    assert!(text.lines().nth(line - 1).unwrap().starts_with("8 "), "line {line} of\n{text}");
+    let (code, out, _) = dj(&["parity", "check", "--compare", "dj-mismatch"]);
     assert_eq!(code, 1, "{out}");
     assert!(out.contains("failed with this build before"), "{out}");
 
     // The report lists it; JSON gives its id.
-    let (code, out, err) = dj(&["parity", "--compare", "dj-mismatch", "--report", "--json"]);
+    let (code, out, err) = dj(&["parity", "report", "--compare", "dj-mismatch", "--json"]);
     assert_eq!(code, 0, "{out}{err}");
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     let fs = v["failures"].as_array().unwrap();
@@ -280,13 +292,31 @@ fn dj_parity_command() {
     // What differed is kept with the failure (dj_parity_diffs).
     assert_eq!(fs[0]["diffs_total"].as_u64(), Some(2), "{out}");
     assert_eq!((fs[0]["diffs"][0]["label"].as_str(), fs[0]["diffs"][0]["address"].as_str()), (Some("mixed state"), Some("0x0002")), "{out}");
-    let (code, out, _) = dj(&["parity", "--compare", "dj-mismatch", "--report"]);
+    assert_eq!(fs[0]["jump_frame"].as_u64(), Some(0), "{out}");
+    let (code, out, _) = dj(&["parity", "report", "--compare", "dj-mismatch"]);
     assert_eq!(code, 0);
     assert!(out.contains(&format!("#{id} ")) && out.contains("mixed state (RAM 0x0002)"), "{out}");
+    assert!(out.contains("frame 9 at the frame end (from the jump at frame 0)"), "{out}");
+    // The commands that run no core take no --core.
+    let out = Command::new(env!("CARGO_BIN_EXE_dj")).env("NO_COLOR", "1").args(["parity", "report"]).arg("-C").arg(&dir).args(["--core", "x"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2), "{}", String::from_utf8_lossy(&out.stderr));
 
-    // --explain plays it again: the test core has no trace hook, so each diff says why it
+    // `core` says what a comparison core is: one that takes events, and one that loads states.
+    let (code, out, err) = dj(&["parity", "core", "--compare", "dj", "--json"]);
+    assert_eq!(code, 0, "{out}{err}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!((v["sync"].as_str(), v["takes_events"].as_bool(), v["preroll"].as_u64()), (Some("events"), Some(true), Some(0)), "{out}");
+    assert!(v["breakpoints"].as_array().unwrap().iter().all(|b| b["region_known"].as_bool() == Some(true)), "{out}");
+    let (code, out, _) = dj(&["parity", "core", "--compare", "dj-pre"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("5 frames before each place jumped to"), "{out}");
+    let (code, out, _) = dj(&["parity", "core", "--compare", "state"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("sync      state"), "{out}");
+
+    // `explain` plays it again: the test core has no trace hook, so each diff says why it
     // wasn't traced.
-    let (code, out, err) = dj(&["parity", "--compare", "dj-mismatch", "--explain", &id, "--json"]);
+    let (code, out, err) = dj(&["parity", "explain", &id, "--compare", "dj-mismatch", "--json"]);
     assert_eq!(code, 1, "{out}{err}");
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!((v["outcome"].as_str(), v["frame"].as_u64(), v["diffs_total"].as_u64()), (Some("failed"), Some(9), Some(2)), "{out}");
@@ -294,49 +324,60 @@ fn dj_parity_command() {
     assert!(v["traced"].is_null(), "{out}");
     assert!(v["diffs"][0]["note"].as_str().unwrap().contains("no trace hook"), "{out}");
     assert!(v["diffs"][1]["note"].as_str().unwrap().contains("no address"), "{out}");
-    let (code, out, _) = dj(&["parity", "--compare", "dj-mismatch", "--explain", &id]);
+    let (code, out, _) = dj(&["parity", "explain", &id, "--compare", "dj-mismatch"]);
     assert_eq!(code, 1);
     assert!(out.contains("fails again") && out.contains("mixed state (RAM 0x0002)"), "{out}");
 
     // Re-run: it fails again (and stays a single failure); with no ids, only older builds'.
-    let (code, out, err) = dj(&["parity", "--compare", "dj-mismatch", "--rerun", &id]);
+    let (code, out, err) = dj(&["parity", "rerun", &id, "--compare", "dj-mismatch"]);
     assert_eq!(code, 1, "{out}{err}");
     assert!(out.contains("fails again"), "{out}");
-    let (code, out, _) = dj(&["parity", "--compare", "dj-mismatch", "--rerun"]);
+    let (code, out, _) = dj(&["parity", "rerun", "--compare", "dj-mismatch"]);
     assert_eq!(code, 0);
     assert!(out.contains("no failures from an older build"), "{out}");
-    let (_, out, _) = dj(&["parity", "--compare", "dj-mismatch", "--report", "--json"]);
+    let (_, out, _) = dj(&["parity", "report", "--compare", "dj-mismatch", "--json"]);
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     let fs = v["failures"].as_array().unwrap();
     assert_eq!(fs.len(), 1, "{out}");
 
     // Clear it.
     let id = fs[0]["id"].as_i64().unwrap().to_string();
-    let (code, out, err) = dj(&["parity", "--compare", "dj-mismatch", "--clear", &id]);
+    let (code, out, err) = dj(&["parity", "clear", &id, "--compare", "dj-mismatch"]);
     assert_eq!(code, 0, "{out}{err}");
-    let (_, out, _) = dj(&["parity", "--compare", "dj-mismatch", "--report"]);
+    let (_, out, _) = dj(&["parity", "report", "--compare", "dj-mismatch"]);
     assert!(out.contains("no failures kept"), "{out}");
 
     // A comparison core that crashes: a failure that says so, and dj carries on to report it.
     std::env::set_var("DJ_WORKER_TIMEOUT_SCALE", "0.2");
-    let (code, out, err) = dj(&["parity", "--compare", "dj-crash"]);
+    let (code, out, err) = dj(&["parity", "check", "--compare", "dj-crash"]);
     assert_eq!(code, 1, "{out}{err}");
     assert!(out.contains("FAILED") && out.contains("crashed"), "{out}");
 
     // Pre-roll ([[compare]] preroll): a child is checked after playing the parent's last
     // frames, which count as nothing. A core that halts in them leaves the child not checked,
     // with the failure at the parent's frame.
-    std::fs::write(dir.join("segments/kid.segment"), "dj-segment 1\nid: kid\nparent: seg\nframes: 10\n---\n3 P1 JOYPAD A 1\n").unwrap();
+    std::fs::write(dir.join("segments/kid.segment"), "dj-segment 1\nid: kid\nparent: seg\ntags: ci\nframes: 10\n---\n3 P1 JOYPAD A 1\n").unwrap();
     let (code, out, err) = dj(&["clean"]);
     assert_eq!(code, 0, "{out}{err}");
-    let (code, out, err) = dj(&["parity", "kid", "--compare", "dj-pre"]);
+    // Choosing segments: several by id, by tag, and with the ones below.
+    let (code, out, err) = dj(&["parity", "check", "seg", "kid", "--compare", "dj", "--again"]);
+    assert!(code == 0 && out.contains("2 segment(s) checked"), "{out}{err}");
+    let (code, out, err) = dj(&["parity", "check", "--tag", "ci", "--compare", "dj", "--again"]);
+    assert!(code == 0 && out.contains("1 segment(s) checked") && out.contains("kid"), "{out}{err}");
+    let (code, out, err) = dj(&["parity", "check", "seg", "--children", "--compare", "dj", "--again"]);
+    assert!(code == 0 && out.contains("2 segment(s) checked"), "{out}{err}");
+    let (code, _, err) = dj(&["parity", "check", "--tag", "nope", "--compare", "dj"]);
+    assert!(code == 2 && err.contains("no segment has the tag nope"), "{err}");
+    let (code, _, err) = dj(&["parity", "check", "--children", "--compare", "dj"]);
+    assert!(code == 2 && err.contains("--children"), "{err}");
+    let (code, out, err) = dj(&["parity", "check", "kid", "--compare", "dj-pre"]);
     assert_eq!(code, 0, "{out}{err}");
     assert!(out.contains("10 passed") && out.contains("(10 frames"), "{out}");
-    let (code, out, err) = dj(&["parity", "kid", "--compare", "dj-halt-pre"]);
+    let (code, out, err) = dj(&["parity", "check", "kid", "--compare", "dj-halt-pre"]);
     assert_eq!(code, 1, "{out}{err}");
     assert!(out.contains("FAILED") && out.contains("not checked: in pre-roll, frame 9 of seg") && out.contains("told to halt"), "{out}");
-    assert!(out.contains("synced at frame 8, 12 frames of pre-roll"), "{out}");
-    let (code, out, _) = dj(&["parity", "--compare", "dj-halt-pre", "--report", "--json"]);
+    assert!(out.contains("from the jump at frame 8, 12 frames of pre-roll"), "{out}");
+    let (code, out, _) = dj(&["parity", "report", "--compare", "dj-halt-pre", "--json"]);
     assert_eq!(code, 0);
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!((v["failures"][0]["segment"].as_str(), v["failures"][0]["frame"].as_u64(), v["failures"][0]["preroll"].as_u64()), (Some("seg"), Some(9), Some(12)), "{out}");
@@ -361,7 +402,14 @@ fn a_comparison_core_that_dies_under_dj_parity() {
     project(&dir, &core, &nodj);
     std::fs::write(dir.join("segments/kid.segment"), "dj-segment 1\nid: kid\nparent: seg\nframes: 10\n---\n3 P1 JOYPAD A 1\n").unwrap();
     let dj = |args: &[&str]| -> (i32, String, String) {
-        let out = Command::new(env!("CARGO_BIN_EXE_dj")).arg(args[0]).arg(&dir).args(&args[1..]).arg("--rom").arg(dir.join("rom.bin")).arg("--core").arg(&core).env("DJ_WORKER_TIMEOUT_SCALE", "0.2").output().unwrap();
+        let n = if args[0] == "parity" { 2 } else { 1 };
+        let mut c = Command::new(env!("CARGO_BIN_EXE_dj"));
+        c.env("NO_COLOR", "1");
+        c.args(&args[..n]).arg("-C").arg(&dir).args(&args[n..]).env("DJ_WORKER_TIMEOUT_SCALE", "0.2");
+        if !matches!(args[n - 1], "report" | "clear") {
+            c.arg("--rom").arg(dir.join("rom.bin")).arg("--core").arg(&core);
+        }
+        let out = c.output().unwrap();
         (out.status.code().unwrap_or(-1), String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned())
     };
     let (code, out, err) = dj(&["clean"]);
@@ -369,7 +417,7 @@ fn a_comparison_core_that_dies_under_dj_parity() {
 
     // The test core goes wrong on the frame where its counter reaches 10: frame 9 of `seg`.
     for (name, how, call) in [("dj-crash", "crashed", "dj_handle_event"), ("dj-hang", "made no progress", "dj_handle_event")] {
-        let (code, out, err) = dj(&["parity", "--compare", name]);
+        let (code, out, err) = dj(&["parity", "check", "--compare", name]);
         assert_eq!(code, 1, "{name}: {out}{err}");
         // The supervisor says which core it was, and where.
         assert!(err.contains("the comparison core") && err.contains(how) && err.contains(call) && err.contains("at frame 9"), "{name}: {err}");
@@ -381,7 +429,7 @@ fn a_comparison_core_that_dies_under_dj_parity() {
         let kid = out.lines().find(|l| l.contains(" kid ")).unwrap_or_else(|| panic!("{name}: no line for kid: {out}"));
         assert!(kid.trim_start().starts_with("passed") && kid.contains("10 passed"), "{name}: {kid}");
         // The failure is kept like any other.
-        let (code, out, err) = dj(&["parity", "--compare", name, "--report", "--json"]);
+        let (code, out, err) = dj(&["parity", "report", "--compare", name, "--json"]);
         assert_eq!(code, 0, "{name}: {out}{err}");
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         let fs = v["failures"].as_array().unwrap();
@@ -409,12 +457,12 @@ fn mcp_parity_tools() {
     let dir = tmp.join("project");
     project(&dir, &core, &nodj);
     // Clean (which also remembers the ROM and core for this machine).
-    let st = Command::new(env!("CARGO_BIN_EXE_dj")).arg("clean").arg(&dir).arg("--rom").arg(dir.join("rom.bin")).arg("--core").arg(&core).output().unwrap();
+    let st = Command::new(env!("CARGO_BIN_EXE_dj")).env("NO_COLOR", "1").arg("clean").arg("-C").arg(&dir).arg("--rom").arg(dir.join("rom.bin")).arg("--core").arg(&core).output().unwrap();
     assert!(st.status.success(), "{}", String::from_utf8_lossy(&st.stderr));
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_dj"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_dj")).env("NO_COLOR", "1")
         .arg("mcp")
-        .arg(&dir)
+        .arg("-C").arg(&dir)
         .env("DJ_WORKER_EXE", env!("CARGO_BIN_EXE_dj"))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -474,6 +522,17 @@ fn mcp_parity_tools() {
     let s = wait(&mut call, j["job"].as_str().unwrap());
     assert!(s["status"].as_str().unwrap().contains("frames failed"), "{s}");
     assert_eq!(s["results"][0]["verdict"].as_str(), Some("failed"), "{s}");
+
+    // Forget it: then none are left.
+    let c = call("parity_clear", serde_json::json!({"compare": "dj-mismatch", "ids": [id]}));
+    assert_eq!(c["cleared"][0].as_i64(), Some(id), "{c}");
+    let f = call("parity_failures", serde_json::json!({"compare": "dj-mismatch"}));
+    assert_eq!(f["total"].as_u64(), Some(0), "{f}");
+
+    // What the comparison core is.
+    let core = call("parity_core", serde_json::json!({"compare": "dj"}));
+    assert_eq!((core["sync"].as_str(), core["takes_events"].as_bool()), (Some("events"), Some(true)), "{core}");
+    assert_eq!(core["handles_writes"].as_bool(), Some(true), "{core}");
 
     // A core that matches: the job finishes with nothing failed.
     let j = call("parity_check", serde_json::json!({"compare": "dj"}));

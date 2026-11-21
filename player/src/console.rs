@@ -6,6 +6,7 @@
 //! The last `CAP` lines are kept, in memory only.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -56,8 +57,46 @@ pub fn push(level: Level, source: &str, text: &str) {
 
 /// A warning: written to stderr as `warning: ...` and logged.
 pub fn warn(source: &str, text: &str) {
-    eprintln!("warning: {text}");
+    eprintln!("{} {text}", crate::style::err("warning:", crate::style::Tone::Note));
     push(Level::Warn, source, text);
+}
+
+/// What went wrong inside a frame since the process started, each said once as a warning
+/// when it happened: a batch command counts them again at its end, where they are seen.
+static WRITES_NOT_MADE: AtomicU64 = AtomicU64::new(0);
+static BREAKPOINTS_CAPPED: AtomicU64 = AtomicU64::new(0);
+
+/// A `[WRITE]` at an instruction was dropped: the instruction didn't run in its frame, or
+/// the write couldn't be made there.
+pub fn count_write_not_made() {
+    WRITES_NOT_MADE.fetch_add(1, Ordering::Relaxed);
+}
+
+/// A breakpoint (or the `[tick]` address) ran more often than the cap in one frame and was
+/// switched off until the frame's end.
+pub fn count_breakpoint_capped() {
+    BREAKPOINTS_CAPPED.fetch_add(1, Ordering::Relaxed);
+}
+
+/// (writes not made, times a breakpoint was switched off by the cap) so far.
+pub fn inside_frame_counts() -> (u64, u64) {
+    (WRITES_NOT_MADE.load(Ordering::Relaxed), BREAKPOINTS_CAPPED.load(Ordering::Relaxed))
+}
+
+/// For the end of a batch command: one line on stderr saying how many of those there were,
+/// if any. The warnings above it name each one.
+pub fn print_inside_frame_summary() {
+    let (writes, capped) = inside_frame_counts();
+    let mut parts = vec![];
+    if writes > 0 {
+        parts.push(format!("{writes} [WRITE] line{} at an instruction not made", if writes == 1 { "" } else { "s" }));
+    }
+    if capped > 0 {
+        parts.push(format!("a breakpoint switched off for the rest of its frame {capped} time{}", if capped == 1 { "" } else { "s" }));
+    }
+    if !parts.is_empty() {
+        eprintln!("{} {} (the warnings above name each)", crate::style::err("warning:", crate::style::Tone::Note), parts.join("; "));
+    }
 }
 
 /// A note: written to stderr as `note: ...` and logged.

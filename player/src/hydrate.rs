@@ -1,4 +1,4 @@
-//! Hydration (.agents/CACHE_PLAN.md, "Hydrating"): play the segments whose current content
+//! Hydration (docs/database.md): play the segments whose current content
 //! isn't in the local database yet, a slice at a time so a GUI can show it, pause it
 //! and stop it. Each finished segment is committed on its own.
 
@@ -31,7 +31,6 @@ pub struct Hydrator {
     pub verify: bool,
     end_now: HashMap<String, String>,
     current: Option<Current>,
-    run: Option<i64>,
     pub events: Vec<HydrateEvent>,
     pub frames_played: u64,
 }
@@ -49,7 +48,7 @@ impl Hydrator {
             None => order,
             Some((root, children)) => order.into_iter().filter(|id| id == root || (children && col.chain(id).map(|c| c.contains(&root)).unwrap_or(false))).collect(),
         };
-        Ok(Hydrator { targets, i: 0, force, verify: false, end_now: HashMap::new(), current: None, run: None, events: vec![], frames_played: 0 })
+        Ok(Hydrator { targets, i: 0, force, verify: false, end_now: HashMap::new(), current: None, events: vec![], frames_played: 0 })
     }
 
     /// Clean all (or a subtree): plays, top down, every segment that isn't clean or whose
@@ -89,9 +88,6 @@ impl Hydrator {
         if s.cache.is_none() {
             bail!("hydration needs the local database");
         }
-        if self.run.is_none() {
-            self.run = Some(s.cache.as_ref().unwrap().begin_run(&col.config.core.build, "hydrate")?);
-        }
         let t0 = Instant::now();
         let mut out = vec![];
         let opts = PlayOptions { record: true, ..Default::default() };
@@ -104,7 +100,7 @@ impl Hydrator {
                     let start_frame = cur.start_frame;
                     let res = s.finish(col, cur.rec)?;
                     self.frames_played += res.frames;
-                    let ev = self.conclude(s, col, &res.id, &res.start_hash, start_frame, &res.end_hash, Some(&res.checkpoints), "played", res.frames)?;
+                    let ev = self.conclude(col, &res.id, &res.start_hash, start_frame, &res.end_hash, Some(&res.checkpoints), "played", res.frames)?;
                     out.push(ev);
                     self.i += 1;
                 }
@@ -160,7 +156,7 @@ impl Hydrator {
                     known = None;
                 }
                 if let Some(row) = known {
-                    let ev = self.conclude(s, col, &id, &start, start_frame, &row.end_hash, None, "stored", row.frames)?;
+                    let ev = self.conclude(col, &id, &start, start_frame, &row.end_hash, None, "stored", row.frames)?;
                     out.push(ev);
                     self.i += 1;
                 } else {
@@ -188,15 +184,11 @@ impl Hydrator {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn conclude(&mut self, s: &mut Session, col: &mut Collection, id: &str, start: &str, start_frame: u64, end: &str, cps: Option<&[(u64, String)]>, action: &'static str, frames: u64) -> Result<HydrateEvent> {
+    fn conclude(&mut self, col: &mut Collection, id: &str, start: &str, start_frame: u64, end: &str, cps: Option<&[(u64, String)]>, action: &'static str, frames: u64) -> Result<HydrateEvent> {
         self.end_now.insert(id.to_string(), end.to_string());
         let mut verdict = judge_hashes(col, id, start, end, cps);
         if self.verify {
             verdict = try_record(col, id, start, start_frame, end, cps);
-        }
-        let key = s.content_key(col, id, start)?;
-        if let (Some(c), Some(run)) = (&s.cache, self.run) {
-            c.run_result(run, id, &key, verdict)?;
         }
         let ev = HydrateEvent { id: id.to_string(), action, verdict, frames };
         self.events.push(ev.clone());

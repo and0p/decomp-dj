@@ -23,7 +23,7 @@ pub struct Config {
     pub tick: Option<TickConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub symbols: Vec<SymbolsConfig>,
-    /// Thresholds for the local database (.agents/CACHE_PLAN.md).
+    /// Thresholds for the local database (.agents/_archive/CACHE_PLAN.md).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache: Option<crate::cache::CacheConfig>,
     /// `[[compare]]`: comparison cores that can play beside the baseline (docs/config.md).
@@ -352,6 +352,11 @@ pub struct RecordLocal {
     pub port: Option<u32>,
 }
 
+/// The environment variables that give the ROM and the core in place of
+/// .local/local.toml (`Collection::settings`).
+pub const ROM_ENV: &str = "DJ_ROM";
+pub const CORE_ENV: &str = "DJ_CORE";
+
 pub struct Collection {
     pub root: PathBuf,
     pub config: Config,
@@ -487,11 +492,21 @@ impl Collection {
 
     /// The machine-side settings in effect: config.toml's, with local.toml's on top.
     /// Relative `rom` and `core` paths are taken from the project folder.
+    /// The settings: config.toml under .local/local.toml, with the ROM and the core from
+    /// `DJ_ROM` and `DJ_CORE` when those are set (for CI: docs/ci.md). Those win over
+    /// local.toml, and are never written into it (`load_local` and `save_local` don't see
+    /// them). A relative path in them is from the working directory.
     pub fn settings(&self) -> Result<LocalConfig> {
         let mut s: LocalConfig = toml::Value::Table(layered_table(&self.root)?).try_into().context("reading the settings in config.toml and .local/local.toml")?;
         for p in [&mut s.rom, &mut s.core].into_iter().flatten() {
             if p.is_relative() {
                 *p = self.root.join(&*p);
+            }
+        }
+        for (var, slot) in [(ROM_ENV, &mut s.rom), (CORE_ENV, &mut s.core)] {
+            if let Some(v) = std::env::var_os(var).filter(|v| !v.is_empty()) {
+                let p = PathBuf::from(v);
+                *slot = Some(if p.is_relative() { std::env::current_dir()?.join(p) } else { p });
             }
         }
         Ok(s)

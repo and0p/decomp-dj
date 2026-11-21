@@ -15,7 +15,7 @@ my-project/
   blobs/
     9a1c…7e.srm          SRAM and other blobs, named by content hash
   symbols/               optional: symbol maps for rolling coverage up into functions
-  unreachable.txt        optional: ROM ranges no input can reach, left out of coverage
+  annotations.toml       optional: unreachable code, data, and function fixes (config.md)
   .local/                local only, never committed
     local.toml           local settings
     cache.db             the local DB
@@ -231,7 +231,7 @@ output for `snapshot`, and the `RETRO_MEMORY_SAVE_RAM` contents for `sram`.
 ## Older projects
 
 A dj reads every older project format and writes files in its own as it saves them;
-`dj upgrade <dir>` rewrites every segment file at once (one commit, nothing about what
+`dj upgrade` rewrites every segment file at once (one commit, nothing about what
 they play changing). Layouts from before format 1 are upgraded in place the first time a
 tool opens them:
 

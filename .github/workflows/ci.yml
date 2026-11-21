@@ -133,7 +133,7 @@ jobs:
         # Checks every recorded hash; fails if any segment plays differently here.
         run: |
           core=build/cores/mesen_libretro
-          player/target/release/dj run examples/thwaite --from-scratch --rom examples/thwaite/build/thwaite.nes --core "$core"
+          player/target/release/dj -C examples/thwaite check --from-power-on --strict --rom examples/thwaite/build/thwaite.nes --core "$core"
 
       - name: OpenGL without a display
         # The decomp draws with OpenGL. dj gives it a context with no window: EGL on Linux,
@@ -150,5 +150,5 @@ jobs:
         # Every frame of every segment; fails if one differs. Results are kept per build of
         # the decomp, and each run builds it anew, so every segment is checked.
         run: |
-          player/target/release/dj parity examples/thwaite --compare decomp \
+          player/target/release/dj -C examples/thwaite parity check --compare decomp \
             --rom examples/thwaite/build/thwaite.nes --core build/cores/mesen_libretro

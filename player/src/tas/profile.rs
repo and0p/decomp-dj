@@ -1,5 +1,5 @@
 //! How a console's buttons, as TAS movies name them, map to libretro inputs on one core
-//! (.agents/TAS_PLAN.md, "Profiles").
+//! (.agents/_archive/TAS_PLAN.md, "Profiles").
 //!
 //! Movie columns are named the way BizHawk names them ("P1 A", "P1 X Axis", or "A" for a
 //! one-player handheld). Most consoles map one column to one libretro input. The N64 on

@@ -142,8 +142,8 @@ transport.
   baseline at the frame shown.
 - **Any failure stops playback**: a parity failure, a core that says it can't go on (a
   halt), a failed sync. Both cores stop on that frame, and the comparison picture stays faded with
-  the reason over it, the state **stopped** and the frame the comparison core was last synced
-  at (where its run started). Playing or stepping on syncs it again first, as after a jump;
+  the reason over it, the state **stopped** and the frame of the last jump before it
+  (where the comparison core's run started). Playing or stepping on syncs it again first, as after a jump;
   after a failed sync, playback carries on without the comparison until the next jump or
   **Sync now**.
 - **The comparison core runs in dj-gui's own process**, beside the baseline, so that it
@@ -164,11 +164,11 @@ kept in the local database, separately for each `[[compare]]` entry
   **build**: the sha256 of its library when it was loaded. A rebuilt library is a new
   build and starts with no passes.
 - A frame that **failed** (a parity failure or a failed tick) is kept with how to reproduce
-  it: the build, the segment and frame the comparison core was synced at, the failing
-  segment and frame, the reason, what differed (when the check says:
+  it: the build, the segment and frame of the last jump before it, the failing
+  segment and frame, where in the frame the verdict came (a breakpoint's name, or the frame end), the reason, what differed (when the check says:
   [connectors.md](connectors.md#parity)), and the code that frame ran. Failed syncs aren't
   kept. The failure's message and its hover in the list show what differed;
-  `dj parity --explain` traces who wrote it ([cli.md](cli.md#parity)).
+  `dj parity explain` traces who wrote it ([cli.md](cli.md#parity)).
 
 A core that takes events gives its verdicts where it chooses, so a verdict can speak for
 more than one frame: a match credits the frames since its last verdict, and a failure is
@@ -181,8 +181,8 @@ about a second.
 
 The Functions tab's **Parity with "core"** section counts the instructions with parity,
 failed and not checked, and lists the failures, newest first. Click one to show its frame.
-**Re-run** syncs where it was synced and plays to its frame with Check parity on (through
-the segments in between, if it was synced in an ancestor); **Clear** forgets it. **Re-run old
+**Re-run** jumps to where its run started and plays to its frame with Check parity on (through
+the segments in between, if that was in a segment above); **Clear** forgets it. **Re-run old
 failures** re-runs every failure from an older build, one after another (**Stop** ends it),
 and the status bar says how they went. The map's **Parity** tab colours the ROM map and the
 function list by parity alone; **Combined** (the default) lays purple, orange and red over
@@ -202,7 +202,7 @@ and links to the first failing frame that ran it.
 
 `dj parity` checks the same way from the command line ([cli.md](cli.md#parity)), as do
 agents' `parity_check` jobs ([mcp.md](mcp.md#parity)), and their results show here too. A
-decomp's CI can run it after each build ([connectors.md](connectors.md#checking-parity-in-ci)).
+decomp's CI can run it after each build ([ci.md](ci.md)).
 
 ## Menus
 

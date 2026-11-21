@@ -3,7 +3,7 @@
 Written 2026-11-15 15:20 EST; rewritten 16:28 EST, revised 16:57 and 17:30 EST with
 [PLAN.md](PLAN.md). This is the design in that file as charts. The same rules as tables
 of cases, with worked examples, are in [STATES.md](STATES.md). Earlier charts are in
-[archive/](archive/); agents should not read those unless the developer says to. Nothing
+[archive/](../_archive/yield-parity/); agents should not read those unless the developer says to. Nothing
 here is built.
 
 The comparison core lists breakpoints in the original game. dj runs the baseline and

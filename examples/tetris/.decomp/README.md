@@ -131,7 +131,7 @@ tells it where the original has got to; it runs itself to the same place and com
   If one ever did (a real lag frame), the decomp answers "unjudged" and takes the
   original's state from there.
 - **`dj_parity_diffs`**: after a mismatch, the bytes of RAM that differed (the first 32),
-  one difference each, so that `dj parity --explain` can name the instruction of the
+  one difference each, so that `dj parity explain` can name the instruction of the
   original that wrote each.
 - **`dj_handle_write`**: a write to region `RAM` made between frames goes into the game's
   RAM. One made at an instruction can't be followed: the decomp copies the original again.

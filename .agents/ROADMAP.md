@@ -10,16 +10,16 @@ Priorities: **high** blocks the release, **medium** should be in it, **low** can
 
 | Priority | Item | Plan | Status |
 | --- | --- | --- | --- |
-| high | Land the N64 connector and MIPS decoder; docs agree on what's supported | [CONNECTOR_PLAN.md](CONNECTOR_PLAN.md) | done 2026-11-09 |
+| high | Land the N64 connector and MIPS decoder; docs agree on what's supported | [CONNECTOR_PLAN.md](_archive/CONNECTOR_PLAN.md) | done 2026-11-09 |
 | high | CI on Linux and macOS (Windows as a template), Thwaite hashes on every change | [RELEASE_PLAN.md](RELEASE_PLAN.md) | written 2026-11-10, not run yet (push to run) |
-| medium | The Thwaite decomp: the example's "decomp" half, a C reimplementation drawn with OpenGL and checked with breakpoints and events; its parity checked in CI with the hashes | [THWAITE_DECOMP_PLAN.md](THWAITE_DECOMP_PLAN.md) | done 2026-11-16: every frame of the 15 segments in parity, pictures pixel for pixel, `--explain` traces failures; the CI step written, not run yet (push to run) |
+| medium | The Thwaite decomp: the example's "decomp" half, a C reimplementation drawn with OpenGL and checked with breakpoints and events; its parity checked in CI with the hashes | [THWAITE_DECOMP_PLAN.md](_archive/THWAITE_DECOMP_PLAN.md) | done 2026-11-16: every frame of the 15 segments in parity, pictures pixel for pixel, `--explain` traces failures; the CI step written, not run yet (push to run) |
 | high | Projects record the format and tool version; older tools refuse newer projects; a core rebuild re-pins | [below](#project-and-cli), "Versioning projects" | done 2026-11-10 |
 | high | Clean-up and licensing: scratch files, terminology in the CLI help, the Tetris data tables, connector licences | [RELEASE_PLAN.md](RELEASE_PLAN.md#clean-up-started-2026-11-16) | started 2026-11-16: the CLI's terminology done, the spike tools and the Tetris decomp's old port removed, the Tetris tables made from the ROM at build. Left: the connector split (decided: with the next repin), `scratchpad.md` and what of `.agents/` a public repository carries (the developer's), and the old terms inside the code |
 | high | Release workflow and install docs (`v0.1.0`) | [RELEASE_PLAN.md](RELEASE_PLAN.md) | portable ZIPs and draft release written 2026-11-10, not run yet |
-| medium | Decoder interface (step 1: one trait and one sweep; step 2: loadable decoders) | [DECODER_PLAN.md](DECODER_PLAN.md) | done (plugins 2026-11-10) |
-| high | Cores and plugins can't crash or hang dj: workers for decoder plugins, comparison cores, batch commands, then the GUI's core | [ISOLATION_PLAN.md](ISOLATION_PLAN.md) | done for plugins, comparison cores and batch commands (comparison cores went back into dj's process on 2026-11-15, so that they can read the baseline inside a frame: [yield-parity/PLAN.md](yield-parity/PLAN.md), section 11); the GUI's core protected in process (edits kept, crash note); moving it to a worker designed, not built (decided 2026-11-10: not now, maybe before the release) |
+| medium | Decoder interface (step 1: one trait and one sweep; step 2: loadable decoders) | [DECODER_PLAN.md](_archive/DECODER_PLAN.md) | done (plugins 2026-11-10) |
+| high | Cores and plugins can't crash or hang dj: workers for decoder plugins, comparison cores, batch commands, then the GUI's core | [ISOLATION_PLAN.md](_archive/ISOLATION_PLAN.md) | done for plugins, comparison cores and batch commands (comparison cores went back into dj's process on 2026-11-15, so that they can read the baseline inside a frame: [yield-parity/PLAN.md](yield-parity/PLAN.md), section 11); the GUI's core protected in process (edits kept, crash note); moving it to a worker designed, not built (decided 2026-11-10: not now, maybe before the release) |
 | medium | Root segments that start from a snapshot, finished ([below](#root-segments-from-a-snapshot)) | | partly built |
-| high | Parity at check points, not frame ends: the version 2 comparison handle (frame and tick facts, the baseline's memory instead of its save state, CPU state), then check points in Mesen, dj and the tools | [CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md) | built 2026-11-15 and 16 in another form, as events and breakpoints the comparison core brings itself: [yield-parity/PLAN.md](yield-parity/PLAN.md). The plan linked here is the earlier design |
+| high | Parity at check points, not frame ends: the version 2 comparison handle (frame and tick facts, the baseline's memory instead of its save state, CPU state), then check points in Mesen, dj and the tools | [CHECKPOINT_PARITY_PLAN.md](_archive/yield-parity/CHECKPOINT_PARITY_PLAN.md) | built 2026-11-15 and 16 in another form, as events and breakpoints the comparison core brings itself: [yield-parity/PLAN.md](yield-parity/PLAN.md). The plan linked here is the earlier design |
 
 ### Root segments from a snapshot
 
@@ -40,7 +40,7 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
 
 - **Making one from the CLI and MCP.** `dj new` has no `--snapshot FILE` (or `--sram`);
   `dj snapshot` writes a state to a file but can't turn it into a root. Add
-  `dj new <dir> --snapshot FILE [--start-frame N]` and the same for the MCP tools.
+  `dj new --snapshot FILE [--start-frame N]` and the same for the MCP tools.
 - **Making one from where you are, in the GUI.** "New root segment from here": take the
   state at the playhead, store it as a blob, and create a root with that `snapshot` and
   `start-frame`. Today it takes `dj snapshot` and Properties.
@@ -81,7 +81,7 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   so with less room left the rows above it run past the sidebar's remaining space into the
   map panel instead of being clipped or scrolled. Not confirmed.
 - **A port keeps the device a previously played segment plugged in** (found 2026-11-11,
-  [CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md), "The mouse segment: a leftover
+  [CHECKPOINT_PARITY_PLAN.md](_archive/yield-parity/CHECKPOINT_PARITY_PLAN.md), "The mouse segment: a leftover
   port device"). Thwaite's "Mouse in port 2" segment plugs a mouse in with a `[DEVICE]`
   line at its frame 0. Played a second time in the same process, from its start, it runs
   without the mouse: RAM, the full state and the tick map differed on all 400 frames.
@@ -90,15 +90,21 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   state loaded for the replay has none plugged in. dj doesn't reset the port:
   `devices_at_start` (`player/src/player.rs`) sets only the ports listed in `config.toml`
   and those an ancestor's `[DEVICE]` line changed. Reproduced through the library
-  (`start_trunk`, `restore_inputs`, `step`), not yet in dj-gui; `dj run` plays each
+  (`start_trunk`, `restore_inputs`, `step`), not yet in dj-gui; `dj check` plays each
   segment once per process and doesn't hit it. Fix: when dj enters a segment, set every
   port explicitly, including ports the config doesn't list, and set it to something else
   first if the core might skip an unchanged value. Thwaite's mouse is an outlier among
   NES games, so this is low priority, but any project with `[DEVICE]` lines is exposed.
   Since 2026-11-16 `Core::set_port_device` (`player/src/libretro.rs`) remembers the device
   last set on each port, which is where the fix would go; it does not reset ports yet.
+- **Fixed 2026-11-19: Mesen's connector gave no registers before the CPU had run an
+  instruction** ([CI_PLAN.md](CI_PLAN.md), "Open"). The first segment `dj parity check`
+  checked from a stored or seeded start skipped its frame 0. The CPU now points the
+  connector at its registers when it is made. Build `mesen@0102910c+dj.3959bd49`; Thwaite
+  and Tetris repinned to it with every hash unchanged. The lag-flag fix below and the
+  licence split were not part of this repin.
 - **Mesen's lag counter can be off by one after a save state is loaded** (found 2026-11-11,
-  [CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md), "The lag counter after a load").
+  [CHECKPOINT_PARITY_PLAN.md](_archive/yield-parity/CHECKPOINT_PARITY_PLAN.md), "The lag counter after a load").
   Mesen's `ControlManager` saves `_lagCounter` and `_pollCounter` but not the `_isLagging`
   flag that decides whether the next input poll counts as lag. After a load the flag holds
   whatever the last frame run in that process left, so two save states of the same frame
@@ -175,7 +181,7 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   the two-line layout exists, bring back something compact: an indicator or toggle for the
   comparison core (which one, in step or not) and for parity checking.
 - **A region dropdown for the coverage map.** Connectors report several regions now (the
-  N64's `RDRAM` and `ROM`; [CONNECTOR_PLAN.md](CONNECTOR_PLAN.md)), and the map and totals
+  N64's `RDRAM` and `ROM`; [CONNECTOR_PLAN.md](_archive/CONNECTOR_PLAN.md)), and the map and totals
   show one code region. A dropdown over the map would pick one region (or all), for systems with several
   CPUs or RAM-resident code (SNES audio RAM, Mega Drive Z80 RAM, N64 RDRAM and RSP).
 - **Audio playback (GUI).** Play the core's audio while a segment plays, with a volume
@@ -227,7 +233,7 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   positively; or a connector flag for ROM bytes read as data, 0x04), and a headless Ghidra
   export (CSV), for larger systems.
 
-- **A coverage report that can be committed.** `dj report --write` (or a step of `dj run`)
+- **A coverage report that can be committed.** `dj summary --write` (or a step of `dj check`)
   writes a `report/` folder in the project that goes into version control, so a
   collaborator can see what is covered, and the overall %, from a fresh clone without
   cleaning anything, and review coverage changes in a diff. The folder splits the headline
@@ -250,7 +256,7 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
 - **Coverage in the GUI:** the Functions tab ([coverage.md](../docs/coverage.md#in-the-gui)) shows the report, a ROM map
   and live new coverage while playing. It rebuilds the whole report after every edit,
   which takes milliseconds at NES sizes. For large games, keep coverage per segment and
-  per function or larger block, sum it in a cache (`coverage_sum`, [CACHE_PLAN.md](CACHE_PLAN.md)), and
+  per function or larger block, sum it in a cache (`coverage_sum`, [CACHE_PLAN.md](_archive/CACHE_PLAN.md)), and
   update only the sums for segments whose clean or dirty status changed. (Live coverage
   while playing no longer walks every instruction each refresh, since 2026-11-16: on No
   Mercy it took 5 to 8 ms and now takes 0.7 to 2 ms. Parity colours are on the map.)
@@ -258,13 +264,13 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   segments for later analysis or compare cores by eye. Off: no `dj_clear` or flag reads, no
   coverage or first hits stored, the Functions tab and map hidden in the GUI, and the
   coverage CLI and MCP tools saying it's off. Plain libretro cores with no connector already
-  work as the baseline (`dj init` and `dj run` only print a note); this makes that a choice.
+  work as the baseline (`dj init` and `dj check` only print a note); this makes that a choice.
   Segments don't hold coverage, so turning it on later and cleaning fills it in. Open:
   per project (config.toml) or per machine (local.toml), and a GUI toggle.
 - **Tracking coverage lost.** When an edit, a delete or a re-recorded segment means code
   that used to be covered no longer is, nothing says so: the totals just drop. Keep the
   previous coverage per segment (or per report), and show what a change cost: in the GUI
-  after a save or Verify ("−14 instructions in `doStateNewLevel`"), and in `dj report`
+  after a save or Verify ("−14 instructions in `doStateNewLevel`"), and in `dj summary`
   against the last committed report. Pairs with the committed report above, whose diff
   would show it in review.
 - **"First runs in" may need its own view.** The function details now show the best first
@@ -301,7 +307,7 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   hook execution into), then write its connector. First step: the list of consoles and the
   chosen core for each, with the reasons.
   Planning notes for a second core (bsnes-mercury) and where decoding should live:
-  [CONNECTOR_PLAN.md](CONNECTOR_PLAN.md).
+  [CONNECTOR_PLAN.md](_archive/CONNECTOR_PLAN.md).
 - **Named blobs.** Look into letting a blob have a name people choose (`sram = "world-3-save"`,
   `blobs/world-3-save.srm`) instead of only its content hash. Today the hash is enforced, not a
   convention: `Collection::read_blob` refuses a blob whose content doesn't hash to its name,
@@ -321,7 +327,7 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   against `[core] build`, and `dj repin` re-verifies the tree after a core change and records
   the new build. Hashes never depended on the core binary, only the local database did. Still
   open: per-platform `sha256` pins for `[[compare]]` (see "Portable `[[compare]]` entries").
-- **Backups without version control.** `dj backup <dir>` (and File > Back up… in
+- **Backups without version control.** `dj backup` (and File > Back up… in
   the GUI) writes the project's shared files to a ZIP: `config.toml`, `segments/`,
   `blobs/`, `symbols/` and `annotations.toml`, never `.local/` (the database can be
   rebuilt by cleaning) and never the ROM. `dj restore <zip> <dir>` puts them back,
@@ -460,7 +466,7 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
     frame, like the Functions tab's "Runs in".
   - **Shown** on the coverage map and the function list (purple, orange, red), by
     `dj parity --report` and by the MCP parity tools.
-- **Shipped: parity without the GUI (phase 3)**, as planned in [PARITY_PLAN.md](PARITY_PLAN.md):
+- **Shipped: parity without the GUI (phase 3)**, as planned in [PARITY_PLAN.md](_archive/PARITY_PLAN.md):
   - The per-frame check is library code (`parity::Checker`), and passes merge in the
     database, so dj-gui, `dj` and agents can write results at once.
   - `dj parity` checks, reports, re-runs, clears and explains from the command line, for a
@@ -474,7 +480,7 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
 - **Built in another form (2026-11-15 and 16): parity at check points.** The comparison
   core names breakpoints in the original and is called there
   ([yield-parity/PLAN.md](yield-parity/PLAN.md)). The earlier plan, kept for the record
-  ([CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md)): the baseline pauses where a
+  ([CHECKPOINT_PARITY_PLAN.md](_archive/yield-parity/CHECKPOINT_PARITY_PLAN.md)): the baseline pauses where a
   step of the original's logic ends, so lag frames and variable logic rates (N64,
   PlayStation) line up, and `dj_sync` knows which loop the original is in. Part 1 first: a
   version 2 `dj_baseline` with frame facts (fixes the tick count reading 0 through the
@@ -486,10 +492,10 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   formats). Needs inputs keyed below the frame in the segment format (playback.md reserves
   "keying input by tick"), the player applying them mid-frame (on top of
   `dj_run_to_checkpoint`), and the GUI's piano roll showing them. Check points
-  ([CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md)) don't need it: they keep inputs
+  ([CHECKPOINT_PARITY_PLAN.md](_archive/yield-parity/CHECKPOINT_PARITY_PLAN.md)) don't need it: they keep inputs
   per frame.
 - **Still to do after the events work** (from [yield-parity/PLAN.md](yield-parity/PLAN.md)):
-  - A trace hook in the mGBA connector, so `dj parity --explain` can name the writers
+  - A trace hook in the mGBA connector, so `dj parity explain` can name the writers
     there. Mesen's and Mupen64Plus's have one (the N64's since 2026-11-16).
   - A check in dj that would catch a `[cache] exclude` that changes a game's run: load a
     state with the range zeroed and compare hashes for a few hundred frames. No Mercy's
@@ -497,7 +503,7 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   - A real decomp of a game whose ticks cross frames, and one with a lag frame an
     interrupt splits. The rules for both rest on the test core and a stub.
   - "Pre-roll" shown as the comparison core's state in the GUI.
-- **Still to do for parity:** counts per block ("passed on X frames"); `dj parity --jobs`
+- **Still to do for parity:** counts per block ("passed on X frames"); `dj parity check --jobs`
   (a child process per job); `--from-power-on`; data symbols, so diffs can be given by
   symbol and the RAM compare's diffs get names (a core can already name a symbol beside
   the address in `dj_parity_diffs`, as the Thwaite and Tetris decomps do); for diffs that
@@ -529,7 +535,7 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   draw without an error. The connector patch
   ([connectors/mupen64plus](../connectors/mupen64plus/README.md)) now enables it only
   with coverage, and the core's build id changed to `mupen64plus@15bada85+dj.8c54df2b`.
-  Details in [CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md), "No Mercy video".
+  Details in [CHECKPOINT_PARITY_PLAN.md](_archive/yield-parity/CHECKPOINT_PARITY_PLAN.md), "No Mercy video".
   Left to do: send the one-line fix upstream to mupen64plus-libretro-nx (and GLideN64, if
   it has the same code); compare state hashes between the old and new core; find the GL
   "invalid operation" the core raises once per frame; `dj repin` any N64 project recorded
@@ -539,7 +545,7 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   that dj hashes (No Mercy keeps it on and leaves its three framebuffers,
   `RAM:0x38F800-0x3FFFFF`, out of `[hash]` and `[cache]`).
 - **Pin timing-dependent randomness by patching the game's code in memory** (asked for
-  2026-11-11; background in [CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md), "WWF No
+  2026-11-11; background in [CHECKPOINT_PARITY_PLAN.md](_archive/yield-parity/CHECKPOINT_PARITY_PLAN.md), "WWF No
   Mercy"). Some games advance their random number generator from an idle loop, so its
   state follows spare CPU time, not game logic. A decomp can't reproduce that, and parity
   on anything the generator decides fails. The AKI wrestling decomp
@@ -550,7 +556,7 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   `0x00000000`. dj should be able to do the same for a project:
   - **A `[[patch]]` entry in the project's config.toml that points to a patch file**
     (decided by the developer 2026-11-12; details in
-    [yield-parity/PLAN.md](yield-parity/archive/PLAN.md), "Patches"). The file holds its own
+    [yield-parity/PLAN.md](_archive/yield-parity/PLAN.md), "Patches"). The file holds its own
     offsets and bytes; the config does not. dj reads the ROM, applies the patch in memory,
     and hands the core the buffer before boot. The ROM file on disk is not changed. The
     format is not decided: the thread recommends BPS, because it checks that it is being
@@ -577,7 +583,7 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   Until this exists, a `[WRITE]` line at the right frame of a root segment does the same
   job by hand, at the cost of the segment being poked.
 - **N64 follow-ups** (the connector and the MIPS decoder are in; details and results in
-  [CONNECTOR_PLAN.md](CONNECTOR_PLAN.md), steps 3 and 4):
+  [CONNECTOR_PLAN.md](_archive/CONNECTOR_PLAN.md), steps 3 and 4):
   - **Playback speed: fixed 2026-11-16.** Recording a pass scanned all 40 MB of the
     connector's flags every frame, byte by byte (14 ms a frame on No Mercy). The scan now
     passes over 4 KB blocks with nothing new a word at a time (under 1 ms), and parity's
@@ -648,10 +654,10 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
   report. A core without the function falls back to the default check (RAM while
   stepping, below). Open: how much of the baseline to hand over each frame without
   slowing stepping down, and whether the check runs every frame or only at ticks (planned
-  in [CHECKPOINT_PARITY_PLAN.md](yield-parity/archive/CHECKPOINT_PARITY_PLAN.md): at named check points
+  in [CHECKPOINT_PARITY_PLAN.md](_archive/yield-parity/CHECKPOINT_PARITY_PLAN.md): at named check points
   mid-frame, with frame ends as the fallback).
 - **Decided: how parity is checked.** The comparison core answers events with verdicts,
-  with the RAM compare after each frame as the fallback, and `dj parity --explain` traces
+  with the RAM compare after each frame as the fallback, and `dj parity explain` traces
   the failing frames to the instruction that wrote each difference. The options as they
   were weighed:
   - **RAM while stepping.** Run both cores frame by frame and compare RAM (or the
@@ -669,6 +675,18 @@ for a root without a snapshot), and `sync = "state"` cores load the baseline's s
 
 ## Code
 
+- **Remove dead code before the release.** Code that nothing in `dj`, `dj-gui` or the MCP
+  server reaches any more, kept alive only by its own tests. A pass should look for it
+  across the player and the GUI (public items with no caller outside `tests/`, worker
+  kinds no one starts, options no command sets), delete it with its tests, and say in the
+  plans that named it that it is gone.
+  - **Example: the comparison worker.** `RemoteComparison` and `CompareWorker`
+    (`player/src/compare.rs`) and the `"compare"` worker kind in `player/src/isolate.rs`
+    ran a comparison core in its own process. Since comparison cores moved into dj's own
+    process on 2026-11-15 ([yield-parity/PLAN.md](yield-parity/PLAN.md), section 11),
+    dj-gui and `dj parity` load every core with `Comparison::open`, `sync = "state"` ones
+    included. Only `player/tests/compare.rs` (`comparison_cores_in_workers`) still uses
+    them. Found 2026-11-19 in the CLI review ([CLI_REFACTOR_PLAN.md](CLI_REFACTOR_PLAN.md)).
 - **Refactor the Rust before release (maybe).** Once the tool is close to a first working
   release, consider splitting the longest files by feature. `gui/src/main.rs` is about
   6,500 lines and holds playback, editing, undo, the tree, cleaning and the transport

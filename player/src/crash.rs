@@ -1,5 +1,5 @@
 //! A note for the next launch when dj-gui crashes or stops responding inside a core
-//! (.agents/ISOLATION_PLAN.md, step 4): which core, segment and frame, and which libretro call
+//! (.agents/_archive/ISOLATION_PLAN.md, step 4): which core, segment and frame, and which libretro call
 //! it was in. A comparison core runs in the same process, so the note also names it and the
 //! call it was in, if it was running. A `dj parity` child writes the same note, which its
 //! supervisor reads to tell which of the two cores died (`isolate::supervise`).

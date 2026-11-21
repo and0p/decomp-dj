@@ -45,7 +45,7 @@ sha256 = "…"                       # optional pin
   and 1 s per 1,000 functions) is stopped. The built-in decoders run in dj.
 - **Layering:** `.local/local.toml`'s `[[decoders]]` replace config.toml's, unless every
   entry has a `name`, in which case they merge by name ([config.md](config.md#layering)).
-- **Reports say which decoder ran:** `dj summary` and `dj report` print a note such as
+- **Reports say which decoder ran:** `dj summary` prints a note such as
   `ROM (armv4t) decoded by decoders/dj_arm.dylib sha256 0d6e592166e8` when a plugin decoded
   the code region, since totals depend on the decoder. Coverage results are cached per
   decoder, so changing one never reuses another's.
@@ -164,12 +164,12 @@ another core for the same CPU can compile the same decoder.
 A worker is dj's own program started again with a hidden first argument (`__dj-worker
 decode`); nothing extra is installed. Two environment variables are for testing:
 `DJ_WORKER_EXE` starts another program as the worker (dj's tests point it at `dj`), and
-`DJ_WORKER_TIMEOUT_SCALE` multiplies the time limits. Why and how: .agents/ISOLATION_PLAN.md.
+`DJ_WORKER_TIMEOUT_SCALE` multiplies the time limits. Why and how: .agents/_archive/ISOLATION_PLAN.md.
 
 ## Checking a decoder
 
-- **Against a core:** with a project that has a symbol map, `dj check-connector` compares
+- **Against a core:** with a project that has a symbol map, `dj connector-check` compares
   every instruction the decoder reads with the connector's flags on code that ran ([cli.md](cli.md)).
 - **Against another decoder or disassembler:** decode random bytes with both and compare
   lengths, kinds and targets. The built-in ARMv4T decoder was checked against LLVM's
-  disassembler this way (.agents/DECODER_PLAN.md).
+  disassembler this way (.agents/_archive/DECODER_PLAN.md).

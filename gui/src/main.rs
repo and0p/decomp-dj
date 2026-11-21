@@ -36,7 +36,7 @@ const AGENT_OWNED: Color32 = Color32::from_rgb(160, 205, 255);
 const CHANGED: Color32 = Color32::from_rgb(235, 120, 90);
 
 fn main() -> eframe::Result {
-    // Started as a worker for code dj doesn't trust (.agents/ISOLATION_PLAN.md)?
+    // Started as a worker for code dj doesn't trust (.agents/_archive/ISOLATION_PLAN.md)?
     decomp_dj::isolate::run_if_worker();
     let start = std::env::args().nth(1).map(PathBuf::from);
     let options = eframe::NativeOptions {
@@ -230,7 +230,7 @@ struct App {
     /// Open, Reload or Quit asked for with unsaved edits: waiting on "discard them?".
     discard_dialog: Option<Discard>,
     /// What a dj-gui that crashed, hung or was force-quit left (unsaved edits, a crash
-    /// note): offered back when the project opens (.agents/ISOLATION_PLAN.md, step 4).
+    /// note): offered back when the project opens (.agents/_archive/ISOLATION_PLAN.md, step 4).
     recovery_offer: Vec<decomp_dj::recovery::Left>,
     /// The unsaved edits last written to `.local/recovery/` (as JSON), and when that was checked.
     recovery_written: String,
@@ -1927,7 +1927,7 @@ impl App {
             self.compare_failed = true;
             let differed = if diffs.is_empty() { String::new() } else { format!("\n\nWhat differed:\n{}", diffs.lines(8).iter().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n")) };
             let then = if events { "Play or step on to carry on from here; Compare > Sync now has the core copy the baseline again." } else { "Play or step on to sync again." };
-            self.compare_problem = Some(format!("{msg}{differed}\n\nSynced at {from}. {then}"));
+            self.compare_problem = Some(format!("{msg}{differed}\n\nThe last jump was at {from}. {then}"));
             self.playing = false;
         }
         let reached_end = pb.ran == pb.frames;
@@ -5316,7 +5316,7 @@ impl App {
     }
 
     /// Picks up segment files that other tools changed, added or removed (an agent's
-    /// `save_draft`, `dj clean`, `dj play --accept`, an editor). A segment with
+    /// `save_draft`, `dj clean`, an editor). A segment with
     /// unsaved edits here keeps them, with a warning, since saving would overwrite the file.
     fn poll_segments(&mut self) {
         if self.hydrating.is_some() {

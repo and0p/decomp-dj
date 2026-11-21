@@ -38,7 +38,7 @@ pub struct Project {
 impl Project {
     pub fn open(dir: &Path, rom: Option<&Path>) -> Result<Project> {
         let col = Collection::open(dir)?;
-        let conn = cache::Cache::open_readonly(&col)?;
+        let conn = cache::Cache::open_existing(&col)?;
         let setup: String = conn
             .query_row("SELECT setup FROM contents ORDER BY played_at DESC LIMIT 1", [], |r| r.get(0))
             .context("the local database is empty; run `dj clean` first")?;
@@ -217,7 +217,7 @@ impl Project {
         Ok(Page::new(items, total, cursor))
     }
 
-    /// `where_runs`: which segments first run this address, and at which frame.
+    /// `xref`: which segments first run this address, and at which frame.
     pub fn xref(&self, what: &str, limit: usize, cursor: usize) -> Result<Xref> {
         let address = self.resolve(what)?;
         let hits = self.hits(&address.region, address.offset, address.offset, limit, cursor)?;
@@ -225,6 +225,31 @@ impl Project {
     }
 
     /// The headline numbers of the coverage report.
+    /// Each counted segment's share of the coverage, in tree order.
+    pub fn segment_shares(&mut self) -> Result<Vec<SegmentShare>> {
+        self.report()?;
+        let rep = self.report.as_ref().unwrap();
+        Ok(rep.replays.iter().map(|r| SegmentShare { segment: r.id.clone(), short: self.short(&r.id), title: r.title.clone(), depth: r.depth, poked: r.poked, ticks: r.ticks, own: r.own, new_vs_ancestors: r.new_vs_ancestors, unique: r.unique }).collect())
+    }
+
+    /// The fewest segments that together run everything the counted ones do, as
+    /// "short-id title". It can be long, so `summary` leaves it out.
+    pub fn smallest_set(&mut self) -> Result<Vec<String>> {
+        self.report()?;
+        let rep = self.report.as_ref().unwrap();
+        Ok(rep.smallest_set.iter().map(|id| format!("{} {}", self.short(id), self.title(id))).collect())
+    }
+
+    /// Writes one row per uncovered block of every function that isn't fully covered.
+    pub fn write_gaps_csv(&mut self, path: &Path) -> Result<usize> {
+        if !self.has_symbols()? {
+            bail!("a CSV of uncovered blocks needs a symbol map. {ADD_SYMBOLS}");
+        }
+        let rep = self.report.as_ref().unwrap();
+        coverage::write_gaps_csv(rep, path)?;
+        Ok(rep.functions.iter().filter(|f| f.blocks_covered < f.blocks).map(|f| f.uncovered_blocks.len()).sum())
+    }
+
     pub fn summary(&mut self) -> Result<Summary> {
         self.report()?;
         let rep = self.report.as_ref().unwrap();
@@ -243,7 +268,10 @@ impl Project {
             annotation_warnings: rep.annotation_warnings.iter().map(|w| w.text(&self.col)).collect(),
             executed_outside_symbols: t.executed_outside_symbols,
             segments: rep.replays.len(),
-            segments_left_out: LeftOut { dirty: t.dirty_segments, unplayed: t.unplayed_segments },
+            segments_left_out: LeftOut { dirty: t.dirty_segments, unplayed: t.unplayed_segments, unsaved: t.unsaved_segments },
+            unsaved_would_add: t.unsaved_new,
+            if_cleaned: t.if_cleaned,
+            executed_bytes_by_region: t.executed_bytes_by_region.clone(),
             functions_never_entered: rep.functions.iter().filter(|f| f.instructions_covered == 0).count(),
             functions_partly_covered: rep.functions.iter().filter(|f| f.instructions_covered > 0 && f.blocks_covered < f.blocks).count(),
             top_segments: {
@@ -268,9 +296,9 @@ impl Project {
         Ok(())
     }
 
-    /// `dj check-connector`: the connector's flags in the database against the decoder,
+    /// `dj connector-check`: the connector's flags in the database against the decoder,
     /// inside the symbol maps' functions (skipping annotated data and unreachable code).
-    pub fn check_connector(&mut self) -> Result<analysis::ConformanceReport> {
+    pub fn connector_check(&mut self) -> Result<analysis::ConformanceReport> {
         self.analyzed()?;
         let d = &self.report.as_ref().unwrap().detail;
         let skip: Vec<(u64, u64)> = d.data.iter().chain(&d.unreachable).copied().collect();
@@ -675,6 +703,27 @@ pub struct Ratio {
 pub struct LeftOut {
     pub dirty: usize,
     pub unplayed: usize,
+    /// Drafts, and segments with unsaved changes: they count once saved.
+    pub unsaved: usize,
+}
+
+/// One segment's share of the coverage (`dj summary --segments`), in instructions, or in
+/// opcode bytes without a symbol map.
+#[derive(Serialize)]
+pub struct SegmentShare {
+    pub segment: String,
+    pub short: String,
+    pub title: String,
+    pub depth: usize,
+    /// It has `[WRITE]` lines, so what it runs isn't reached by play alone.
+    pub poked: bool,
+    pub ticks: Option<i64>,
+    /// Run during its own frames.
+    pub own: usize,
+    /// ... that no segment above it ran.
+    pub new_vs_ancestors: usize,
+    /// ... that no other segment ran.
+    pub unique: usize,
 }
 
 #[derive(Serialize)]
@@ -695,6 +744,12 @@ pub struct Summary {
     pub executed_outside_symbols: usize,
     pub segments: usize,
     pub segments_left_out: LeftOut,
+    /// Units (instructions, or opcode bytes) only unsaved segments run.
+    pub unsaved_would_add: usize,
+    /// Units only dirty segments ran, the last time each played.
+    pub if_cleaned: usize,
+    /// Opcode bytes run in each of the connector's regions.
+    pub executed_bytes_by_region: std::collections::BTreeMap<String, usize>,
     pub functions_never_entered: usize,
     pub functions_partly_covered: usize,
     pub top_segments: Vec<String>,
@@ -973,17 +1028,17 @@ mod tests {
     }
 
     #[test]
-    fn check_connector_without_operand_flags() {
+    fn connector_check_without_operand_flags() {
         // f is LDA #1; BNE: both ran, flagged as opcodes only.
         let (dir, mut p) = project_full("check", true, 2, None, Some("name,region,offset,size,cpu\nf,PRG,0,4,8000\n"));
-        let r = p.check_connector().unwrap();
+        let r = p.connector_check().unwrap();
         assert!(!r.operand_flags);
         assert_eq!(r.instructions_checked, 2);
         assert!(r.opcode_not_at_start.is_empty() && r.operand_unexpected.is_empty() && r.operand_missing.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
         // Without symbols there are no functions to check against.
         let (dir, mut p) = project("check2", true);
-        assert!(p.check_connector().err().unwrap().to_string().contains("needs a symbol map"));
+        assert!(p.connector_check().err().unwrap().to_string().contains("needs a symbol map"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1060,9 +1115,10 @@ pub struct FailureRow {
     /// Empty when it wasn't a verdict, and for failures kept before this was recorded.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub at: String,
-    /// Where the comparison core was synced: the run to reproduce starts there.
-    pub synced_segment: String,
-    pub synced_frame: u64,
+    /// The last jump before it (where the comparison core was told the baseline's state
+    /// had been replaced): the run to reproduce starts there.
+    pub jump_segment: String,
+    pub jump_frame: u64,
     /// How many frames from there on were pre-roll, not judged.
     pub preroll: u64,
     pub reason: String,
@@ -1153,8 +1209,8 @@ impl Project {
             title: if self.col.replays.contains_key(&f.segment) { self.title(&f.segment) } else { "(segment gone)".into() },
             frame: f.frame,
             at: f.at.clone(),
-            synced_segment: f.synced.0.clone(),
-            synced_frame: f.synced.1,
+            jump_segment: f.synced.0.clone(),
+            jump_frame: f.synced.1,
             preroll: f.preroll,
             reason: f.reason.clone(),
             build: f.build.clone(),

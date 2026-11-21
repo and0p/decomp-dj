@@ -11,7 +11,7 @@ counts no [ticks](playback.md#logic-ticks-draft). There are connectors for Mesen
 
 - Executed locations as **offsets into ROM regions**, never CPU addresses, because bank switching maps different ROM bytes to the same CPU address.
 - One flag byte per byte of each region (below). Flags only ever get set, until the player clears them.
-- For each region: its name, the instruction set that runs there, its bytes, and where it lies in the ROM file. The connector is the source of these facts; projects don't configure them ([.agents/CONNECTOR_PLAN.md](../.agents/CONNECTOR_PLAN.md) has the reasoning).
+- For each region: its name, the instruction set that runs there, its bytes, and where it lies in the ROM file. The connector is the source of these facts; projects don't configure them ([.agents/_archive/CONNECTOR_PLAN.md](../.agents/_archive/CONNECTOR_PLAN.md) has the reasoning).
 - **Region names are a contract per system**, so that two cores for one system can share a project's coverage, annotations and symbol maps. NES: `PRG` (program ROM), `RAM`, `WRAM`, `SRAM`. N64: `RDRAM` (main RAM, by physical address, where code runs) and `ROM` (the cartridge, `.z64` order). GBA: `ROM` (the cartridge, from byte 0 of the file, its address mirrors folded together), `IWRAM`, `EWRAM` and `BIOS`. Coverage rolls up into the first region from the ROM file whose instruction set has a decoder (`PRG` on the NES), else into the first region a CPU runs (`RDRAM` on the N64).
 
 | Bits | Meaning |
@@ -344,8 +344,8 @@ or two would never be checked. `preroll = N` in the core's `[[compare]]` entry
   mismatch, no coverage is credited, and the core's verdicts start afresh at the place
   asked for. A halt is a failure at the frame it happened in, and the place asked for is
   not checked.
-- **When.** `dj parity`, at each segment's start; a failure played again (`--rerun`,
-  `--explain`), which marks the same frames; and a seek in dj-gui while Check parity is on,
+- **When.** `dj parity`, at each segment's start; a failure played again (`dj parity rerun`,
+  `explain`), which marks the same frames; and a seek in dj-gui while Check parity is on,
   inside the segment shown. Not when playback carries straight on from a parent into its
   child, and not for "copy again": nothing was loaded.
 - **A failure records it:** where its run started (the jump) and how many frames from
@@ -438,7 +438,7 @@ size_t dj_parity_diffs(struct dj_parity_diff *out, size_t cap);
 
 dj keeps the first 100 with the failure and counts the rest. They show in dj-gui's failure
 message, in `dj parity`'s output and in the MCP tools. A difference with a region and an
-address can be traced: `dj parity --explain` ([cli.md](cli.md#parity)) finds the original's
+address can be traced: `dj parity explain` ([cli.md](cli.md#parity)) finds the original's
 last instruction that wrote it, which is the function to fix. For a verdict given at a
 breakpoint it looks no further than that breakpoint. A label alone (a value the
 port keeps in no one place, like a checksum) is shown but can't be traced. The region names
@@ -456,96 +456,18 @@ frame. Give breakpoints names a person can find in the original's source. A mism
 
 ### Checking parity in CI
 
-`dj parity` ([cli.md](cli.md#parity)) checks every clean segment against the comparison
-core and exits 1 when a frame fails, so a decomp's CI can run it after building its core.
-dj doesn't build the decomp: the job builds it, names it in a `[[compare]]` entry, and
-runs `dj parity`. This repository's own CI does it for the Thwaite example's decomp
-(`.github/workflows/ci.yml`, the Thwaite job): it builds Mesen, the ROM and the decomp, and
-runs `dj parity` with `--rom` and `--core`. A decomp that draws with OpenGL needs EGL on a
-Linux runner, which Mesa's software renderer gives (`libegl1 libegl-mesa0
-libgl1-mesa-dri`). A sketch for GitHub Actions, for an NES decomp checked against Mesen:
-
-```yaml
-name: parity
-on: [push, pull_request]
-
-jobs:
-  parity:
-    runs-on: ubuntu-22.04
-    env:
-      DJ: decomp-dj-0.1.0-linux-x86_64
-    steps:
-      - uses: actions/checkout@v5
-
-      # dj, from a release ZIP. Its connectors/ folder builds the baseline core.
-      - name: Get dj and the baseline core
-        run: |
-          curl -sSLO https://github.com/and0p/decomp-dj/releases/download/v0.1.0/$DJ.zip
-          unzip -q $DJ.zip
-          bash $DJ/connectors/mesen/build.sh "$PWD/cores"
-
-      # Your decomp, built as a libretro core with dj_handle_event (and dj_parity_diffs,
-      # if it has it).
-      - name: Build the decomp's core
-        run: make libretro && cp build/mygame_libretro.so cores/
-
-      # The original ROM. Never commit one you may not share: a secret (base64), a
-      # self-hosted runner, or a free game's ROM built from its source.
-      - name: Get the ROM
-        run: echo "${{ secrets.ROM_BASE64 }}" | base64 -d > game.nes
-
-      # Paths for this machine. A [[compare]] entry in config.toml can be shared, with
-      # its path given here (entries are merged by name).
-      - name: Point dj at them
-        run: |
-          mkdir -p .local
-          cat > .local/local.toml <<'TOML'
-          rom = "game.nes"
-          core = "cores/mesen_libretro"
-          [[compare]]
-          name = "decomp"
-          path = "cores/mygame_libretro"
-          TOML
-
-      - name: Check parity
-        run: $DJ/dj parity . --compare decomp
-
-      # What failed and what differed, for reading in the run's artifacts.
-      - name: Report
-        if: failure()
-        run: |
-          $DJ/dj parity . --compare decomp --report --json > parity-report.json
-          for id in $(jq -r '.failures[] | select(.current_build) | .id' parity-report.json); do
-            $DJ/dj parity . --compare decomp --explain "$id" --json > "explain-$id.json" || true
-          done
-      - uses: actions/upload-artifact@v5
-        if: failure()
-        with:
-          name: parity
-          path: "*.json"
-```
-
-- **A fresh database each run** checks every segment. That's the point in CI: the build is
-  new anyway, and results are kept per build (the library's sha256). Caching `.local/`
-  between runs (`actions/cache`) saves replaying parents, nothing more.
-- **Segments must be clean** (their end hashes recorded in the segment files): dirty ones
-  are left out and listed. Clean them locally (`dj clean`) and commit.
-- **Exit status:** 0 when every frame passed, 1 when one failed, 2 on an error (the job
-  fails either way). A crash or hang in the decomp's core is a failure at that frame, not an
-  error. `dj parity` plays in a child process that it watches: when the decomp's core takes
-  the child down, `dj parity` reads which core it was, records the failure at that frame,
-  keeps the frames that passed before it, and goes on to the segments below.
-- **`--explain`** needs the trace hook in the baseline's connector, which Mesen's has; it
-  replays each failure, so leave it out for long segments or many failures.
-- Comparing two builds of the same emulator needs no decomp: `sync = "state"` in the
-  `[[compare]]` entry ([config.md](config.md#compare-optional-repeatable)).
+`dj parity check` checks the chosen segments against the comparison core and exits 1 when
+one fails, so a port's CI can gate pull requests on it. [ci.md](ci.md) has the whole job:
+getting the ROM from a secret, choosing segments by tag, seeding states to start from, the
+JUnit report, and GitHub Actions and GitLab examples. dj doesn't build the port: the job
+builds it and names it in a `[[compare]]` entry.
 
 ## Writing one for another core
 
 1. Find where the core fetches an instruction byte, and where it can turn a CPU address into a ROM offset (Mesen's mappers already do: `BaseMapper::GetAbsoluteAddressAndType`).
 2. Set the opcode flag on the first byte of each instruction and the operand flag on the rest. At the same place, test the breakpoints and call the frontend when one is hit.
 3. Expose the functions above through the proc address callback.
-4. Check that state hashes are identical with and without the patch, on every segment of a project, and measure the slowdown (about 5% for Mesen). With a symbol map, `dj check-connector` compares the flags with the decoder ([cli.md](cli.md)). A disagreement can also mean data inside a function that annotations.toml doesn't mark yet, such as inline arguments after a `JSR`.
+4. Check that state hashes are identical with and without the patch, on every segment of a project, and measure the slowdown (about 5% for Mesen). With a symbol map, `dj connector-check` compares the flags with the decoder ([cli.md](cli.md)). A disagreement can also mean data inside a function that annotations.toml doesn't mark yet, such as inline arguments after a `JSR`.
    Save states need a look too. A core may have to run on a little to reach a point where it can save: mupen64plus-next runs to its next interrupt when it is not at a frame's end, so a save taken right after a load or another save moves its memory, and the frame's state hash with it. What plays afterwards is the same, but the same frame would hash two ways. dj therefore keeps the state it last saved or loaded and gives it back, without asking the core, for as long as nothing has run or been written.
 5. Pin the upstream commit and ship a `build.sh` and the patch under `connectors/<core>/`, like Mesen's.
 6. If dj has no decoder for the CPU, write one ([decoders.md](decoders.md)): a plugin, or exported by the core itself (`dj_decoders`).

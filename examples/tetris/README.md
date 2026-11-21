@@ -33,7 +33,7 @@ goes back to the game type screen, not to the level grid.
 
 ```sh
 cd examples/tetris
-../../player/target/release/dj run . --rom build/tetris_usa.nes --core ../../build/cores/mesen_libretro.dylib
+../../player/target/release/dj check --rom build/tetris_usa.nes --core ../../build/cores/mesen_libretro.dylib
 ../../gui/target/release/dj-gui .
 ```
 

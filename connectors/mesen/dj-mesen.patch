@@ -1,5 +1,5 @@
 diff --git a/Core/CPU.cpp b/Core/CPU.cpp
-index da527968..9170cdd9 100644
+index da527968..229babf8 100644
 --- a/Core/CPU.cpp
 +++ b/Core/CPU.cpp
 @@ -2,6 +2,9 @@
@@ -12,7 +12,20 @@ index da527968..9170cdd9 100644
  #include "PPU.h"
  #include "APU.h"
  #include "DeltaModulationChannel.h"
-@@ -219,6 +222,11 @@ void CPU::MemoryWrite(uint16_t addr, uint8_t value, MemoryOperationType operatio
+@@ -13,6 +16,12 @@ CPU::CPU(shared_ptr<Console> console)
+ {
+ 	_console = console;
+ 	_memoryManager = _console->GetMemoryManager();
++#if defined(DECOMP_DJ) && !defined(DUMMYCPU)
++	// dj_read_registers reads through this. Set here, and not only when an instruction is
++	// fetched, so that a frontend that loads a state before running anything still gets the
++	// registers (the state loaded into this CPU).
++	DjCoverage::Regs = &_state;
++#endif
+ 
+ 	Func opTable[] = { 
+ 	//	0				1				2				3				4				5				6						7				8				9				A						B				C						D				E						F
+@@ -219,6 +228,11 @@ void CPU::MemoryWrite(uint16_t addr, uint8_t value, MemoryOperationType operatio
  #else
  	_cpuWrite = true;
  	StartCpuCycle(false);
@@ -24,7 +37,7 @@ index da527968..9170cdd9 100644
  	_memoryManager->Write(addr, value, operationType);
  	EndCpuCycle(false);
  	_cpuWrite = false;
-@@ -239,7 +247,18 @@ uint8_t CPU::MemoryRead(uint16_t addr, MemoryOperationType operationType) {
+@@ -239,7 +253,18 @@ uint8_t CPU::MemoryRead(uint16_t addr, MemoryOperationType operationType) {
  	ProcessPendingDma(addr);
  
  	StartCpuCycle(true);

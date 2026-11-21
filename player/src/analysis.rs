@@ -723,7 +723,7 @@ pub fn has_operand_flags(flags: &[u8]) -> bool {
     flags.iter().any(|f| f & crate::coverage::FLAG_OPERAND != 0)
 }
 
-/// What `dj check-connector` finds: the connector's flags against the decoder, inside the
+/// What `dj connector-check` finds: the connector's flags against the decoder, inside the
 /// functions of the symbol maps (docs/cli.md).
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct ConformanceReport {

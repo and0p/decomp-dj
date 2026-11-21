@@ -3,14 +3,14 @@
 A C reimplementation of [Thwaite](https://github.com/pinobatch/thwaite-nes), built as a
 libretro core that dj compares against the original ROM. Written from Thwaite's GPL-3.0
 source, in its own structure; drawn with OpenGL 3.2 core; no sound. The plan, and what is
-done, is in [.agents/THWAITE_DECOMP_PLAN.md](../../../.agents/THWAITE_DECOMP_PLAN.md).
+done, is in [.agents/_archive/THWAITE_DECOMP_PLAN.md](../../../.agents/_archive/THWAITE_DECOMP_PLAN.md).
 
 **Status: done (milestone 5).** Every screen the segments reach is in parity on every frame: the
 legal screen, the title (joypad and mouse), the practice menu, gameplay (pause, game over,
 balloons, MIRVs, clearing a level, the silo rebuild, the hour changing), the cutscenes, and
 the day changing. Only boot's first frames, before its first wait, aren't judged. The
 pictures match the original's pixel for pixel, and a failure can be traced to the original's
-code with `dj parity --explain`.
+code with `dj parity explain`.
 
 ## Build
 
@@ -28,7 +28,7 @@ The core is `build/thwaite_decomp_libretro.dylib` (`.so` on Linux, `.dll` on Win
 From the repository root:
 
 ```bash
-player/target/release/dj parity examples/thwaite --compare decomp --all
+player/target/release/dj parity check examples/thwaite --compare decomp --again
 ```
 
 Or open the project in dj-gui and pick **Compare > Comparison core > decomp**.
@@ -63,12 +63,12 @@ Run `dj clean` afterwards to record the segment's hashes.
 Don't try the decomp with `dj play --core`: `dj play` saves the core it is given as the
 project's own (in `.local/local.toml`), and the project's own core is the original's.
 
-When a frame fails, `--explain` says which instruction of the original wrote each byte
-that differs: the code to compare with the decomp's. Take the failure's id from `--report`:
+When a frame fails, `dj parity explain` says which instruction of the original wrote each byte
+that differs: the code to compare with the decomp's. Take the failure's id from `dj parity report`:
 
 ```bash
-player/target/release/dj parity examples/thwaite --compare decomp --report
-player/target/release/dj parity examples/thwaite --compare decomp --explain <id>
+player/target/release/dj parity report examples/thwaite --compare decomp
+player/target/release/dj parity explain examples/thwaite <id> --compare decomp
 ```
 
 To check that parity catches a bug, build one with bugs planted (held keys count as new

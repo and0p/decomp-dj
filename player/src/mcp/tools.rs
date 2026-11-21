@@ -9,13 +9,13 @@ use decomp_dj::query::{GapFilter, GapSort, Project};
 
 pub const INSTRUCTIONS: &str = "decomp-dj: input segments that drive a libretro core, and the ROM code coverage they reach. \
 Addresses can be PRG:0x1F3A (a ROM offset), 0x1F3A (a PRG offset), $C123 (a CPU address) or a symbol name (name+0x10). \
-Query tools (where_runs, function, gaps, frontier, coverage_summary) read the local database and are fast. \
+Query tools (xref, function, gaps, frontier, coverage_summary) read the local database and are fast. \
 Play tools work on sessions: open_session parks a core at a segment and frame, then step, play_text, screenshot and read_memory drive it; \
 everything a session plays is written to its draft, a segment that lives in .local/drafts/. \
 save_draft writes a draft to segments/, but needs allow = \"save\" (--allow save, or [mcp] allow in .local/local.toml); without it the tool isn't offered, and the person saves drafts in dj-gui. \
 With no symbol map ([[symbols]] in config.toml), gaps lists uncovered PRG byte ranges (data included), and function and frontier say they need one: dj doesn't find functions itself. \
 Calls that run until a condition always take max_frames; reaching it is a normal result. \
-With a comparison core ([[compare]] in config.toml: a decomp built as a libretro core), parity_summary and parity_failures say where it matches the original frame by frame, function and block parity show in function and gaps, the parity_check and parity_rerun jobs check segments, and parity_explain says what differed on a failing frame and which function of the original wrote it. \
+With a comparison core ([[compare]] in config.toml: a decomp built as a libretro core), parity_summary and parity_failures say where it matches the original (judged at its own breakpoints in the original, or at frame ends), function and block parity show in function and gaps, the parity_check and parity_rerun jobs check segments, parity_explain says what differed on a failing frame and which function of the original wrote it, parity_clear forgets failures, and parity_core says what the comparison core is and lists its breakpoints. \
 Segment text is the .segment body format: `<frame> P1 JOYPAD A 1` presses A, `... A 0` releases it (see docs/segments.md).";
 
 /// What an agent may change, from `--allow` or `[mcp] allow` in .local/local.toml.
@@ -208,7 +208,7 @@ impl Server {
         let limit = a.usize_or("limit", 10)?;
         let cursor = a.usize_or("cursor", 0)?;
         Ok(Reply::Json(match name {
-            "where_runs" => {
+            "xref" => {
                 let addr = a.str("addr")?;
                 serde_json::to_value(self.project()?.xref(&addr, limit, cursor)?)?
             }
@@ -438,6 +438,16 @@ impl Args {
             Some(_) => bail!("{k} must be a list of numbers"),
         }
     }
+
+    /// A list of strings (one string alone counts as a list of one).
+    pub fn strs(&self, k: &str) -> Result<Vec<String>> {
+        match self.get(k) {
+            None => Ok(vec![]),
+            Some(Value::Array(a)) => a.iter().map(|v| v.as_str().map(String::from).ok_or_else(|| anyhow!("{k} must be a list of strings"))).collect(),
+            Some(Value::String(s)) => Ok(vec![s.clone()]),
+            Some(_) => bail!("{k} must be a list of strings"),
+        }
+    }
 }
 
 pub struct ToolDef {
@@ -471,7 +481,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
     let addr = json!({"type": "string", "description": ADDR});
     let mut v = vec![
         ToolDef {
-            name: "where_runs",
+            name: "xref",
             description: "Segments that run this code, each with the first frame that runs it, its depth in the tree and the nearest stored snapshot, best first (counting, shallow, early). The quickest way to find a real run of a function.",
             schema: props(merge(json!({"addr": addr.clone()}), page()), &["addr"]),
             allow: Query,
@@ -502,13 +512,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "parity_summary",
-            description: "Parity with a comparison core (a decomp checked frame by frame against the original): instructions that ran, counted as parity, failed (with this build of the comparison core), failed with an older build, or not checked; the functions with the most failed or unchecked code; and the failures kept, newest first, with their ids. Runs no core. compare names the [[compare]] entry (needed when there are several).",
+            description: "Parity with a comparison core (a decomp checked against the original at each verdict it gives: at its breakpoints, or at frame ends): instructions that ran, counted as parity, failed (with this build of the comparison core), failed with an older build, or not checked; the functions with the most failed or unchecked code; and the failures kept, newest first, with their ids. Runs no core. compare names the [[compare]] entry (needed when there are several).",
             schema: props(json!({"compare": {"type": "string"}, "limit": {"type": "integer", "description": "Functions to list (default 10)"}}), &[]),
             allow: Query,
         },
         ToolDef {
             name: "parity_failures",
-            description: "Frames where a comparison core disagreed with the original, newest first: segment and frame, where the comparison core was synced (to reproduce it), the reason, what differed (the first 10 values, labelled when the comparison core names them), and whether it failed with the build there is now. addr keeps those whose failing frame ran that code (a function start means any of the function). old=true: only older builds' failures; old=false: only this build's.",
+            description: "Frames where a comparison core disagreed with the original, newest first: segment and frame, where in the frame the verdict came (at: a breakpoint's name, or the frame end), the last jump before it (jump_segment, jump_frame: the run to reproduce it starts there), the reason, what differed (the first 10 values, labelled when the comparison core names them), and whether it failed with the build there is now. addr keeps those whose failing frame ran that code (a function start means any of the function). old=true: only older builds' failures; old=false: only this build's.",
             schema: props(merge(json!({"compare": {"type": "string"}, "addr": addr.clone(), "old": {"type": "boolean"}}), page()), &[]),
             allow: Query,
         },
@@ -614,7 +624,7 @@ fn play_defs() -> Vec<ToolDef> {
             schema: props(json!({"addr": addr.clone(), "limit": {"type": "integer"}, "per_segment": {"type": "integer"}, "segment": {"type": "string"}}), &["addr"]),
             allow: Draft,
         },
-        ToolDef { name: "snapshot_at", description: "Write the core state at a frame of a segment to .local/snapshots/, for another tool or debugger.", schema: props(json!({"segment": {"type": "string"}, "frame": {"type": "integer"}}), &["segment"]), allow: Draft },
+        ToolDef { name: "snapshot", description: "Write the core state at a frame of a segment to .local/snapshots/, for another tool or debugger.", schema: props(json!({"segment": {"type": "string"}, "frame": {"type": "integer"}}), &["segment"]), allow: Draft },
     ]
     .into_iter()
     .chain(super::jobs::defs())

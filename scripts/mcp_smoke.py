@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end check of `dj mcp` on a copy of examples/thwaite.
 
-Needs the example hydrated with the current core (`dj hydrate examples/thwaite`) and
+Needs the example hydrated with the current core (`dj -C examples/thwaite clean`) and
 dj built (cd player && cargo build --release). Usage: scripts/mcp_smoke.py
 """
 import json, os, shutil, subprocess, sys, tempfile, time
@@ -12,7 +12,7 @@ DJ = os.path.join(ROOT, "player", "target", "release", "dj")
 
 class Client:
     def __init__(self, project, *extra):
-        self.p = subprocess.Popen([DJ, "mcp", project, *extra], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.p = subprocess.Popen([DJ, "-C", project, "mcp", *extra], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         self.n = 0
         r = self.req("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "smoke", "version": "1"}})
         assert r["result"]["serverInfo"]["name"] == "decomp-dj", r
@@ -49,9 +49,9 @@ def main():
     try:
         c = Client(proj, "--allow", "save")
         tools = {t["name"] for t in c.req("tools/list")["result"]["tools"]}
-        assert {"where_runs", "trace", "open_session", "fuzz", "save_draft"} <= tools, tools
+        assert {"xref", "trace", "open_session", "fuzz", "save_draft"} <= tools, tools
 
-        x, _ = c.call("where_runs", addr="practiceDoClick", limit=1)
+        x, _ = c.call("xref", addr="practiceDoClick", limit=1)
         assert x["hits"]["items"], x
         seg = x["hits"]["items"][0]["segment"]
         t, _ = c.call("trace", addr="practiceDoClick", before=2, after=4)
@@ -59,7 +59,8 @@ def main():
         k, _ = c.call("calls", addr="practiceDoClick", limit=1)
         assert k["segments"][0]["calls"][0]["returned"], k
         c.call("gaps", sort="nearness", limit=3)
-        c.call("frontier", addr="$98C7")
+        f, _ = c.call("frontier", limit=3)
+        assert f["items"], f
 
         s, _ = c.call("open_session", **{"from": "adde56a6"})
         sid = s["session"]
@@ -95,7 +96,7 @@ def main():
         assert st["status"] == "goal reached", st
         c.close()
 
-        out = subprocess.run([DJ, "play", proj, sv["segment"][:8]], capture_output=True, text=True)
+        out = subprocess.run([DJ, "-C", proj, "check", sv["segment"][:8]], capture_output=True, text=True)
         assert out.returncode == 0, out.stdout + out.stderr
         print("ok")
     finally:

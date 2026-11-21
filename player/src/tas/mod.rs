@@ -1,5 +1,5 @@
 //! TAS movies: importing one as a root segment, and exporting a chain of segments as one
-//! (.agents/TAS_PLAN.md, docs/tas.md).
+//! (.agents/_archive/TAS_PLAN.md, docs/tas.md).
 //!
 //! A movie reads into a [`Movie`] and writes from one, and segments convert through it
 //! too. BizHawk's `.bk2` is the one format so far (`bk2`). A [`Profile`] maps a console's

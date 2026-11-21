@@ -1,4 +1,4 @@
-//! The local database (.agents/CACHE_PLAN.md): snapshots stored as deduplicated pages, stored
+//! The local database (.agents/_archive/CACHE_PLAN.md): snapshots stored as deduplicated pages, stored
 //! frames inside segments, previews, coverage and first hits, all keyed by content key.
 //! Everything here is derived by playing the collection and can be deleted at any time.
 
@@ -168,7 +168,7 @@ pub fn body_hash(r: &Replay, devices: &BTreeMap<u32, u32>) -> Result<String> {
     Ok(h.finalize().to_hex().to_string())
 }
 
-/// The content key (.agents/CACHE_PLAN.md): setup, start state and body. Derived rows are filed
+/// The content key (.agents/_archive/CACHE_PLAN.md): setup, start state and body. Derived rows are filed
 /// under it, so renaming or moving a segment invalidates nothing.
 pub fn content_key(setup: &str, start_hash: &str, body: &str) -> String {
     let mut h = blake3::Hasher::new();
@@ -237,7 +237,7 @@ impl Cache {
         conn.execute_batch(SCHEMA)?;
         add_columns(&conn);
         let info_map: BTreeMap<String, String> = setup_info.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
-        // A different version of the same core is only a warning (.agents/CACHE_PLAN.md, "Decided").
+        // A different version of the same core is only a warning (.agents/_archive/CACHE_PLAN.md, "Decided").
         {
             let mut st = conn.prepare("SELECT info FROM setups WHERE id != ?1")?;
             let others: Vec<String> = st.query_map([setup], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
@@ -264,8 +264,10 @@ impl Cache {
         Ok(c)
     }
 
-    /// Opens the database for reading only (no core needed): reports, `where`, `sql`.
-    pub fn open_readonly(col: &Collection) -> Result<Connection> {
+    /// Opens the database that is there, without a core (the queries, `sql`, `dj parity
+    /// report` and `clear`). It brings the schema up to date, as every open does, and the
+    /// connection can write: `dj parity clear` deletes through it.
+    pub fn open_existing(col: &Collection) -> Result<Connection> {
         let path = cache_path(col);
         if !path.exists() {
             bail!("no local database yet ({}); run `dj clean` first", path.display());
@@ -434,17 +436,6 @@ impl Cache {
             tx.execute("INSERT OR REPLACE INTO images(content, frame, role, png) VALUES (?1,?2,?3,?4)", params![key, *frame as i64, role, png])?;
         }
         tx.commit()?;
-        Ok(())
-    }
-
-    pub fn begin_run(&self, core: &str, kind: &str) -> Result<i64> {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
-        self.conn.execute("INSERT INTO runs(created, setup, core, kind) VALUES (?1,?2,?3,?4)", params![now, self.setup, core, kind])?;
-        Ok(self.conn.last_insert_rowid())
-    }
-
-    pub fn run_result(&self, run: i64, segment_id: &str, content: &str, outcome: &str) -> Result<()> {
-        self.conn.execute("INSERT OR REPLACE INTO run_results(run_id, segment_id, content, outcome) VALUES (?1,?2,?3,?4)", params![run, segment_id, content, outcome])?;
         Ok(())
     }
 
@@ -631,8 +622,8 @@ CREATE TABLE IF NOT EXISTS first_hits(content TEXT NOT NULL, region TEXT NOT NUL
 CREATE INDEX IF NOT EXISTS first_hits_offset ON first_hits(region, rom_offset);
 DROP TABLE IF EXISTS unreachable;
 CREATE TABLE IF NOT EXISTS annotation(kind TEXT NOT NULL, region TEXT NOT NULL, start INTEGER NOT NULL, end INTEGER NOT NULL, name TEXT, why TEXT);
-CREATE TABLE IF NOT EXISTS runs(id INTEGER PRIMARY KEY, created INTEGER NOT NULL, setup TEXT NOT NULL, core TEXT NOT NULL, kind TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS run_results(run_id INTEGER NOT NULL, segment_id TEXT NOT NULL, content TEXT, outcome TEXT, PRIMARY KEY(run_id, segment_id));
+DROP TABLE IF EXISTS run_results;
+DROP TABLE IF EXISTS runs;
 -- Parity with comparison cores (docs/gui.md#parity): what frames that passed ran, per core and
 -- build, and each failure with how to reproduce it and what its frame ran.
 CREATE TABLE IF NOT EXISTS parity_passed(core TEXT NOT NULL, build TEXT NOT NULL, region TEXT NOT NULL, flags BLOB NOT NULL, PRIMARY KEY(core, build, region));

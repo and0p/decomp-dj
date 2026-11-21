@@ -1,4 +1,4 @@
-//! Scratch tool for the Thwaite decomp's milestone 0 (.agents/THWAITE_DECOMP_PLAN.md): checks
+//! Scratch tool for the Thwaite decomp's milestone 0 (.agents/_archive/THWAITE_DECOMP_PLAN.md): checks
 //! the decomp's breakpoint table against the original, on every segment of the project.
 //!
 //! Needs a Mesen core with the version 3 connector (`dj_set_breakpoints`,

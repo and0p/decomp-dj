@@ -66,7 +66,7 @@ runs are the same on every machine.
 
 2026-11-09, on the GBA test ROM ([examples/gba-test](../../examples/gba-test/)):
 
-- `dj check-connector`: every flag agrees with the decoder (113 instructions, ARM and
+- `dj connector-check`: every flag agrees with the decoder (113 instructions, ARM and
   Thumb, operand flags, no opcode run in both states).
 - The same ending hashes with and without the patch (a 20,000-frame segment, and every
   segment of the example from power-on).

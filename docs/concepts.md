@@ -13,7 +13,7 @@ for root segment).
 
 | Term | Meaning |
 |---|---|
-| **Project** | One game's folder: `config.toml`, the segments in `segments/`, blobs and `unreachable.txt`. It is what people share and keep in version control. Local data lives in its `.local/` folder. (Formerly "collection".) See [segments.md](segments.md#project-layout). |
+| **Project** | One game's folder: `config.toml`, the segments in `segments/`, blobs, symbol maps and `annotations.toml`. It is what people share and keep in version control. Local data lives in its `.local/` folder. (Formerly "collection".) See [segments.md](segments.md#project-layout). |
 | **Segment** | One `.segment` file: inputs by frame, metadata, hashes and a parent link. It is one entry in the GUI's sidebar tree. (Formerly "replay", and "node" in the GUI.) |
 | **Root segment** | A segment with no parent. It starts from power-on, or from an SRAM or snapshot blob. (Formerly "trunk".) |
 | **Child segment / children** | Segments that start where their parent ends. A segment with no children is a leaf. |
@@ -37,7 +37,7 @@ for root segment).
 | **Uncovered** | In the ROM, not executed by any clean, saved segment, and not marked unreachable. This is where the next segments should go. |
 | **Parity** | A comparison core matched the baseline every time the baseline executed an instruction or block. If parity hasn't been checked, a covered block stays covered. |
 | **No parity** | A comparison core has been shown to differ from the baseline at an instruction or block. |
-| **Unreachable** | An instruction or block that is in the ROM but has been determined to be unreachable. Listed in `unreachable.txt`, in version control. See [coverage.md](coverage.md#unreachable-code). |
+| **Unreachable** | An instruction or block that is in the ROM but has been determined to be unreachable. Listed in `annotations.toml` as `[[unreachable]]` entries, in version control. See [coverage.md](coverage.md#unreachable-code). |
 
 ## Colors
 

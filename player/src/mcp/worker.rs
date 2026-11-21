@@ -136,7 +136,7 @@ impl Worker {
                 }
                 Ok(json!(null))
             }
-            "snapshot_at" => self.snapshot_at(a),
+            "snapshot" => self.snapshot_at(a),
             "trace" => self.trace(a),
             "verify" => self.verify(a),
             _ => bail!("unknown worker command {cmd}"),
@@ -146,8 +146,8 @@ impl Worker {
     fn session(&mut self) -> Result<&mut Session> {
         if self.s.is_none() {
             let local = self.col.settings()?;
-            let rom = local.rom.clone().ok_or_else(|| anyhow!("no ROM set for this project; run a dj command with --rom once"))?;
-            let core = local.core.clone().ok_or_else(|| anyhow!("no core set for this project; run a dj command with --core once"))?;
+            let rom = local.rom.clone().ok_or_else(|| anyhow!("no ROM set for this project; run a dj command with --rom once, or set DJ_ROM"))?;
+            let core = local.core.clone().ok_or_else(|| anyhow!("no core set for this project; run a dj command with --core once, or set DJ_CORE"))?;
             let s = Session::open(&self.col, &rom, &core)?;
             self.s = Some(s);
             self.init_known()?;
@@ -161,7 +161,7 @@ impl Worker {
         self.prg = s.core.coverage_region_index("PRG");
         let size = self.prg.and_then(|i| s.core.coverage_slice(i).map(|x| x.len())).unwrap_or(0);
         self.known = vec![0; size];
-        let Ok(conn) = cache::Cache::open_readonly(&self.col) else { return Ok(()) };
+        let Ok(conn) = cache::Cache::open_existing(&self.col) else { return Ok(()) };
         // This setup's coverage; with none yet (a rebuilt core), the setup played last.
         let mut setup = s.setup_id.clone();
         let has: i64 = conn.query_row("SELECT count(*) FROM contents WHERE setup = ?1", [&setup], |r| r.get(0))?;

@@ -322,6 +322,7 @@ unsafe extern "C" fn break_cb<const S: usize>(_user: *mut c_void, region: i32, o
         };
         if n > BREAK_CAP {
             b.capped.push(at);
+            crate::console::count_breakpoint_capped();
             let what = if b.tick == Some(at) { "the [tick] address" } else { "a breakpoint" };
             crate::console::warn("dj", &format!("{what} (region {region}, offset {offset:#X}) ran more than {BREAK_CAP} times in one frame, so it is in a loop: it is off until the frame ends, and those runs aren't counted"));
             return (1, vec![], false);
@@ -344,6 +345,7 @@ unsafe extern "C" fn break_cb<const S: usize>(_user: *mut c_void, region: i32, o
     });
     for w in &writes {
         if !make_write(S, w) {
+            crate::console::count_write_not_made();
             crate::console::warn("dj", &format!("{}: the write couldn't be made (the region isn't there, or the write runs past its end)", w.label));
             continue;
         }
@@ -1217,6 +1219,7 @@ impl Core {
         let left = BREAKS.with(|b| std::mem::take(&mut b.borrow_mut()[self.slot].writes));
         if !left.is_empty() {
             for w in &left {
+                crate::console::count_write_not_made();
                 crate::console::warn("dj", &format!("{}: its instruction didn't run in this frame, so the write was not made", w.label));
             }
             self.arm_breakpoints();

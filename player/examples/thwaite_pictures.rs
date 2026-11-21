@@ -1,4 +1,4 @@
-//! Scratch tool for the Thwaite decomp (.agents/THWAITE_DECOMP_PLAN.md): plays a segment with
+//! Scratch tool for the Thwaite decomp (.agents/_archive/THWAITE_DECOMP_PLAN.md): plays a segment with
 //! the decomp beside the original, through dj's own `Checker` as dj-gui does, and saves both
 //! pictures side by side (original left, decomp right) at the frames asked for. The decomp
 //! draws with OpenGL from inside the baseline's frame, so this also checks nested contexts.

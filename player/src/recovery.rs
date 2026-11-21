@@ -1,5 +1,5 @@
 //! Unsaved edits kept on disk while dj-gui runs, so a crash or a hang in a core (or a
-//! force-quit) doesn't lose them (.agents/ISOLATION_PLAN.md, step 4).
+//! force-quit) doesn't lose them (.agents/_archive/ISOLATION_PLAN.md, step 4).
 //!
 //! dj-gui writes `.local/recovery/gui-<pid>.json` whenever its unsaved edits change: each
 //! edited segment's text, or null for one it deleted. It removes the file when nothing is

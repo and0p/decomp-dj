@@ -7,7 +7,7 @@
 //! and `POP` with the PC), conditional execution on every ARM instruction, the switch to
 //! ARM through `bx pc`, and PC-relative literal loads (`data_ref`), so literal pools inside
 //! a function aren't read as code. Checked against LLVM's disassembler
-//! (decomp-dj's .agents/DECODER_PLAN.md).
+//! (decomp-dj's .agents/_archive/DECODER_PLAN.md).
 
 use crate::{Decoded, Decoder, Kind};
 

@@ -127,18 +127,20 @@ pub fn defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "parity_check",
-            description: "A background job: checks segments against a comparison core frame by frame (dj parity), each from its own start, stopping a segment at its first failure. Segments already checked with this build are skipped unless all=true; segments that aren't clean are left out. Results go to the local database (parity_summary, parity_failures, and dj-gui). Returns a job id; poll job_status.",
+            description: "A background job: checks segments against a comparison core (dj parity check), each from its own start, at every verdict the core gives, stopping a segment at its first failure. Segments already checked with this build are skipped unless again=true; segments that aren't clean are left out. Results go to the local database (parity_summary, parity_failures, and dj-gui). Returns a job id; poll job_status.",
             schema: json!({"type": "object", "properties": {
                 "segment": {"type": "string", "description": "Only this segment (default: all of them)"},
-                "children": {"type": "boolean", "description": "With segment: also every segment below it"},
+                "segments": {"type": "array", "items": {"type": "string"}, "description": "Only these segments"},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Also the segments with any of these tags (their tags: header)"},
+                "children": {"type": "boolean", "description": "Also every segment below each one chosen"},
                 "compare": {"type": "string", "description": "The [[compare]] entry (needed when there are several)"},
-                "all": {"type": "boolean", "description": "Check again segments already checked with this build"},
+                "again": {"type": "boolean", "description": "Check again segments already checked with this build"},
             }, "required": []}),
             allow: Allow::Draft,
         },
         ToolDef {
             name: "parity_rerun",
-            description: "A background job: plays failures again the way they were found (synced where they were, to their frame) with the comparison core's build now. ids from parity_failures, or none for every failure from an older build. An older build's failure that passes now is cleared. Returns a job id; poll job_status.",
+            description: "A background job: plays failures again the way they were found (from the last jump before each, to its frame) with the comparison core's build now. ids from parity_failures, or none for every failure from an older build. An older build's failure that passes now is cleared. Returns a job id; poll job_status.",
             schema: json!({"type": "object", "properties": {
                 "ids": {"type": "array", "items": {"type": "integer"}},
                 "compare": {"type": "string"},
@@ -147,12 +149,27 @@ pub fn defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "parity_explain",
-            description: "Why a parity failure failed: plays it again (synced where it was found, to its frame) with the original traced over its last frames, and returns what differed (dj_parity_diffs from the comparison core, or system RAM ranges) with, for each value that has an address, the original's last instruction that wrote it: function, CPU address, instruction, frame. That function is where to look in the decomp. Also the functions the failing frame ran, and whether it still fails. Waits for the replay (seconds, up to a few minutes for long segments).",
+            description: "Why a parity failure failed: plays it again (from the last jump before it, to its frame) with the original traced over its last frames, and returns what differed (dj_parity_diffs from the comparison core, or system RAM ranges) with, for each value that has an address, the original's last instruction that wrote it: function, CPU address, instruction, frame. That function is where to look in the decomp. Also the functions the failing frame ran, and whether it still fails. Waits for the replay (seconds, up to a few minutes for long segments).",
             schema: json!({"type": "object", "properties": {
                 "id": {"type": "integer", "description": "The failure, from parity_failures"},
                 "compare": {"type": "string"},
                 "frames_back": {"type": "integer", "description": "Frames before the failing one to trace too (default 10): raise it when a value was set earlier"},
             }, "required": ["id"]}),
+            allow: Allow::Draft,
+        },
+        ToolDef {
+            name: "parity_core",
+            description: "What a comparison core is, as dj parity core says: how it follows the original (sync: events or state), whether it follows [WRITE] lines itself, its pre-roll, its build (the sha256 its results are kept under), and its breakpoints in the original, each with region_known (false: the baseline's connector has no such region, so the breakpoint is left out). Loads the core in a child process and waits (seconds).",
+            schema: json!({"type": "object", "properties": {"compare": {"type": "string"}}, "required": []}),
+            allow: Allow::Draft,
+        },
+        ToolDef {
+            name: "parity_clear",
+            description: "Forget parity failures by id (from parity_failures), as dj parity clear does: their code no longer shows as failed. A failure found again comes back. Runs no core.",
+            schema: json!({"type": "object", "properties": {
+                "ids": {"type": "array", "items": {"type": "integer"}, "description": "The failures to forget"},
+                "compare": {"type": "string"},
+            }, "required": ["ids"]}),
             allow: Allow::Draft,
         },
         ToolDef { name: "job_stop", description: "Stop a job; its drafts stay.", schema: json!({"type": "object", "properties": {"job": {"type": "string"}}, "required": ["job"]}), allow: Allow::Draft },
@@ -165,6 +182,8 @@ impl Server {
             "fuzz" | "seek_goal" => Reply::Json(self.start_job(name, a)?),
             "parity_check" | "parity_rerun" => Reply::Json(self.start_parity_job(name, a)?),
             "parity_explain" => Reply::Json(self.parity_explain(a)?),
+            "parity_core" => Reply::Json(self.parity_core(a)?),
+            "parity_clear" => Reply::Json(self.parity_clear(a)?),
             "job_status" => {
                 let jobs: Vec<Arc<Job>> = match a.opt_str("job")? {
                     Some(j) => vec![self.jobs.map.get(&j).cloned().ok_or_else(|| anyhow!("no job {j}"))?],
@@ -270,20 +289,26 @@ impl Server {
     fn start_parity_job(&mut self, name: &str, a: &Args) -> Result<Value> {
         let col = decomp_dj::collection::Collection::open(&self.dir)?;
         let compare = decomp_dj::parity::compare_name(&col, a.opt_str("compare")?.as_deref())?;
-        let mut args: Vec<String> = vec!["parity".into(), self.dir.display().to_string(), "--compare".into(), compare.clone(), "--events".into()];
+        let mut args: Vec<String> = vec!["-C".into(), self.dir.display().to_string(), "parity".into(), if name == "parity_check" { "check" } else { "rerun" }.into(), "--compare".into(), compare.clone(), "--events".into()];
         if name == "parity_check" {
-            if let Some(seg) = a.opt_str("segment")? {
-                args.push(col.resolve(&seg)?.to_string());
-                if a.bool_or("children", false)? {
-                    args.push("--children".into());
-                }
+            // One `segment` (as before), or several `segments`, and `tags`.
+            let mut segs: Vec<String> = a.opt_str("segment")?.into_iter().collect();
+            segs.extend(a.strs("segments")?);
+            for seg in &segs {
+                args.push(col.resolve(seg)?.to_string());
             }
-            if a.bool_or("all", false)? {
-                args.push("--all".into());
+            for t in a.strs("tags")? {
+                args.push("--tag".into());
+                args.push(t);
+            }
+            if a.bool_or("children", false)? {
+                args.push("--children".into());
+            }
+            if a.bool_or("again", false)? {
+                args.push("--again".into());
             }
         } else {
             let ids: Vec<u64> = a.u64s("ids")?;
-            args.push("--rerun".into());
             args.extend(ids.iter().map(|i| i.to_string()));
         }
         let exe = decomp_dj::isolate::worker_exe()?;
@@ -319,49 +344,91 @@ impl Server {
 const EXPLAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 impl Server {
-    /// `parity_explain`: runs `dj parity --explain ID --json` as a child (both cores isolated,
+    /// `parity_explain`: runs `dj parity explain ID --json` as a child (both cores isolated,
     /// as in the jobs) and waits for its answer.
     fn parity_explain(&mut self, a: &Args) -> Result<Value> {
-        use std::io::Read;
-        use std::process::{Command, Stdio};
-        let col = decomp_dj::collection::Collection::open(&self.dir)?;
-        let compare = decomp_dj::parity::compare_name(&col, a.opt_str("compare")?.as_deref())?;
+        let compare = self.compare_of(a)?;
         let id = a.u64("id")?;
-        let mut args: Vec<String> = vec!["parity".into(), self.dir.display().to_string(), "--compare".into(), compare, "--explain".into(), id.to_string(), "--json".into()];
+        let mut args: Vec<String> = vec!["-C".into(), self.dir.display().to_string(), "parity".into(), "explain".into(), id.to_string(), "--compare".into(), compare, "--json".into()];
         if let Some(n) = a.opt_u64("frames_back")? {
             args.push("--frames-back".into());
             args.push(n.to_string());
         }
-        let exe = decomp_dj::isolate::worker_exe()?;
-        let mut child = Command::new(exe).args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
-        let (mut out, mut err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
-        let outs = std::thread::spawn(move || {
-            let mut s = String::new();
-            let _ = out.read_to_string(&mut s);
-            s
-        });
-        let errs = std::thread::spawn(move || {
-            let mut s = String::new();
-            let _ = err.read_to_string(&mut s);
-            s
-        });
-        let started = Instant::now();
-        let code = loop {
-            if let Some(st) = child.try_wait()? {
-                break st.code().unwrap_or(-1);
-            }
-            if started.elapsed() > EXPLAIN_TIMEOUT {
-                let _ = child.kill();
-                let _ = child.wait();
-                bail!("playing it again took longer than {} s", EXPLAIN_TIMEOUT.as_secs());
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        };
-        let (out, err) = (outs.join().unwrap_or_default(), errs.join().unwrap_or_default());
-        match serde_json::from_str::<Value>(&out) {
-            Ok(v) if code == 0 || code == 1 => Ok(v),
-            _ => bail!("dj parity --explain ended with status {code}: {}", err.trim().lines().last().unwrap_or("no message")),
+        run_dj_json(&args, EXPLAIN_TIMEOUT, "playing it again")
+    }
+
+    /// `parity_core`: runs `dj parity core --json` as a child (a core that crashes while it
+    /// loads takes only the child) and returns what it says.
+    fn parity_core(&mut self, a: &Args) -> Result<Value> {
+        let compare = self.compare_of(a)?;
+        let args: Vec<String> = vec!["-C".into(), self.dir.display().to_string(), "parity".into(), "core".into(), "--compare".into(), compare, "--json".into()];
+        run_dj_json(&args, CORE_TIMEOUT, "loading the comparison core")
+    }
+
+    /// `parity_clear`: forgets failures, as `dj parity clear` does. No core runs.
+    fn parity_clear(&mut self, a: &Args) -> Result<Value> {
+        let col = decomp_dj::collection::Collection::open(&self.dir)?;
+        let compare = decomp_dj::parity::compare_name(&col, a.opt_str("compare")?.as_deref())?;
+        let ids: Vec<i64> = a.u64s("ids")?.into_iter().map(|i| i as i64).collect();
+        if ids.is_empty() {
+            bail!("ids: give the failures to forget (parity_failures lists them)");
         }
+        let conn = decomp_dj::cache::Cache::open_existing(&col)?;
+        let known: Vec<i64> = decomp_dj::parity::failures(&conn, &compare)?.iter().map(|f| f.id).collect();
+        if let Some(id) = ids.iter().find(|id| !known.contains(id)) {
+            bail!("\"{compare}\" has no failure #{id} (parity_failures lists them)");
+        }
+        for id in &ids {
+            decomp_dj::parity::delete_failure(&conn, *id)?;
+        }
+        Ok(json!({"compare": compare, "cleared": ids}))
+    }
+
+    /// The `[[compare]]` entry a parity tool names (it may be left out when there is one).
+    fn compare_of(&self, a: &Args) -> Result<String> {
+        let col = decomp_dj::collection::Collection::open(&self.dir)?;
+        decomp_dj::parity::compare_name(&col, a.opt_str("compare")?.as_deref())
+    }
+}
+
+/// The longest `parity_core` waits for the comparison core to load.
+const CORE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Runs `dj` with `args` in a child and returns the JSON it prints. Exit status 0 and 1 both
+/// carry an answer (1: it found something wrong); anything else, or no JSON, is an error.
+/// `what` names the work, for the message when it runs past `timeout`.
+fn run_dj_json(args: &[String], timeout: std::time::Duration, what: &str) -> Result<Value> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    let exe = decomp_dj::isolate::worker_exe()?;
+    let mut child = Command::new(exe).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let (mut out, mut err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
+    let outs = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = out.read_to_string(&mut s);
+        s
+    });
+    let errs = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = err.read_to_string(&mut s);
+        s
+    });
+    let started = Instant::now();
+    let code = loop {
+        if let Some(st) = child.try_wait()? {
+            break st.code().unwrap_or(-1);
+        }
+        if started.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("{what} took longer than {} s", timeout.as_secs());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let (out, err) = (outs.join().unwrap_or_default(), errs.join().unwrap_or_default());
+    match serde_json::from_str::<Value>(&out) {
+        Ok(v) if code == 0 || code == 1 => Ok(v),
+        _ => bail!("dj {} ended with status {code}: {}", args[..2.min(args.len())].join(" "), err.trim().lines().last().unwrap_or("no message")),
     }
 }
 

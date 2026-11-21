@@ -22,4 +22,5 @@ pub mod condition;
 pub mod console;
 pub mod crash;
 pub mod recovery;
+pub mod style;
 pub mod trace;

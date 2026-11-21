@@ -1,4 +1,4 @@
-/* The voxel picture (.agents/THWAITE_VOXEL_PLAN.md): every tile and sprite extruded one
+/* The voxel picture (.agents/_archive/THWAITE_VOXEL_PLAN.md): every tile and sprite extruded one
  * voxel deep and drawn in perspective, each voxel with a faint outline. Drawn from the same
  * struct gfx as the flat picture, and with the same colours: palette indices, looked up in
  * the frame's palette.

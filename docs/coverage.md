@@ -25,11 +25,12 @@ segment reaches this code, and when".
 
 ## Unreachable code
 
-`unreachable.txt` at the project root lists ROM ranges that no input can
-reach (dead code, debug paths). It is version controlled. One range per line,
-`0x8000-0x80FF` or a single `0x8123`, optionally prefixed by a region
-(`PRG:0x8000-0x80FF`), with `#` comments. Instructions and blocks inside them
-are left out of the totals.
+`annotations.toml` at the project root lists ROM ranges that no input can reach (dead
+code, debug paths) as `[[unreachable]]` entries, each with a `why`
+([config.md](config.md#annotationstoml)). It is version controlled. Instructions and
+blocks inside them are left out of the totals. The same file marks bytes that aren't code
+(`[[data]]`) and names or resizes functions (`[[function]]`). `dj annotations` lists
+the entries and fails when a range that was said not to run did.
 
 ## Symbol maps
 
@@ -67,7 +68,7 @@ say how to add one. These formats are read:
 Formats that give no size (`mesen-mlb`, `ld-map`, and `splat` entries without
 `size:`) run each function up to the next symbol. That can include data between
 functions, which then counts as uncovered code, so totals from label-only formats run
-lower than from formats with real sizes. `unreachable.txt` can carve such data out.
+lower than from formats with real sizes. A `[[data]]` entry in `annotations.toml` carves such data out.
 
 Where each map's offsets land in the ROM is set per entry with `rom_header`, `region` and `cpu_base` ([config.md](config.md#symbols-optional-repeatable)).
 
@@ -94,7 +95,7 @@ ROM, big-endian). A block ends after the delay slot of a branch or jump, and at 
 tables); calls (`jal`, `jalr`, `bal` and the other linking branches) don't end a block,
 and their targets feed the callers list. On the N64,
 overlays share addresses: code that ran at an overlay's addresses is credited to whatever
-the symbol map names there, whichever overlay was loaded ([.agents/CONNECTOR_PLAN.md](../.agents/CONNECTOR_PLAN.md)).
+the symbol map names there, whichever overlay was loaded ([.agents/_archive/CONNECTOR_PLAN.md](../.agents/_archive/CONNECTOR_PLAN.md)).
 
 For ARMv4T (the GBA's ARM7TDMI; `armv4t`) a function starts in the mode its first
 instruction ran in (the connector's mode bits), else the one its symbol says: bit 0 of an
@@ -118,17 +119,16 @@ reaches) to show collaborators where help is needed.
 ## From the command line
 
 ```sh
-dj report <dir> [--json FILE] [--gaps FILE.csv]   # coverage of the current, clean segments
-dj summary  <dir>                                 # totals, and the segments that add most
-dj xref     <dir> ADDR                            # which segments first run it, at which frame
-dj gaps     <dir> [--sort size|nearness] [--only never|partial]
-dj function <dir> ADDR                            # blocks, callers, segments that enter it
-dj frontier <dir> [ADDR]                          # covered branches into uncovered code
-dj snapshot <dir> SEGMENT FRAME --out FILE        # the core state there, to start a trace from
+dj summary  [--segments]                    # totals, what was left out, the segments that add most
+dj xref     ADDR                            # which segments first run it, at which frame
+dj gaps     [--sort size|nearness] [--only never|partial] [--csv FILE]
+dj function ADDR                            # blocks, callers, segments that enter it
+dj frontier [ADDR]                          # covered branches into uncovered code
+dj snapshot SEGMENT FRAME --out FILE        # the core state there, to start a trace from
 ```
 
-- `report` reads the local database, not the files: it counts only clean segments whose current content has been played into it, and lists how many were dirty or not played yet. Drafts are left out, with what they would add once saved; so is what dirty segments ran the last time each played ("+N if cleaned"). Run `dj clean` first ([database.md](database.md)).
-- `--gaps` writes the gap list as CSV.
+- `summary` reads the local database, not the files: it counts only clean segments whose current content has been played into it, and lists how many were dirty or not played yet. Drafts are left out, with what they would add once saved; so is what dirty segments ran the last time each played. Run `dj clean` first ([database.md](database.md)). `--segments` adds a row per segment (what it ran, what no segment above it ran, what only it ran, its ticks) and the smallest set of segments that keeps all the coverage.
+- `gaps --csv FILE` writes one row per uncovered block, for collaborators.
 - `xref` (also `where`) takes an address (`PRG:0x1234`, `0x1234` for a PRG offset, `$C123` for a CPU address, or a symbol, optionally `name+0x10`) and lists the segments where that code first runs, best first, with the frame and the nearest snapshot. `snapshot` then writes the core state at that frame, to start a trace from.
 - `gaps --sort nearness` puts first the functions whose uncovered code a covered branch skips: the cheapest to reach. `frontier` lists those branches with the segments and frames that run them; given an uncovered address, it lists the ways into its block. Both need a symbol map; without one, `gaps` lists the uncovered PRG byte ranges instead (from the connector's operand flags, or on a NES ROM from 6502 lengths when the core sets none), largest first, and `function` and `frontier` say how to add a map ([mcp.md](mcp.md#without-a-symbol-map)).
 - Every query takes `--json`, `--limit` and `--cursor`. An agent gets the same queries, and can trace and play too, through [`dj mcp`](mcp.md).
@@ -168,7 +168,7 @@ and when playback continues into a child. It counts towards the project once the
 is saved and clean and its current content's pass is recorded.
 
 **Functions tab.** The project's coverage from the local database, the same numbers as
-`dj report`, and a function list that sorts by ROM order, most uncovered, least covered or
+`dj summary`, and a function list that sorts by ROM order, most uncovered, least covered or
 name. Click a row (or a square on the map) to see the function's uncovered blocks and the
 segments where it runs, each with the first frame it runs there; click one to go to that
 segment and frame. The line reads "Runs in N segments; nearest the top: <segment>, from

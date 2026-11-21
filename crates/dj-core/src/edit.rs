@@ -1,12 +1,12 @@
 //! Edits to a project's tree of segments: joining a segment into its parent, giving
 //! segments another parent, duplicating, and splitting one in two.
 //!
-//! These work on the segments in memory (`Collection::replays`). Writing the files is the
-//! caller's (`Collection::save_replay`, `delete_replay_file`), as is anything it keeps
+//! These work on the segments in memory (`Collection::segments`). Writing the files is the
+//! caller's (`Collection::save_segment`, `delete_segment_file`), as is anything it keeps
 //! about the segments it shows: dj-gui has its undo steps and its list of unsaved edits.
 
 use crate::collection::Collection;
-use crate::format::{input_text, Command, InputKey, Replay};
+use crate::format::{input_text, Command, InputKey, Segment};
 use anyhow::{anyhow, Result};
 use std::collections::{BTreeMap, HashMap};
 
@@ -34,7 +34,7 @@ pub fn only_child_run(col: &Collection, top: &str) -> Vec<String> {
 
 /// A segment can be joined into its parent when it is the parent's only child.
 pub fn can_join(col: &Collection, id: &str) -> bool {
-    col.replays.get(id).and_then(|r| r.parent()).is_some_and(|p| col.children(Some(p)).len() == 1)
+    col.segments.get(id).and_then(|r| r.parent()).is_some_and(|p| col.children(Some(p)).len() == 1)
 }
 
 /// A segment joined into its parent, worked out but not yet done (`apply`): the parent
@@ -48,7 +48,7 @@ pub struct Join {
     pub children: Vec<String>,
     /// The frame of the parent where the segment's frames start: the parent's old length.
     pub at: u64,
-    merged: Replay,
+    merged: Segment,
 }
 
 impl Join {
@@ -58,10 +58,10 @@ impl Join {
         if !can_join(col, id) {
             return Err(anyhow!("only a segment whose parent has no other children can be joined"));
         }
-        let child = &col.replays[id];
+        let child = &col.segments[id];
         let pid = child.parent().unwrap().to_string();
         let kids: Vec<String> = col.children(Some(id)).into_iter().map(String::from).collect();
-        let mut p = col.replays[&pid].clone();
+        let mut p = col.segments[&pid].clone();
         let (pf, cf) = (p.frames()?, child.frames()?);
         // Every input is released when a segment starts, so release what the parent still
         // holds at its end; then the child's own lines follow, shifted by the parent's length.
@@ -107,10 +107,10 @@ impl Join {
 
     /// Does the join.
     pub fn apply(self, col: &mut Collection) {
-        col.replays.insert(self.parent.clone(), self.merged);
-        col.replays.remove(&self.id);
+        col.segments.insert(self.parent.clone(), self.merged);
+        col.segments.remove(&self.id);
         for k in &self.children {
-            if let Some(r) = col.replays.get_mut(k) {
+            if let Some(r) = col.segments.get_mut(k) {
                 r.set("parent", &self.parent);
             }
         }
@@ -123,7 +123,7 @@ impl Join {
 pub fn reparent(col: &mut Collection, ids: &[String], to: Option<&str>) -> Vec<String> {
     let mut done = vec![];
     for id in ids {
-        let Some(r) = col.replays.get_mut(id) else { continue };
+        let Some(r) = col.segments.get_mut(id) else { continue };
         match to {
             Some(p) => {
                 r.set("parent", p);
@@ -143,15 +143,15 @@ pub fn reparent(col: &mut Collection, ids: &[String], to: Option<&str>) -> Vec<S
 /// Copies of `id` and, with `children`, of everything below it, under new ids and not yet
 /// in the project. The first is the copy of `id` itself: titled "<title> (copy)", with the
 /// same parent. The rest hang below it as the originals do.
-pub fn duplicate(col: &Collection, id: &str, children: bool) -> Vec<Replay> {
-    if !col.replays.contains_key(id) {
+pub fn duplicate(col: &Collection, id: &str, children: bool) -> Vec<Segment> {
+    if !col.segments.contains_key(id) {
         return vec![];
     }
     let olds: Vec<&str> = if children { col.subtree(id) } else { vec![id] };
     let map: HashMap<&str, String> = olds.iter().map(|o| (*o, new_id())).collect();
     olds.iter()
         .map(|o| {
-            let mut r = col.replays[*o].clone();
+            let mut r = col.segments[*o].clone();
             r.set("id", &map[o]);
             if *o == id {
                 r.set("title", &format!("{} (copy)", r.title()));
@@ -168,18 +168,18 @@ pub fn duplicate(col: &Collection, id: &str, children: bool) -> Vec<Replay> {
 /// is the state at the cut: the new segment's end hash and `id`'s start hash. Returns
 /// whether `id` had a checkpoint at `frame` that says otherwise.
 pub fn split(col: &mut Collection, id: &str, frame: u64, hash: &str, up_id: &str) -> Result<bool> {
-    let whole = col.replays.get(id).ok_or_else(|| anyhow!("no segment {id}"))?;
+    let whole = col.segments.get(id).ok_or_else(|| anyhow!("no segment {id}"))?;
     let (mut up, mut down) = whole.split_at(frame, up_id)?;
     let differs = whole.checkpoints()?.into_iter().any(|(f, h)| f == frame && h != hash);
     up.set("end-hash", hash);
     down.set("start-hash", hash);
-    col.replays.insert(up_id.to_string(), up);
-    col.replays.insert(id.to_string(), down);
+    col.segments.insert(up_id.to_string(), up);
+    col.segments.insert(id.to_string(), down);
     Ok(differs)
 }
 
 /// The first frame at which two versions of a segment's commands differ.
-pub fn first_change(a: &Replay, b: &Replay) -> Option<u64> {
+pub fn first_change(a: &Segment, b: &Segment) -> Option<u64> {
     let n = a.lines.len().min(b.lines.len());
     for i in 0..n {
         let (x, y) = (&a.lines[i], &b.lines[i]);
@@ -204,20 +204,20 @@ mod tests {
         std::fs::create_dir_all(dir.join("segments")).unwrap();
         std::fs::write(dir.join("config.toml"), CONFIG).unwrap();
         let mut col = Collection::open(&dir).unwrap();
-        let mut a = Replay::new("a", None, "root", 10);
+        let mut a = Segment::new("a", None, "root", 10);
         a.set("end-hash", "A");
-        let mut b = Replay::new("b", Some("a"), "middle", 5);
+        let mut b = Segment::new("b", Some("a"), "middle", 5);
         b.set("start-hash", "A");
         b.add("checkpoint", "2 B2");
         b.set("end-hash", "B");
         b.insert_line(1, "[EVENT] in b").unwrap();
-        let mut c = Replay::new("c", Some("b"), "leaf", 5);
+        let mut c = Segment::new("c", Some("b"), "leaf", 5);
         c.set("start-hash", "B");
         c.set("end-hash", "C");
-        let mut d = Replay::new("d", None, "other root", 5);
+        let mut d = Segment::new("d", None, "other root", 5);
         d.set("sram", "blob");
         for r in [a, b, c, d] {
-            col.replays.insert(r.id().unwrap().to_string(), r);
+            col.segments.insert(r.id().unwrap().to_string(), r);
         }
         col
     }
@@ -241,9 +241,9 @@ mod tests {
         assert_eq!(join.ids(), ["a", "b", "c"]);
         assert_eq!(join.at, 10);
         join.apply(&mut col);
-        assert!(!col.replays.contains_key("b"));
-        assert_eq!(col.replays["c"].parent(), Some("a"));
-        let a = &col.replays["a"];
+        assert!(!col.segments.contains_key("b"));
+        assert_eq!(col.segments["c"].parent(), Some("a"));
+        let a = &col.segments["a"];
         assert_eq!(a.frames().unwrap(), 15);
         assert_eq!(a.get("end-hash"), Some("B"));
         assert_eq!(a.checkpoints().unwrap(), [(10, "A".to_string()), (12, "B2".to_string())]);
@@ -256,10 +256,10 @@ mod tests {
     fn only_an_only_child_joins() {
         let mut col = project("join-no");
         assert!(can_join(&col, "b") && !can_join(&col, "a"));
-        col.replays.insert("e".into(), Replay::new("e", Some("a"), "sibling", 5));
+        col.segments.insert("e".into(), Segment::new("e", Some("a"), "sibling", 5));
         assert!(!can_join(&col, "b"));
         assert!(Join::plan(&col, "b", None).is_err());
-        assert!(col.replays.contains_key("b"));
+        assert!(col.segments.contains_key("b"));
     }
 
     #[test]
@@ -267,14 +267,14 @@ mod tests {
         let mut col = project("reparent");
         let done = reparent(&mut col, &["d".to_string(), "nope".to_string()], Some("c"));
         assert_eq!(done, ["d"]);
-        let d = &col.replays["d"];
+        let d = &col.segments["d"];
         assert_eq!((d.parent(), d.get("sram")), (Some("c"), None));
         reparent(&mut col, &["b".to_string()], None);
-        let b = &col.replays["b"];
+        let b = &col.segments["b"];
         assert_eq!(b.parent(), None);
         assert_eq!((b.get("start-hash"), b.get("end-hash")), (None, None));
         assert!(b.checkpoints().unwrap().is_empty());
-        assert_eq!(col.replays["c"].get("end-hash"), Some("C"), "segments below keep theirs");
+        assert_eq!(col.segments["c"].get("end-hash"), Some("C"), "segments below keep theirs");
     }
 
     #[test]
@@ -296,11 +296,11 @@ mod tests {
     fn split_puts_the_first_frames_in_a_new_parent() {
         let mut col = project("split");
         assert!(!split(&mut col, "b", 3, "CUT", "up").unwrap());
-        let (up, b) = (&col.replays["up"], &col.replays["b"]);
+        let (up, b) = (&col.segments["up"], &col.segments["b"]);
         assert_eq!((up.parent(), b.parent()), (Some("a"), Some("up")));
         assert_eq!((up.frames().unwrap(), b.frames().unwrap()), (3, 2));
         assert_eq!((up.get("end-hash"), b.get("start-hash"), b.get("end-hash")), (Some("CUT"), Some("CUT"), Some("B")));
-        assert_eq!(col.replays["c"].parent(), Some("b"));
+        assert_eq!(col.segments["c"].parent(), Some("b"));
         // A checkpoint at the cut that says something else is reported.
         let mut col = project("split-differs");
         assert!(split(&mut col, "b", 2, "CUT", "up").unwrap());
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn first_change_is_the_earliest_differing_frame() {
-        let a = Replay::new("a", None, "a", 10);
+        let a = Segment::new("a", None, "a", 10);
         let mut b = a.clone();
         assert_eq!(first_change(&a, &b), None);
         b.insert_line(4, "[EVENT] x").unwrap();

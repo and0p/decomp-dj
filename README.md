@@ -34,6 +34,10 @@ These issues require the developer(s) to emulate the games and play them into sp
 
 TODO
 
+## Missing Features & Roadmap
+
+TODO
+
 ## License
 
 decomp-dj is free software under the [MIT License](LICENSE.txt): the command line, the GUI,

@@ -4,7 +4,7 @@
 use crate::strings as t;
 use anyhow::Result;
 use dj_core::collection::{KeyboardLocal, RecordLocal};
-use dj_core::format::{is_binary, Command, InputKey, Replay, DEVICE_JOYPAD, JOYPAD};
+use dj_core::format::{is_binary, Command, InputKey, Segment, DEVICE_JOYPAD, JOYPAD};
 use egui::Key;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -112,7 +112,7 @@ impl Settings {
 }
 
 /// Every on/off input any line of `r` sets.
-fn binary_keys(r: &Replay) -> BTreeSet<InputKey> {
+fn binary_keys(r: &Segment) -> BTreeSet<InputKey> {
     r.lines
         .iter()
         .filter_map(|l| match l.command {
@@ -125,7 +125,7 @@ fn binary_keys(r: &Replay) -> BTreeSet<InputKey> {
 /// Writes frame `f` of `r`: the buttons in `chord` are held there. With `overwrite`, every
 /// other on/off input (on every controller) is released on that frame; without it, nothing
 /// is released. Returns whether anything changed.
-pub fn write_frame(r: &mut Replay, f: u64, chord: &[InputKey], overwrite: bool) -> Result<bool> {
+pub fn write_frame(r: &mut Segment, f: u64, chord: &[InputKey], overwrite: bool) -> Result<bool> {
     let mut keys: BTreeSet<InputKey> = chord.iter().copied().collect();
     if overwrite {
         keys.extend(binary_keys(r));
@@ -154,7 +154,7 @@ pub fn write_frame(r: &mut Replay, f: u64, chord: &[InputKey], overwrite: bool) 
 }
 
 /// Releases every on/off input on frame `f`.
-pub fn clear_frame(r: &mut Replay, f: u64) -> Result<bool> {
+pub fn clear_frame(r: &mut Segment, f: u64) -> Result<bool> {
     write_frame(r, f, &[], true)
 }
 
@@ -289,15 +289,15 @@ mod tests {
         InputKey { port: 0, device: DEVICE_JOYPAD, index: 0, id }
     }
 
-    fn replay(spans: &[(InputKey, Vec<(u64, u64)>)]) -> Replay {
-        let mut r = Replay::new("t", None, "t", 20);
+    fn segment(spans: &[(InputKey, Vec<(u64, u64)>)]) -> Segment {
+        let mut r = Segment::new("t", None, "t", 20);
         r.set_binary_spans_many(spans).unwrap();
         r
     }
 
     #[test]
     fn adds_a_press_and_merges() {
-        let mut r = replay(&[(key(8), vec![(2, 5)])]);
+        let mut r = segment(&[(key(8), vec![(2, 5)])]);
         assert!(write_frame(&mut r, 5, &[key(8)], true).unwrap());
         assert_eq!(r.binary_spans(key(8)), vec![(2, 6)]);
         assert!(write_frame(&mut r, 9, &[key(8)], true).unwrap());
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn overwrite_releases_everything_else() {
-        let mut r = replay(&[(key(8), vec![(0, 10)]), (InputKey { port: 1, ..key(0) }, vec![(0, 20)])]);
+        let mut r = segment(&[(key(8), vec![(0, 10)]), (InputKey { port: 1, ..key(0) }, vec![(0, 20)])]);
         assert!(write_frame(&mut r, 4, &[key(4)], true).unwrap());
         assert_eq!(r.binary_spans(key(8)), vec![(0, 4), (5, 10)]);
         assert_eq!(r.binary_spans(InputKey { port: 1, ..key(0) }), vec![(0, 4), (5, 20)]);
@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn without_overwrite_only_adds() {
-        let mut r = replay(&[(key(8), vec![(0, 10)])]);
+        let mut r = segment(&[(key(8), vec![(0, 10)])]);
         let p2b = InputKey { port: 1, ..key(0) };
         assert!(write_frame(&mut r, 4, &[p2b], false).unwrap());
         assert_eq!(r.binary_spans(key(8)), vec![(0, 10)]);
@@ -327,7 +327,7 @@ mod tests {
 
     #[test]
     fn clear_at_the_edges() {
-        let mut r = replay(&[(key(8), vec![(3, 4)])]);
+        let mut r = segment(&[(key(8), vec![(3, 4)])]);
         assert!(clear_frame(&mut r, 3).unwrap());
         assert!(r.binary_spans(key(8)).is_empty());
         assert!(!clear_frame(&mut r, 3).unwrap());

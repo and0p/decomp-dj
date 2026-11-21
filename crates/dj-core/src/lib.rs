@@ -1,4 +1,4 @@
-//! decomp-dj: play libretro input-replay trees, check state hashes and measure ROM coverage.
+//! decomp-dj: play trees of libretro input segments, check state hashes and measure ROM coverage.
 //! The `dj` command-line tool and the GUI are both built on this library.
 
 pub mod analysis;

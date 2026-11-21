@@ -5,14 +5,14 @@ reports which code ran, for decomp-dj.
 
 - **Pinned upstream:** `7a12d6d4b9acb14c0ae62c9166b6a2f3d08007f6` (2026-09-16).
 - **Build:** `connectors/mgba/build.sh` clones that commit into `build/mgba-src`, applies
-  `dj-mgba.patch`, and builds `mgba_libretro.{so,dylib,dll}` into `build/cores/` with CMake.
+  `dj-mgba.patch`, copies in the files under `src/`, and builds `mgba_libretro.{so,dylib,dll}` into `build/cores/` with CMake.
   Every optional library (zlib, libpng, SQLite, Lua, FFmpeg, ...) and the debuggers are
   turned off, so the core is the same whatever the machine has installed. Needs git, CMake,
   make and a C compiler.
-- **License:** mGBA is MPL-2.0. The new files (`dj_connector.c`, `dj_connector.h`) are
-  decomp-dj's own and MIT (so they sit in an MPL-2.0 core without trouble); the few lines
-  the patch changes in mGBA's files are under the MPL-2.0 ([LICENSE.txt](LICENSE.txt)), as is the core built from it.
-  dj itself (MIT) is a separate program that loads the core at run time, like any
+- **License:** two parts. The connector's own files (`dj_connector.c`, `.h`, in [src/](src/)) are
+  decomp-dj's and MIT ([src/LICENSE.txt](src/LICENSE.txt)). `dj-mgba.patch` changes mGBA's own files to
+  hook them in, so it is MPL-2.0 like mGBA ([LICENSE.txt](LICENSE.txt)), and so is the core built from
+  them. dj itself (MIT) is a separate program that loads the core at run time, like any
   libretro frontend.
 - **Game Boy games** load as usual but report no regions: only the GBA's CPU is hooked.
 

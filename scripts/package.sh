@@ -54,6 +54,8 @@ mkdir -p "$out/connectors"
 for d in connectors/*/; do
   mkdir -p "$out/$d"
   cp "$d"*.patch "$d"*.sh "$d"README.md "$d"LICENSE.txt "$out/$d" 2>/dev/null || true
+  # The connector's own files (MIT), which build.sh copies into the core.
+  if [ -d "${d}src" ]; then cp -R "${d}src" "$out/$d"; fi
 done
 cp connectors/README.md "$out/connectors/"
 # The C headers: decoder plugins, connectors and comparison cores.

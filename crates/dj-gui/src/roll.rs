@@ -1,10 +1,10 @@
 //! The piano roll: time runs left to right, one row per button, rows grouped by
-//! controller. Groups that the replay uses are highlighted and open; unused
+//! controller. Groups that the segment uses are highlighted and open; unused
 //! groups are dimmed and collapsed. Only binary inputs (buttons and keys) get
 //! rows for now; other input lines show as ticks on their group's header.
 //!
-//! Spans are worked out once per replay edit and drawn only where visible, so
-//! long replays with many presses stay cheap to draw.
+//! Spans are worked out once per segment edit and drawn only where visible, so
+//! long segments with many presses stay cheap to draw.
 
 use crate::strings as t;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind};
@@ -128,7 +128,7 @@ struct Side {
 }
 
 fn build_side(col: &Collection, id: &str, groups: &[Group]) -> Option<Side> {
-    let r = col.replays.get(id)?;
+    let r = col.segments.get(id)?;
     let mut keys: BTreeSet<InputKey> = BTreeSet::new();
     for l in &r.lines {
         if let Command::Input { key, .. } = &l.command {
@@ -248,7 +248,7 @@ pub fn merge(mut v: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
 }
 
 fn build_model(col: &Collection, id: &str, gen: u64, all_buttons: bool) -> Model {
-    let r = &col.replays[id];
+    let r = &col.segments[id];
     let frames = r.frames().unwrap_or(0);
     let mut used: BTreeSet<InputKey> = BTreeSet::new();
     let mut other: BTreeMap<(u32, u32), Vec<u64>> = BTreeMap::new();

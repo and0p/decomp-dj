@@ -14,7 +14,7 @@ impl App {
     pub(crate) fn unsaved(&self) -> BTreeSet<String> {
         let mut out = self.edited.clone();
         if let Some(col) = &self.col {
-            out.extend(col.drafts.iter().filter(|d| col.replays.contains_key(*d)).cloned());
+            out.extend(col.drafts.iter().filter(|d| col.segments.contains_key(*d)).cloned());
         }
         // A draft an agent session has open is the agent's work, not the person's.
         out.retain(|id| !self.agent_owned(id));
@@ -31,7 +31,7 @@ impl App {
     /// hang in a core doesn't lose them.
     pub(crate) fn write_recovery(&mut self) {
         let Some(col) = &self.col else { return };
-        let segments: BTreeMap<String, Option<String>> = self.edited.iter().filter(|id| !self.agent_owned(id)).map(|id| (id.clone(), col.replays.get(id).map(|r| r.to_text()))).collect();
+        let segments: BTreeMap<String, Option<String>> = self.edited.iter().filter(|id| !self.agent_owned(id)).map(|id| (id.clone(), col.segments.get(id).map(|r| r.to_text()))).collect();
         if let Err(e) = self.recovery.keep(&col.root, segments) {
             self.error(format!("Couldn't keep a copy of the unsaved edits: {e:#}"));
         }
@@ -71,7 +71,7 @@ impl App {
         if restore {
             let mut segments = vec![];
             for (id, text) in left.snapshot.map(|s| s.segments).unwrap_or_default() {
-                match text.map(|t| dj_core::format::Replay::parse(&t)).transpose() {
+                match text.map(|t| dj_core::format::Segment::parse(&t)).transpose() {
                     Ok(r) => segments.push((id, r)),
                     Err(e) => {
                         self.error(format!("Couldn't restore segment {id}: {e:#}"));
@@ -115,7 +115,7 @@ impl App {
         let Some(col) = &self.col else { return 0 };
         let mut dirty = BTreeSet::new();
         for id in self.unsaved() {
-            if col.replays.contains_key(&id) {
+            if col.segments.contains_key(&id) {
                 dirty.extend(subtree(col, &id).into_iter().filter(|i| col.tree_status(i) == Status::Dirty && !self.agent_owned(i)));
             }
         }
@@ -158,11 +158,11 @@ impl App {
         let mut saved = vec![];
         for id in &ids {
             // Drafts are moved below, once their parents are saved.
-            if col.is_draft(id) && col.replays.contains_key(id) {
+            if col.is_draft(id) && col.segments.contains_key(id) {
                 continue;
             }
             // A segment removed (deleted, or by undo of a split or a new segment) loses its file.
-            let res = if col.replays.contains_key(id) { col.save_replay(id) } else { col.delete_replay_file(id) };
+            let res = if col.segments.contains_key(id) { col.save_segment(id) } else { col.delete_segment_file(id) };
             if let Err(e) = res {
                 self.message = Some((format!("Saving {id}: {e:#}"), true));
                 return;
@@ -175,7 +175,7 @@ impl App {
         let drafts: Vec<String> = col.tree_order().into_iter().map(|(id, _)| id.to_string()).filter(|id| col.is_draft(id)).collect();
         let mut held = 0;
         for id in drafts {
-            let parent_held = col.replays[&id].parent().is_some_and(|p| col.is_draft(p));
+            let parent_held = col.segments[&id].parent().is_some_and(|p| col.is_draft(p));
             if in_session.contains(&id) || parent_held {
                 held += 1;
                 continue;
@@ -204,13 +204,13 @@ impl App {
     /// Why the segment `id` can't be saved on its own, if it can't.
     pub(crate) fn save_one_blocked(&self, id: &str) -> Option<&'static str> {
         let col = self.col.as_ref()?;
-        if !col.replays.contains_key(id) || !self.unsaved().contains(id) {
+        if !col.segments.contains_key(id) || !self.unsaved().contains(id) {
             return Some(t::NO_UNSAVED_CHANGES_IN_THIS);
         }
         if self.agent_owned(id) {
             return Some(t::AN_AGENT_SESSION_HAS_THIS);
         }
-        let parent = col.replays[id].parent()?;
+        let parent = col.segments[id].parent()?;
         let parent_on_disk = col.paths.get(parent).is_some_and(|p| p.exists()) && !col.is_draft(parent);
         (!parent_on_disk).then_some(t::ITS_PARENT_HAS_NEVER_BEEN)
     }
@@ -222,7 +222,7 @@ impl App {
             return;
         }
         let Some(col) = &mut self.col else { return };
-        let res = if col.is_draft(id) { col.draft_to_segment(id) } else { col.save_replay(id) };
+        let res = if col.is_draft(id) { col.draft_to_segment(id) } else { col.save_segment(id) };
         if let Err(e) = res {
             self.error(format!("Saving {id}: {e:#}"));
             return;
@@ -248,7 +248,7 @@ impl App {
     /// Why the segment `id` can't be reverted to its file, if it can't.
     pub(crate) fn revert_blocked(&self, id: &str) -> Option<&'static str> {
         let col = self.col.as_ref()?;
-        if !self.edited.contains(id) || !col.replays.contains_key(id) {
+        if !self.edited.contains(id) || !col.segments.contains_key(id) {
             return Some(t::NO_UNSAVED_CHANGES_IN_THIS);
         }
         if self.agent_owned(id) {
@@ -268,7 +268,7 @@ impl App {
             return;
         }
         let Some(path) = self.col.as_ref().and_then(|c| c.paths.get(id)).cloned() else { return };
-        let disk = match dj_core::format::Replay::load(&path) {
+        let disk = match dj_core::format::Segment::load(&path) {
             Ok(r) => r,
             Err(e) => {
                 self.error(format!("{e:#}"));
@@ -292,7 +292,7 @@ impl App {
     pub(crate) fn note_saved(&mut self, ids: &[String]) {
         let Some(col) = &self.col else { return };
         for id in ids {
-            match col.replays.get(id) {
+            match col.segments.get(id) {
                 Some(r) => self.saved_end.insert(id.clone(), ending_sig(r)),
                 None => self.saved_end.remove(id),
             };
@@ -306,7 +306,7 @@ impl App {
             return false;
         }
         let Some(Some(old)) = self.saved_end.get(id) else { return false };
-        self.col.as_ref().and_then(|c| c.replays.get(id)).and_then(ending_sig).is_some_and(|now| &now != old)
+        self.col.as_ref().and_then(|c| c.segments.get(id)).and_then(ending_sig).is_some_and(|now| &now != old)
     }
 }
 

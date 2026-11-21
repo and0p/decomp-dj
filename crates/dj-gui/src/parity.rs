@@ -371,7 +371,7 @@ impl App {
                     Some(chain[at + 1..].iter().map(|x| x.to_string()).collect())
                 })
             };
-            let Some(route) = route.filter(|_| col.replays.contains_key(&f.synced.0) && col.replays.contains_key(&f.segment)) else {
+            let Some(route) = route.filter(|_| col.segments.contains_key(&f.synced.0) && col.segments.contains_key(&f.segment)) else {
                 rr.unchecked += 1;
                 continue;
             };

@@ -96,10 +96,10 @@ fn sent(c: &Comparison) -> String {
 /// Checks all of segment `id` against comparison core `name`: the span, the frames left
 /// unjudged at the end, and what the core was sent.
 fn check(c: &Cores, col: &Collection, s: &mut Session, name: &str, id: &str) -> (Span, u64, String) {
-    s.enter_replay(col, id).unwrap();
+    s.enter_segment(col, id).unwrap();
     let mut cmp = open(c, col, name);
     let mut ck = Checker::default();
-    let n = col.replays[id].frames().unwrap();
+    let n = col.segments[id].frames().unwrap();
     let span = check_span(s, &mut cmp, &mut ck, col, id, 0, n, 0).unwrap();
     let left = ck.finish();
     let log = sent(&cmp);
@@ -197,7 +197,7 @@ fn a_run_of_mismatches_is_one_failure() {
     let mut s = session(&c, &col);
 
     // The core's RAM goes wrong at frame 9, for good.
-    s.enter_replay(&col, "seg").unwrap();
+    s.enter_segment(&col, "seg").unwrap();
     let mut cmp = open(&c, &col, "mismatch");
     let mut ck = Checker::default();
     for k in 0..9 {
@@ -224,7 +224,7 @@ fn a_run_of_mismatches_is_one_failure() {
 
     // A core that puts itself right: one failure, a run that goes on, then parity again
     // without dj doing anything.
-    s.enter_replay(&col, "seg").unwrap();
+    s.enter_segment(&col, "seg").unwrap();
     let mut cmp = open(&c, &col, "heal");
     let mut ck = Checker::default();
     let got: Vec<Checked> = (0..16).map(|k| frame(&mut s, &mut cmp, &mut ck, &col, k)).collect();
@@ -255,7 +255,7 @@ fn a_halt_is_resumed_with_a_jump() {
     let Some(c) = cores("halt") else { return eprintln!("skipped: no C compiler") };
     let col = project(&c, "", &[]);
     let mut s = session(&c, &col);
-    s.enter_replay(&col, "seg").unwrap();
+    s.enter_segment(&col, "seg").unwrap();
     let mut cmp = open(&c, &col, "halt");
     let mut ck = Checker::default();
     for k in 0..9 {
@@ -337,7 +337,7 @@ fn writes() {
     );
     let mut s = session(&c, &col);
     let end = |s: &mut Session, id: &str| -> Vec<u8> {
-        let start = s.enter_replay(&col, id).unwrap();
+        let start = s.enter_segment(&col, id).unwrap();
         s.play(&col, id, start, &PlayOptions::default()).unwrap();
         s.core.memory(MEMORY_SYSTEM_RAM).unwrap().to_vec()
     };
@@ -423,7 +423,7 @@ fn ticks_are_counted_by_dj() {
     let ticks = |extra: &str| -> Option<u64> {
         let col = project(&c, extra, &[]);
         let mut s = session(&c, &col);
-        let start = s.enter_replay(&col, "seg").unwrap();
+        let start = s.enter_segment(&col, "seg").unwrap();
         // The coverage flags are cleared after every frame, as a parity check does.
         let mut rec = s.begin(&col, "seg", start, &PlayOptions::default()).unwrap();
         loop {
@@ -476,7 +476,7 @@ fn pre_roll() {
 
     // The child's first five frames from its own start, with no pre-roll: the core copies at
     // the first tick, inside frame 0, so that frame is not judged.
-    s.enter_replay(&col, "kid").unwrap();
+    s.enter_segment(&col, "kid").unwrap();
     let mut cmp = open(&c, &col, "tick");
     let mut ck = Checker::default();
     let plain = check_span(&mut s, &mut cmp, &mut ck, &col, "kid", 0, 5, 43).unwrap();
@@ -489,7 +489,7 @@ fn pre_roll() {
     // nothing, and the child's frame 0 is judged.
     let mut cmp = open(&c, &col, "tick-pre");
     assert_eq!(cmp.preroll, 2);
-    s.enter_replay(&col, "mid").unwrap();
+    s.enter_segment(&col, "mid").unwrap();
     s.step(&col, "mid", 0, false).unwrap();
     let mut ck = Checker::default();
     ck.set_preroll(2, "kid");
@@ -510,7 +510,7 @@ fn pre_roll() {
     // A mismatch in pre-roll is ignored, and doesn't hide the first one after it: that one is
     // kept as a failure, with how much of its run was pre-roll.
     let mut cmp = open(&c, &col, "tick-mismatch");
-    s.enter_replay(&col, "seg").unwrap();
+    s.enter_segment(&col, "seg").unwrap();
     for f in 0..6 {
         s.step(&col, "seg", f, false).unwrap();
     }
@@ -526,7 +526,7 @@ fn pre_roll() {
 
     // A halt in pre-roll is a failure at the frame it happened in.
     let mut cmp = open(&c, &col, "tick-halt");
-    s.enter_replay(&col, "seg").unwrap();
+    s.enter_segment(&col, "seg").unwrap();
     for f in 0..6 {
         s.step(&col, "seg", f, false).unwrap();
     }

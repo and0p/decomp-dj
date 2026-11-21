@@ -8,7 +8,7 @@ file = "tetris_usa.nes"
 
 [core]
 name = "mesen"
-build = "mesen@0102910c+dj.3959bd49"
+build = "mesen@0102910c+dj.6b25b84c"
 sha256 = ""
 
 [core.options]

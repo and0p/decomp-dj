@@ -7,9 +7,8 @@ previews) is derived locally by playing it.
 
 ## Terms
 
-These are the working terms. The docs and the GUI use them. The code and the CLI's help
-still use older words in places ("replay" for segment, "collection" for project, "trunk"
-for root segment).
+These are the working terms. The docs, the GUI, the CLI's help and most of the code use
+them. One older word is left in the code: a project is a `Collection` there.
 
 | Term | Meaning |
 |---|---|

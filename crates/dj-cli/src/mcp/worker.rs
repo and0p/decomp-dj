@@ -17,7 +17,7 @@ use dj_core::cache;
 use dj_core::collection::Collection;
 use dj_core::condition::{Env, Expr};
 use dj_core::coverage::FLAG_OPCODE;
-use dj_core::format::{parse_body_line, Command, Replay};
+use dj_core::format::{parse_body_line, Command, Segment};
 use dj_core::libretro::{Frame, TRACE_EXEC, TRACE_WRITE, TRACE_READ};
 use dj_core::player::{PlayOptions, Session};
 
@@ -194,12 +194,12 @@ impl Worker {
 
     fn tape_frames(&self) -> Result<u64> {
         let t = self.tape()?;
-        self.col.replays[&t.id].frames()
+        self.col.segments[&t.id].frames()
     }
 
     fn save_tape(&mut self) -> Result<()> {
         let id = self.tape()?.id.clone();
-        self.col.save_replay(&id)
+        self.col.save_segment(&id)
     }
 
     /// Opens a session on draft `draft` (already written to .local/drafts by the parent) at
@@ -209,19 +209,19 @@ impl Worker {
         self.col = load_with_drafts(&self.dir)?;
         self.session()?;
         let id = arg_str(a, "draft")?.to_string();
-        if !self.col.replays.contains_key(&id) {
+        if !self.col.segments.contains_key(&id) {
             bail!("no draft {id}");
         }
-        let frames = self.col.replays[&id].frames()?;
+        let frames = self.col.segments[&id].frames()?;
         let cursor = arg_u64(a, "cursor").unwrap_or(frames).min(frames);
         let base = a.get("base").and_then(|b| b.as_str()).map(String::from);
         let col = &self.col;
         let s = self.s.as_mut().unwrap();
-        s.enter_replay(col, &id)?;
+        s.enter_segment(col, &id)?;
         let mut snaps = BTreeMap::new();
         snaps.insert(0, s.snapshot()?);
         let mut at = 0;
-        if let Some(b) = base.filter(|b| col.replays.contains_key(b)) {
+        if let Some(b) = base.filter(|b| col.segments.contains_key(b)) {
             let start = s.state_hash(col)?;
             if let Some((f, state)) = s.nearest_stored(col, &b, &start, cursor)? {
                 if f > 0 && f <= cursor {
@@ -239,8 +239,8 @@ impl Worker {
 
     fn where_am_i(&mut self) -> Result<Value> {
         let t = self.tape()?;
-        let frames = self.col.replays[&t.id].frames()?;
-        let held = held_at(&self.col.replays[&t.id], t.cursor, &t.pending);
+        let frames = self.col.segments[&t.id].frames()?;
+        let held = held_at(&self.col.segments[&t.id], t.cursor, &t.pending);
         Ok(json!({"draft": t.id, "frame": t.cursor, "frames": frames, "pending": t.pending, "held": held}))
     }
 
@@ -255,7 +255,7 @@ impl Worker {
         if end > frames {
             let t = self.tape.as_mut().unwrap();
             flushed = std::mem::take(&mut t.pending);
-            let r = self.col.replays.get_mut(&id).unwrap();
+            let r = self.col.segments.get_mut(&id).unwrap();
             let body = flushed.iter().map(|l| format!("0 {l}")).collect::<Vec<_>>().join("\n");
             r.append_chunk(&body, end - frames)?;
         }
@@ -328,7 +328,7 @@ impl Worker {
         // Cut the tape back if a condition or the deadline stopped it early.
         if t.cursor < end && end > frames {
             let keep = t.cursor.max(frames);
-            let r = self.col.replays.get_mut(&id).unwrap();
+            let r = self.col.segments.get_mut(&id).unwrap();
             r.truncate_at(keep)?;
             if keep == frames {
                 t.pending = flushed;
@@ -411,7 +411,7 @@ impl Worker {
         let mut body = pending.iter().map(|l| format!("0 {l}")).collect::<Vec<_>>().join("\n");
         body.push('\n');
         body.push_str(&text);
-        let r = self.col.replays.get_mut(&id).unwrap();
+        let r = self.col.segments.get_mut(&id).unwrap();
         if let Err(e) = r.append_chunk(&body, frames) {
             self.tape.as_mut().unwrap().pending = pending;
             return Err(e);
@@ -453,7 +453,7 @@ impl Worker {
         let id = self.tape()?.id.clone();
         let frames = self.tape_frames()?;
         if frame < frames {
-            self.col.replays.get_mut(&id).unwrap().truncate_at(frame)?;
+            self.col.segments.get_mut(&id).unwrap().truncate_at(frame)?;
             let t = self.tape.as_mut().unwrap();
             t.pending.clear();
             t.snaps.retain(|f, _| *f <= frame);
@@ -528,7 +528,7 @@ impl Worker {
         self.session()?;
         let col = &self.col;
         let s = self.s.as_mut().unwrap();
-        s.enter_replay(col, segment)?;
+        s.enter_segment(col, segment)?;
         let start = s.state_hash(col)?;
         let mut at = 0;
         if let Some((f, state)) = s.nearest_stored(col, segment, &start, frame)? {
@@ -584,7 +584,7 @@ impl Worker {
         let ri = s.core.coverage_region_index(&region).map(|i| i as i8);
         s.core.trace_start(4_000_000)?;
         let mut frame_starts = vec![];
-        let total = col.replays[&seg].frames()?;
+        let total = col.segments[&seg].frames()?;
         for f in (frame - fb)..=(frame + fa).min(total.saturating_sub(1)) {
             frame_starts.push((f, s.core.trace_len()));
             s.step(col, &seg, f, false)?;
@@ -665,7 +665,7 @@ impl Worker {
         self.session()?;
         let col = &self.col;
         let s = self.s.as_mut().unwrap();
-        let start_frame = s.enter_replay(col, &id)?;
+        let start_frame = s.enter_segment(col, &id)?;
         let res = s.play(col, &id, start_frame, &PlayOptions { record: true, ..Default::default() })?;
         Ok(json!({
             "start_frame": res.start_frame,
@@ -779,7 +779,7 @@ fn read_bytes(s: &mut Session, region: &str, addr: u64, len: u64) -> Result<Vec<
 }
 
 /// Inputs held at the start of `frame` of `r` (as body commands), with pending lines applied.
-fn held_at(r: &Replay, frame: u64, pending: &[String]) -> Vec<String> {
+fn held_at(r: &Segment, frame: u64, pending: &[String]) -> Vec<String> {
     let mut held: BTreeMap<dj_core::format::InputKey, i16> = BTreeMap::new();
     let mut apply = |c: &Command| {
         if let Command::Input { key, value, impulse: false } = c {

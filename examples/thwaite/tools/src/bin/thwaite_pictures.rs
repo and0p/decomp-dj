@@ -43,7 +43,7 @@ fn main() -> Result<()> {
     let copies: Vec<u64> = a.get(7).map(|c| c.split(',').map(|s| s.parse()).collect()).transpose()?.unwrap_or_default();
     let out = Path::new(&a[6]);
     std::fs::create_dir_all(out)?;
-    let n = col.replays[&id].frames()?;
+    let n = col.segments[&id].frames()?;
     let mut s = Session::open_with(&col, Path::new(&a[2]), Path::new(&a[3]), false)?;
     let mut spec = OpenSpec::resolve(&col, "decomp", Path::new(&a[3]), Some(Path::new(&a[2])))?;
     spec.options.insert("thwaite_decomp_render".into(), "flat".into());
@@ -52,7 +52,7 @@ fn main() -> Result<()> {
         spec.options.insert(k.into(), v.into());
     }
     let mut cmp = Comparison::open_spec(&spec)?;
-    let power_on = s.enter_replay(&col, &id)?;
+    let power_on = s.enter_segment(&col, &id)?;
     let mut ck = Checker::default();
     let mut last_decomp: Option<Frame> = None;
     for k in 0..n {

@@ -12,8 +12,8 @@ impl App {
             let has = self.pb.is_some();
             let idle = self.hydrating.is_none();
             let (parent, kids): (Option<String>, Vec<(String, String)>) = match (&self.col, &self.selected) {
-                (Some(col), Some(id)) if col.replays.contains_key(id) => (
-                    col.replays[id].parent().map(String::from),
+                (Some(col), Some(id)) if col.segments.contains_key(id) => (
+                    col.segments[id].parent().map(String::from),
                     col.children(Some(id)).into_iter().map(|k| (k.to_string(), col_title(Some(col), k))).collect(),
                 ),
                 _ => (None, vec![]),
@@ -22,7 +22,7 @@ impl App {
             let (prev_mk, next_mk) = match (&self.pb, &self.col) {
                 (Some(pb), Some(col)) => {
                     let at = pb.shown().unwrap_or(0);
-                    let frames: Vec<u64> = col.replays.get(&pb.id).map(|r| r.lines.iter().filter(|l| is_marker(&l.command)).map(|l| l.frame).collect()).unwrap_or_default();
+                    let frames: Vec<u64> = col.segments.get(&pb.id).map(|r| r.lines.iter().filter(|l| is_marker(&l.command)).map(|l| l.frame).collect()).unwrap_or_default();
                     (frames.iter().filter(|f| **f < at).max().copied(), frames.iter().filter(|f| **f > at && **f < pb.frames).min().copied())
                 }
                 _ => (None, None),
@@ -198,7 +198,7 @@ impl App {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // The segment's status, as the tree shows it.
                     let status = col.tree_status(&pb.id);
-                    let r = &col.replays[&pb.id];
+                    let r = &col.segments[&pb.id];
                     let parent_clean = r.parent().is_none_or(|p| col.tree_status(p) == Status::Clean);
                     let (text, color) = if self.ending_changed(&pb.id) {
                         (t::ENDING_CHANGED_SINCE_THE_LAST.to_string(), CHANGED)
@@ -225,7 +225,7 @@ impl App {
         self.play.route.clear();
         self.play.route_target = None;
         self.select(parent);
-        let e = self.col.as_ref().and_then(|c| c.replays.get(parent)).and_then(|r| r.frames().ok()).unwrap_or(1).saturating_sub(1);
+        let e = self.col.as_ref().and_then(|c| c.segments.get(parent)).and_then(|r| r.frames().ok()).unwrap_or(1).saturating_sub(1);
         self.seek(e);
         self.roll.follow_to(e);
     }

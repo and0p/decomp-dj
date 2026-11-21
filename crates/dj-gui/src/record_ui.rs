@@ -67,7 +67,7 @@ impl App {
             return false;
         }
         let Some(col) = &self.col else { return false };
-        let mut r = col.replays[&id].clone();
+        let mut r = col.segments[&id].clone();
         let grow = f >= frames;
         if grow {
             if !self.rec.cfg.extend || f > frames {
@@ -98,7 +98,7 @@ impl App {
             }
             self.rec.pass = true;
         }
-        self.col.as_mut().unwrap().replays.insert(id.clone(), r);
+        self.col.as_mut().unwrap().segments.insert(id.clone(), r);
         if grow {
             if let Some(pb) = &mut self.pb {
                 pb.frames = f + 1;
@@ -112,7 +112,7 @@ impl App {
     /// again (frames before `from` are unchanged) and playback isn't paused.
     pub(crate) fn record_invalidate(&mut self, id: &str, from: u64) {
         let Some(col) = &mut self.col else { return };
-        let r = col.replays.get_mut(id).unwrap();
+        let r = col.segments.get_mut(id).unwrap();
         r.remove_all("end-hash");
         let keep: Vec<(u64, String)> = r.checkpoints().unwrap_or_default().into_iter().filter(|(f, _)| *f <= from).collect();
         r.remove_all("checkpoint");

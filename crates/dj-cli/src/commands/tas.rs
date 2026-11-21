@@ -19,11 +19,11 @@ pub(crate) fn import_tas(dir: &Path, file: &Path, title: Option<&str>, strict: b
     for w in &imp.warnings {
         eprintln!("warning: {w}");
     }
-    let id = imp.replay.id()?.to_string();
-    let frames = imp.replay.frames()?;
-    let lines = imp.replay.lines.len();
-    col.replays.insert(id.clone(), imp.replay);
-    col.save_replay(&id)?;
+    let id = imp.segment.id()?.to_string();
+    let frames = imp.segment.frames()?;
+    let lines = imp.segment.lines.len();
+    col.segments.insert(id.clone(), imp.segment);
+    col.save_segment(&id)?;
     eprintln!(
         "imported {} frames ({lines} lines, {} subtitles) from {} as a root segment; clean it (dj clean {}) to record its hashes, and watch it in dj-gui to see how far it stays in sync",
         frames,

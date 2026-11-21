@@ -34,7 +34,7 @@ impl Pick {
         for s in &self.segments {
             chosen.insert(col.resolve(s)?.to_string());
         }
-        for (id, r) in &col.replays {
+        for (id, r) in &col.segments {
             let tags: Vec<&str> = r.get("tags").unwrap_or_default().split_whitespace().collect();
             if self.tags.iter().any(|t| tags.contains(&t.as_str())) {
                 chosen.insert(id.clone());
@@ -117,7 +117,7 @@ fn jump_text(segment: &str, jump: (&str, u64), preroll: u64) -> String {
 /// Puts the baseline at frame `frame` of `id` (from the nearest stored snapshot); returns the
 /// segment's start frame counted from power-on.
 fn seek(s: &mut Session, col: &Collection, id: &str, frame: u64) -> Result<u64> {
-    let start_frame = s.enter_replay(col, id)?;
+    let start_frame = s.enter_segment(col, id)?;
     let mut at = 0;
     if frame > 0 {
         let start = s.state_hash(col)?;
@@ -169,7 +169,7 @@ pub fn check(dir: &Path, local: &Local, a: CheckArgs) -> Result<i32> {
     // The failure that each failed segment's row is about, by segment.
     let mut failed_for: std::collections::HashMap<String, Failure> = Default::default();
     for id in &ids {
-        let r = &col.replays[id];
+        let r = &col.segments[id];
         let depth = col.chain(id)?.len() - 1;
         let seg_started = std::time::Instant::now();
         let line = |verdict: &str, detail: String, frames: u64, rows: &mut Vec<serde_json::Value>| {
@@ -193,7 +193,7 @@ pub fn check(dir: &Path, local: &Local, a: CheckArgs) -> Result<i32> {
         if n == 0 {
             continue;
         }
-        let start_frame = s.enter_replay(col, id)?;
+        let start_frame = s.enter_segment(col, id)?;
         let start_hash = s.state_hash(col)?;
         let key = s.content_key(col, id, &start_hash)?;
         let conn = s.cache.as_ref().unwrap().conn();
@@ -224,7 +224,7 @@ pub fn check(dir: &Path, local: &Local, a: CheckArgs) -> Result<i32> {
             ck.set_preroll(route.iter().map(|(_, a, b)| b - a).sum(), id);
             for (i, (seg, from, to)) in route.iter().enumerate() {
                 if i > 0 {
-                    at += col.replays[&route[i - 1].0].frames().unwrap_or(0);
+                    at += col.segments[&route[i - 1].0].frames().unwrap_or(0);
                     ck.enter(&mut cmp, col, &route[i - 1].0, seg);
                     s.core.coverage_clear();
                     s.restore_inputs(col, seg, 0)?;
@@ -331,7 +331,7 @@ fn junit_case(col: &Collection, row: &serde_json::Value, failed_for: &std::colle
 fn failure_json<'a>(col: &'a Collection, build: &'a str) -> impl Fn(&Failure) -> serde_json::Value + 'a {
     move |f| {
         json!({
-            "id": f.id, "segment": f.segment, "title": col.replays.get(&f.segment).map(|r| r.title()).unwrap_or(""),
+            "id": f.id, "segment": f.segment, "title": col.segments.get(&f.segment).map(|r| r.title()).unwrap_or(""),
             "frame": f.frame, "at": f.at, "jump": {"segment": f.synced.0, "frame": f.synced.1}, "preroll": f.preroll, "reason": f.reason,
             "build": f.build, "current_build": f.build == build, "created": f.created,
             "diffs": f.diffs.list.iter().take(dj_core::query::FAILURE_DIFFS).map(dj_core::query::DiffRow::of).collect::<Vec<_>>(),
@@ -342,7 +342,7 @@ fn failure_json<'a>(col: &'a Collection, build: &'a str) -> impl Fn(&Failure) ->
 
 fn print_failures(col: &Collection, build: &str, fs: &[Failure]) {
     for f in fs {
-        let title = col.replays.get(&f.segment).map(|r| r.title()).unwrap_or("(segment gone)");
+        let title = col.segments.get(&f.segment).map(|r| r.title()).unwrap_or("(segment gone)");
         let from = jump_text(&f.segment, (&f.synced.0, f.synced.1), f.preroll);
         let old = if f.build == build { "" } else { ", older build" };
         let id = if f.id > 0 { format!("#{} ", f.id) } else { String::new() };
@@ -448,7 +448,7 @@ pub fn rerun(dir: &Path, local: &Local, compare: Option<&str>, ids: &[i64], json
 /// Starts at `f`'s last jump and checks through its frame, along the segments from there to
 /// the failing one. None: those segments aren't there any more.
 fn rerun_one(s: &mut Session, cmp: &mut Comparison, col: &Collection, f: &Failure) -> Result<Option<Span>> {
-    if !col.replays.contains_key(&f.synced.0) || !col.replays.contains_key(&f.segment) {
+    if !col.segments.contains_key(&f.synced.0) || !col.segments.contains_key(&f.segment) {
         return Ok(None);
     }
     let route: Vec<String> = if f.synced.0 == f.segment {
@@ -466,12 +466,12 @@ fn rerun_one(s: &mut Session, cmp: &mut Comparison, col: &Collection, f: &Failur
     }
     let mut total = Span::default();
     for (i, id) in route.iter().enumerate() {
-        let n = col.replays[id].frames().unwrap_or(0);
+        let n = col.segments[id].frames().unwrap_or(0);
         let last = i + 1 == route.len();
         let from = if i == 0 { f.synced.1 } else { 0 };
         let to = if last { (f.frame + 1).min(n) } else { n };
         if i > 0 {
-            start_frame += col.replays[&route[i - 1]].frames().unwrap_or(0);
+            start_frame += col.segments[&route[i - 1]].frames().unwrap_or(0);
             ck.enter(cmp, col, &route[i - 1], id);
             s.core.coverage_clear();
             s.restore_inputs(col, id, 0)?;
@@ -516,7 +516,7 @@ struct Replayed {
 /// Plays failure `f` again as `rerun_one` does, tracing the baseline from `frames_back`
 /// frames before the failing one (within its segment) through it.
 fn replay_traced(s: &mut Session, cmp: &mut Comparison, col: &Collection, f: &Failure, frames_back: u64) -> Result<Option<Replayed>> {
-    if !col.replays.contains_key(&f.synced.0) || !col.replays.contains_key(&f.segment) {
+    if !col.segments.contains_key(&f.synced.0) || !col.segments.contains_key(&f.segment) {
         return Ok(None);
     }
     let route: Vec<String> = if f.synced.0 == f.segment {
@@ -542,12 +542,12 @@ fn replay_traced(s: &mut Session, cmp: &mut Comparison, col: &Collection, f: &Fa
         total.failure = span.failure;
     };
     for (i, id) in route.iter().enumerate() {
-        let n = col.replays[id].frames().unwrap_or(0);
+        let n = col.segments[id].frames().unwrap_or(0);
         let last = i + 1 == route.len();
         let from = if i == 0 { f.synced.1 } else { 0 };
         let to = if last { (f.frame + 1).min(n) } else { n };
         if i > 0 {
-            start_frame += col.replays[&route[i - 1]].frames().unwrap_or(0);
+            start_frame += col.segments[&route[i - 1]].frames().unwrap_or(0);
             ck.enter(cmp, col, &route[i - 1], id);
             s.core.coverage_clear();
             s.restore_inputs(col, id, 0)?;

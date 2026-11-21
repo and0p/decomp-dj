@@ -8,7 +8,7 @@ file = "gba-test.gba"
 
 [core]
 name = "mgba"
-build = "mgba@7a12d6d4+dj.7b11eeff"
+build = "mgba@7a12d6d4+dj.05377d59"
 sha256 = ""
 
 [core.options]

@@ -54,17 +54,17 @@ pub struct Totals {
 }
 
 #[derive(Serialize)]
-pub struct ReplayRow {
+pub struct SegmentRow {
     pub id: String,
     pub title: String,
     pub depth: usize,
     pub poked: bool,
     pub ticks: Option<i64>,
-    /// Instructions (or opcode bytes, without symbols) run during this replay's own frames.
+    /// Instructions (or opcode bytes, without symbols) run during this segment's own frames.
     pub own: usize,
     /// ... that no ancestor ran.
     pub new_vs_ancestors: usize,
-    /// ... that no other replay ran.
+    /// ... that no other segment ran.
     pub unique: usize,
 }
 
@@ -93,7 +93,7 @@ pub struct AnnotationWarning {
 
 impl AnnotationWarning {
     pub fn text(&self, col: &Collection) -> String {
-        let names: Vec<String> = self.segments.iter().take(3).map(|id| col.replays.get(id.as_str()).map(|r| format!("\"{}\"", r.title())).unwrap_or_else(|| id.clone())).collect();
+        let names: Vec<String> = self.segments.iter().take(3).map(|id| col.segments.get(id.as_str()).map(|r| format!("\"{}\"", r.title())).unwrap_or_else(|| id.clone())).collect();
         let more = if self.segments.len() > 3 { format!(" and {} more", self.segments.len() - 3) } else { String::new() };
         format!("annotations.toml {} ({}) ran as code at {} in {}{more}", self.entry, self.range, self.at, names.join(", "))
     }
@@ -105,7 +105,7 @@ pub struct Report {
     pub setup: String,
     pub symbols: bool,
     pub totals: Totals,
-    pub replays: Vec<ReplayRow>,
+    pub segments: Vec<SegmentRow>,
     pub smallest_set: Vec<String>,
     pub functions: Vec<FunctionRow>,
     /// Code that ran inside a `[[data]]` or `[[unreachable]]` range: the annotation is wrong,
@@ -264,7 +264,7 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
                 None => HashMap::new(),
             };
             if regions.is_empty() {
-                let r = &col.replays[id];
+                let r = &col.segments[id];
                 let body = cache::body_hash(r, &crate::player::devices_at_start(col, id)?)?;
                 let last: Option<(String, String)> = last_run.query_row(rusqlite::params![id, setup], |row| Ok((row.get(0)?, row.get(1)?))).ok();
                 if let Some((k, _)) = last.filter(|(_, b)| *b == body) {
@@ -395,7 +395,7 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
         }
         if let Some(p) = regions.get(code) {
             union(&mut all_prg, p);
-            if !col.replays.get(id).map(|r| r.is_poked()).unwrap_or(false) {
+            if !col.segments.get(id).map(|r| r.is_poked()).unwrap_or(false) {
                 union(&mut played_prg, p);
             }
         }
@@ -408,14 +408,14 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
         0
     };
 
-    // Per-replay rows.
+    // Per-segment rows.
     let unit_hits = |flags: Option<&Vec<u8>>| -> Vec<bool> { units.iter().map(|u| hit(flags, *u)).collect() };
-    let per_replay: HashMap<&str, Vec<bool>> = cov.iter().map(|(id, m)| (id.as_str(), unit_hits(m.get(code)))).collect();
-    let mut replays = vec![];
+    let per_segment: HashMap<&str, Vec<bool>> = cov.iter().map(|(id, m)| (id.as_str(), unit_hits(m.get(code)))).collect();
+    let mut segments = vec![];
     let empty = vec![false; units.len()];
     // How many segments run each unit: a unit is unique to a segment when only it runs it.
     let mut hit_count = vec![0u32; units.len()];
-    for v in per_replay.values() {
+    for v in per_segment.values() {
         for (n, h) in hit_count.iter_mut().zip(v) {
             *n += *h as u32;
         }
@@ -424,17 +424,17 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
         if col.is_draft(id) {
             continue;
         }
-        let mine = per_replay.get(id).unwrap_or(&empty);
+        let mine = per_segment.get(id).unwrap_or(&empty);
         let mut anc = vec![false; units.len()];
         for a in col.chain(id)?.iter().rev().skip(1) {
-            if let Some(v) = per_replay.get(a) {
+            if let Some(v) = per_segment.get(a) {
                 for (x, y) in anc.iter_mut().zip(v) {
                     *x |= *y;
                 }
             }
         }
-        let r = &col.replays[id];
-        replays.push(ReplayRow {
+        let r = &col.segments[id];
+        segments.push(SegmentRow {
             id: id.to_string(),
             title: r.title().to_string(),
             depth,
@@ -446,13 +446,13 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
         });
     }
 
-    // Smallest set of replays (greedy): each pick brings its whole chain.
-    let chain_cov: HashMap<&str, Vec<bool>> = per_replay
+    // Smallest set of segments (greedy): each pick brings its whole chain.
+    let chain_cov: HashMap<&str, Vec<bool>> = per_segment
         .keys()
         .map(|id| {
             let mut v = vec![false; units.len()];
             for c in col.chain(id).unwrap_or_default() {
-                if let Some(p) = per_replay.get(c) {
+                if let Some(p) = per_segment.get(c) {
                     for (x, y) in v.iter_mut().zip(p) {
                         *x |= *y;
                     }
@@ -567,7 +567,7 @@ pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>
             unsaved_new,
             if_cleaned,
         },
-        replays,
+        segments,
         smallest_set,
         functions,
         annotation_warnings,

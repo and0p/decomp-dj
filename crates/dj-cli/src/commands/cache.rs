@@ -86,7 +86,7 @@ pub(crate) fn cache_export(dir: &Path, local: &Local, pick: parity_cmd::Pick, co
     // snapshot blob, so needs none.
     let mut wanted: Vec<String> = vec![];
     let mut want = |x: &str| {
-        if col.replays[x].parent().is_some() && !wanted.iter().any(|w| w == x) {
+        if col.segments[x].parent().is_some() && !wanted.iter().any(|w| w == x) {
             wanted.push(x.to_string());
         }
     };
@@ -98,20 +98,20 @@ pub(crate) fn cache_export(dir: &Path, local: &Local, pick: parity_cmd::Pick, co
             }
         }
     }
-    let unclean: Vec<&String> = wanted.iter().filter(|x| col.replays[x.as_str()].parent().is_some_and(|p| col.tree_status(p) != Status::Clean)).collect();
+    let unclean: Vec<&String> = wanted.iter().filter(|x| col.segments[x.as_str()].parent().is_some_and(|p| col.tree_status(p) != Status::Clean)).collect();
     if !unclean.is_empty() {
         bail!(
             "the start of {} isn't known: the segment above isn't clean (dj clean)",
-            unclean.iter().map(|x| format!("{} {}", &x[..8.min(x.len())], col.replays[x.as_str()].title())).collect::<Vec<_>>().join(", ")
+            unclean.iter().map(|x| format!("{} {}", &x[..8.min(x.len())], col.segments[x.as_str()].title())).collect::<Vec<_>>().join(", ")
         );
     }
     std::fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
     let mut s = open_session(&col, local)?;
     let mut bytes = 0;
     for x in &wanted {
-        let parent = col.replays[x.as_str()].parent().unwrap_or_default().to_string();
-        let expected = col.replays[&parent].get("end-hash").unwrap_or_default().to_string();
-        s.enter_replay(&col, x)?;
+        let parent = col.segments[x.as_str()].parent().unwrap_or_default().to_string();
+        let expected = col.segments[&parent].get("end-hash").unwrap_or_default().to_string();
+        s.enter_segment(&col, x)?;
         let h = s.state_hash(&col)?;
         if h != expected {
             bail!("{}: the state it starts from has hash {h}, but {} records {expected}: clean the project (dj clean)", &x[..8.min(x.len())], &parent[..8.min(parent.len())]);
@@ -120,7 +120,7 @@ pub(crate) fn cache_export(dir: &Path, local: &Local, pick: parity_cmd::Pick, co
         let p = out.join(format!("{h}.state"));
         std::fs::write(&p, &state).with_context(|| format!("writing {}", p.display()))?;
         bytes += state.len();
-        println!("{h}  start of {} {}", &x[..8.min(x.len())], col.replays[x.as_str()].title());
+        println!("{h}  start of {} {}", &x[..8.min(x.len())], col.segments[x.as_str()].title());
     }
     println!("{} state(s), {} into {}{}", wanted.len(), human(bytes as i64), out.display(), if preroll > 0 { format!(" (with {preroll} frames of pre-roll)") } else { String::new() });
     Ok(())
@@ -142,7 +142,7 @@ pub(crate) fn cache_seed(dir: &Path, local: &Local, paths: &[PathBuf]) -> Result
     // Where each recorded end hash is: what `dj parity check`, `dj clean` and the rest load
     // a child's start from.
     let mut ends: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for (id, r) in &col.replays {
+    for (id, r) in &col.segments {
         if let (Some(h), Status::Clean) = (r.get("end-hash"), col.tree_status(id)) {
             ends.entry(h.to_string()).or_default().push(id.clone());
         }
@@ -166,7 +166,7 @@ pub(crate) fn cache_seed(dir: &Path, local: &Local, paths: &[PathBuf]) -> Result
         let state = s.state_to_store()?;
         s.cache.as_mut().unwrap().put_snapshot(&h, &state)?;
         stored += 1;
-        let names: Vec<String> = ids.iter().map(|id| format!("{} {}", &id[..8.min(id.len())], col.replays[id].title())).collect();
+        let names: Vec<String> = ids.iter().map(|id| format!("{} {}", &id[..8.min(id.len())], col.segments[id].title())).collect();
         println!("{}  {h}  end of {}", dj_core::style::out("stored ", dj_core::style::Tone::Good), names.join(", "));
     }
     for r in &refused {

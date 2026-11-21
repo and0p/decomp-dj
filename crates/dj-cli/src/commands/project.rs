@@ -66,16 +66,16 @@ pub(crate) fn init(dir: &Path, name: &str, rom: &Path, core_path: &Path, core_bu
     Ok(())
 }
 
-pub(crate) fn new_replay(dir: &Path, parent: Option<String>, title: &str, frames: u64) -> Result<()> {
+pub(crate) fn new_segment(dir: &Path, parent: Option<String>, title: &str, frames: u64) -> Result<()> {
     let mut col = Collection::open(dir)?;
     let parent = match parent {
         Some(p) => Some(col.resolve(&p)?.to_string()),
         None => None,
     };
     let id = uuid::Uuid::new_v4().to_string();
-    let r = Replay::new(&id, parent.as_deref(), title, frames);
-    col.replays.insert(id.clone(), r);
-    col.save_replay(&id)?;
+    let r = Segment::new(&id, parent.as_deref(), title, frames);
+    col.segments.insert(id.clone(), r);
+    col.save_segment(&id)?;
     println!("{}", col.paths[&id].display());
     Ok(())
 }
@@ -84,7 +84,7 @@ pub(crate) fn status(dir: &Path) -> Result<()> {
     let col = Collection::open(dir)?;
     let mut counts = BTreeMap::new();
     for (id, depth) in col.tree_order() {
-        let r = &col.replays[id];
+        let r = &col.segments[id];
         let st = col.tree_status(id);
         *counts.entry(st.label()).or_insert(0) += 1;
         let mark = match st {
@@ -94,7 +94,7 @@ pub(crate) fn status(dir: &Path) -> Result<()> {
         };
         println!("{mark} {}{} {:>6}f  {}{}", "  ".repeat(depth), &id[..8], r.frames()?, r.title(), if r.is_poked() { "  [poked]" } else { "" });
     }
-    println!("{} segments: {:?}  (? unrecorded: no end hash yet; ~ stale: starts where its parent no longer ends)", col.replays.len(), counts);
+    println!("{} segments: {:?}  (? unrecorded: no end hash yet; ~ stale: starts where its parent no longer ends)", col.segments.len(), counts);
     Ok(())
 }
 
@@ -193,8 +193,8 @@ pub(crate) fn upgrade(dir: &Path) -> Result<()> {
     for id in &ids {
         let Some(path) = col.paths.get(id) else { continue };
         let disk = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        if col.replays[id].to_text() != disk {
-            col.save_replay(id)?;
+        if col.segments[id].to_text() != disk {
+            col.save_segment(id)?;
             rewritten += 1;
         }
     }
@@ -212,12 +212,12 @@ pub(crate) fn upgrade(dir: &Path) -> Result<()> {
 pub(crate) fn snapshot_cmd(dir: &Path, segment: &str, frame: u64, out: &Path, local: &Local) -> Result<()> {
     let col = Collection::open(dir)?;
     let id = col.resolve(segment)?.to_string();
-    let frames = col.replays[&id].frames()?;
+    let frames = col.segments[&id].frames()?;
     if frame > frames {
         bail!("{} has {frames} frames", &id[..8.min(id.len())]);
     }
     let mut s = open_session(&col, local)?;
-    s.enter_replay(&col, &id)?;
+    s.enter_segment(&col, &id)?;
     let start = s.state_hash(&col)?;
     let mut at = 0;
     if let Some((f, state)) = s.nearest_stored(&col, &id, &start, frame)? {

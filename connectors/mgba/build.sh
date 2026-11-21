@@ -21,10 +21,18 @@ git fetch --depth 1 origin "$MGBA_COMMIT" 2>/dev/null || true
 git checkout -q --force "$MGBA_COMMIT"
 git clean -qfd src include
 git apply "$here/dj-mgba.patch"
+# decomp-dj's own files (MIT, src/LICENSE.txt), laid out as in the core's tree. The patch
+# above only hooks them into the core's files.
+own="$(cd "$here/src" && find . -type f ! -name LICENSE.txt | LC_ALL=C sort)"
+for f in $own; do
+  mkdir -p "$(dirname "$f")"
+  cp "$here/src/$f" "$f"
+done
 
-# The build id the connector reports (dj_build_id): the upstream commit and this patch, line
-# endings aside, so the same source gives the same id on every platform.
-patch_id="$(tr -d '\r' < "$here/dj-mgba.patch" | { shasum -a 256 2>/dev/null || sha256sum; } | cut -c1-8)"
+# The build id the connector reports (dj_build_id): the upstream commit, then the patch and
+# the files under src/ in that order, line endings aside, so the same source gives the same
+# id on every platform.
+patch_id="$({ cat "$here/dj-mgba.patch"; for f in $own; do cat "$here/src/$f"; done; } | tr -d '\r' | { shasum -a 256 2>/dev/null || sha256sum; } | cut -c1-8)"
 printf '#define DJ_BUILD_ID "mgba@%s+dj.%s"\n' "${MGBA_COMMIT:0:8}" "$patch_id" > src/platform/libretro/dj_build_id.h
 
 jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"

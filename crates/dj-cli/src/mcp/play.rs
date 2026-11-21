@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command as Proc, Stdio};
 use std::time::{Duration, Instant};
 
-use dj_core::format::Replay;
+use dj_core::format::Segment;
 use dj_core::query::Project;
 
 use super::tools::{Args, Reply, Server};
@@ -86,7 +86,7 @@ pub struct Sess {
 pub struct DraftFile {
     pub id: String,
     pub path: PathBuf,
-    pub r: Replay,
+    pub r: Segment,
 }
 
 pub fn list_drafts(root: &Path) -> Vec<DraftFile> {
@@ -97,7 +97,7 @@ pub fn list_drafts(root: &Path) -> Vec<DraftFile> {
             if p.extension().and_then(|x| x.to_str()) != Some("segment") {
                 continue;
             }
-            if let Ok(r) = Replay::load(&p) {
+            if let Ok(r) = Segment::load(&p) {
                 if let Ok(id) = r.id() {
                     out.push(DraftFile { id: id.to_string(), path: p, r });
                 }
@@ -170,7 +170,7 @@ impl Server {
         self.dir.clone()
     }
 
-    pub(super) fn write_draft(&self, r: &Replay) -> Result<PathBuf> {
+    pub(super) fn write_draft(&self, r: &Segment) -> Result<PathBuf> {
         let dd = drafts_dir(&self.root());
         std::fs::create_dir_all(&dd)?;
         let p = dd.join(format!("{}.segment", r.id()?));
@@ -420,8 +420,8 @@ impl Server {
                 let text = a.str("text")?;
                 let shot = a.bool_or("screenshot", false)?;
                 let mut r = if ["dj-segment", "dj-replay", "emucov-replay"].iter().any(|m| text.trim_start().starts_with(m)) {
-                    let mut r = Replay::parse(&text)?;
-                    if self.project()?.col.replays.contains_key(r.id()?) {
+                    let mut r = Segment::parse(&text)?;
+                    if self.project()?.col.segments.contains_key(r.id()?) {
                         r.set("id", &uuid::Uuid::new_v4().to_string());
                     }
                     r
@@ -435,7 +435,7 @@ impl Server {
                         }),
                         None => None,
                     };
-                    let mut r = Replay::new(&uuid::Uuid::new_v4().to_string(), parent.as_deref(), &a.opt_str("title")?.unwrap_or_else(|| "agent draft".into()), 0);
+                    let mut r = Segment::new(&uuid::Uuid::new_v4().to_string(), parent.as_deref(), &a.opt_str("title")?.unwrap_or_else(|| "agent draft".into()), 0);
                     r.append_chunk(&text, frames)?;
                     r
                 };
@@ -511,7 +511,7 @@ impl Server {
         }
         let p = self.project()?;
         let seg = p.col.resolve(from).map_err(|_| anyhow!("{from} is neither a segment nor a draft"))?.to_string();
-        let r = &p.col.replays[&seg];
+        let r = &p.col.segments[&seg];
         let frames = r.frames()?;
         let id = uuid::Uuid::new_v4().to_string();
         let mut d = match frame {
@@ -525,7 +525,7 @@ impl Server {
                 d
             }
             _ => {
-                let mut d = Replay::new(&id, Some(&seg), &title.unwrap_or_else(|| format!("after {}", r.title())), 0);
+                let mut d = Segment::new(&id, Some(&seg), &title.unwrap_or_else(|| format!("after {}", r.title())), 0);
                 d.set("draft-from", &format!("{seg} {frames}"));
                 d
             }
@@ -569,7 +569,7 @@ impl Server {
             r.set("title", &t);
         }
         if let Some(p) = r.parent() {
-            if !self.project()?.col.replays.contains_key(p) {
+            if !self.project()?.col.segments.contains_key(p) {
                 bail!("its parent {} is a draft: save that one first", &p[..8.min(p.len())]);
             }
         }

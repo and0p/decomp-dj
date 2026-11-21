@@ -2,7 +2,7 @@
 //! with the system C compiler; the test is skipped when there is none).
 
 use dj_core::collection::Collection;
-use dj_core::compare::{Comparison, RemoteComparison, SyncOutcome, Verdict};
+use dj_core::compare::{Comparison, SyncOutcome, Verdict};
 use dj_core::libretro::MEMORY_SYSTEM_RAM;
 use dj_core::parity::{check_span, Checker};
 use dj_core::player::Session;
@@ -65,7 +65,7 @@ fn comparison_cores() {
     let col = project(&dir, &core, &nodj);
     let rom = dir.join("rom.bin");
     let mut s = Session::open_with(&col, &rom, &core, false).unwrap();
-    s.enter_replay(&col, "seg").unwrap();
+    s.enter_segment(&col, "seg").unwrap();
 
     // The same library as the baseline: loaded from a private copy, with its own state.
     let mut c = Comparison::open(&col, "state", &core, Some(&rom)).unwrap();
@@ -91,7 +91,7 @@ fn comparison_cores() {
         drop(s);
         Session::open_with(&col, &rom, &core, false).unwrap()
     };
-    s2.enter_replay(&col, "seg").unwrap();
+    s2.enter_segment(&col, "seg").unwrap();
     let mut c = Comparison::open(&col, "dj", &core, Some(&rom)).unwrap();
     assert!(c.takes_events() && c.handles_writes() && c.breakpoints().is_empty());
     assert_eq!(c.build.len(), 64);
@@ -113,48 +113,6 @@ fn comparison_cores() {
 /// dj doesn't run them this way; the worker is kept so that going back is cheap. A core that
 /// takes events can't run in one.
 #[test]
-fn comparison_cores_in_workers() {
-    let _slots = SLOTS.lock().unwrap_or_else(|e| e.into_inner());
-    std::env::set_var("DJ_WORKER_EXE", env!("CARGO_BIN_EXE_dj"));
-    let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("compare-workers-{}", std::process::id()));
-    std::fs::create_dir_all(&tmp).unwrap();
-    let (Some(core), Some(nodj)) = (build(&tmp, "testcore.so", &[]), build(&tmp, "testcore_nodj.so", &["-DNO_DJ"])) else {
-        eprintln!("skipped: no C compiler");
-        return;
-    };
-    let dir = tmp.join("project");
-    let col = project(&dir, &core, &nodj);
-    let rom = dir.join("rom.bin");
-    let mut s = Session::open_with(&col, &rom, &core, false).unwrap();
-
-    // Save-state sync, inputs and [WRITE] lines followed: parity holds on every frame.
-    s.enter_replay(&col, "seg").unwrap();
-    let mut c = RemoteComparison::open(&col, "state", &core, Some(&rom)).unwrap();
-    for f in 0..5 {
-        s.step(&col, "seg", f, false).unwrap();
-    }
-    assert_eq!(c.sync(&mut s.core, &col, "seg", 5).unwrap(), SyncOutcome::Synced);
-    for f in 5..20 {
-        s.step(&col, "seg", f, false).unwrap();
-        let st = c.step(&col, "seg", f, f == 19).unwrap();
-        assert_eq!(c.check(&mut s.core).unwrap(), Verdict::Match, "frame {f}");
-        if f == 19 {
-            let fr = st.frame.expect("a captured frame");
-            assert_eq!((fr.width, fr.height, fr.rgb.len()), (4, 4, 48));
-        }
-    }
-    drop(c);
-
-    // A core that takes events is refused, and so is one with no dj_handle_event.
-    let e = RemoteComparison::open(&col, "dj", &core, Some(&rom)).err().expect("an event core in a worker must be refused");
-    assert!(format!("{e:#}").contains("takes events"), "{e:#}");
-    drop(s);
-    let _ = std::fs::remove_dir_all(&tmp);
-}
-
-/// `parity::check_span`, as `dj parity` and dj-gui use it: syncs, checks each frame, and
-/// stops at the first failure with how to reproduce it.
-#[test]
 fn checking_spans() {
     let _slots = SLOTS.lock().unwrap_or_else(|e| e.into_inner());
     let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("compare-spans-{}", std::process::id()));
@@ -169,7 +127,7 @@ fn checking_spans() {
     let mut s = Session::open_with(&col, &rom, &core, false).unwrap();
 
     // Every frame passes, [WRITE] included (dj_handle_write).
-    s.enter_replay(&col, "seg").unwrap();
+    s.enter_segment(&col, "seg").unwrap();
     let mut c = Comparison::open(&col, "dj", &core, Some(&rom)).unwrap();
     let span = check_span(&mut s, &mut c, &mut Checker::default(), &col, "seg", 0, 20, 0).unwrap();
     assert!(span.failure.is_none(), "{:?}", span.failure);
@@ -177,7 +135,7 @@ fn checking_spans() {
     drop(c);
 
     // Started partway (save-state sync at frame 5): the frames before aren't checked.
-    s.enter_replay(&col, "seg").unwrap();
+    s.enter_segment(&col, "seg").unwrap();
     for f in 0..5 {
         s.step(&col, "seg", f, false).unwrap();
     }
@@ -189,7 +147,7 @@ fn checking_spans() {
 
     // A mismatch at frame 9: the frames before passed, and the failure says where the run
     // was synced, so it can be re-run.
-    s.enter_replay(&col, "seg").unwrap();
+    s.enter_segment(&col, "seg").unwrap();
     let mut c = Comparison::open(&col, "dj-mismatch", &core, Some(&rom)).unwrap();
     let span = check_span(&mut s, &mut c, &mut Checker::default(), &col, "seg", 0, 20, 0).unwrap();
     let f = span.failure.expect("a failure");
@@ -200,7 +158,7 @@ fn checking_spans() {
     drop(c);
 
     // A core that can't copy the baseline judges nothing: no failure, and no frame passes.
-    s.enter_replay(&col, "seg").unwrap();
+    s.enter_segment(&col, "seg").unwrap();
     let mut c = Comparison::open(&col, "dj-fail", &core, Some(&rom)).unwrap();
     let span = check_span(&mut s, &mut c, &mut Checker::default(), &col, "seg", 0, 20, 0).unwrap();
     assert!(span.failure.is_none(), "{:?}", span.failure);

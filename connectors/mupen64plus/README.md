@@ -8,14 +8,15 @@ code is still to come
 
 - **Pinned upstream:** `15bada85906593376e8fd697f1b0b3af3a20f512` (2026-10-22).
 - **Build:** `bash connectors/mupen64plus/build.sh` clones that commit into
-  `build/mupen64plus-src`, applies `dj-mupen64plus.patch`, and builds
+  `build/mupen64plus-src`, applies `dj-mupen64plus.patch`, copies in the files under `src/`, and builds
   `mupen64plus_next_libretro.{so,dylib,dll}` into `build/cores/`. It builds against the
   system's zlib and libpng (`SYSTEM_ZLIB=1 SYSTEM_LIBPNG=1`): the bundled copies take macOS
   for classic Mac OS. On macOS the Makefile builds no dynarec.
-- **License:** Mupen64Plus-Next is GPL-2.0, so this patch and the core built from it are
-  GPL-2.0 too ([LICENSE.txt](LICENSE.txt)). dj itself (MIT) is a separate program that loads the core at
-  run time, like any libretro frontend; the two aren't combined into one work, so the
-  licences don't need to match.
+- **License:** two parts. The connector's own files (`libretro/dj_connector.c`, `.h`, in [src/](src/)) are
+  decomp-dj's and MIT ([src/LICENSE.txt](src/LICENSE.txt)). `dj-mupen64plus.patch` changes Mupen64Plus-Next's own files to
+  hook them in, so it is GPL-2.0 like Mupen64Plus-Next ([LICENSE.txt](LICENSE.txt)), and so is the core built from
+  them. dj itself (MIT) is a separate program that loads the core at run time, like any
+  libretro frontend.
 
 ## What the patch does
 

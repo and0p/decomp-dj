@@ -32,7 +32,6 @@ pub fn run_if_worker() {
     let kind = args.next().unwrap_or_default();
     let code = match kind.as_str() {
         "decode" => serve(crate::decode::worker_request),
-        "compare" => serve_session(crate::compare::CompareWorker::default(), crate::compare::CompareWorker::request),
         _ => {
             eprintln!("dj: unknown worker kind {kind:?}");
             2
@@ -257,164 +256,6 @@ pub fn flatten(e: std::result::Result<WorkerFailure, anyhow::Error>) -> anyhow::
     }
 }
 
-// ---- long-lived workers -------------------------------------------------------------
-
-/// What a long-lived worker's handler returns: the result, and bytes to send after it.
-pub type Reply = Result<(Value, Vec<Vec<u8>>)>;
-
-/// Serves requests until stdin closes, keeping `state` between them. Each reply is a JSON
-/// line (`{"ok": ..., "result": ..., "bulk": [lengths]}`) and then those bytes.
-fn serve_session<S>(mut state: S, handler: fn(&mut S, &str, Request) -> Reply) -> i32 {
-    let stdin = std::io::stdin();
-    let mut input = stdin.lock();
-    let stdout = std::io::stdout();
-    let mut out = std::io::BufWriter::new(stdout.lock());
-    loop {
-        let mut line = String::new();
-        if input.read_line(&mut line).unwrap_or(0) == 0 {
-            return 0;
-        }
-        let reply = (|| -> Reply {
-            let req: Value = serde_json::from_str(&line).context("reading the request")?;
-            let mut bulk = vec![];
-            for n in req["bulk"].as_array().cloned().unwrap_or_default() {
-                let mut buf = vec![0u8; n.as_u64().unwrap_or(0) as usize];
-                input.read_exact(&mut buf).context("reading the request's bytes")?;
-                bulk.push(buf);
-            }
-            let cmd = req["cmd"].as_str().unwrap_or_default().to_string();
-            handler(&mut state, &cmd, Request { args: req["args"].clone(), bulk })
-        })();
-        let (msg, bytes) = match reply {
-            Ok((result, bytes)) => (json!({ "ok": true, "result": result, "bulk": bytes.iter().map(Vec::len).collect::<Vec<_>>() }), bytes),
-            Err(e) => (json!({ "ok": false, "error": format!("{e:#}") }), vec![]),
-        };
-        let _ = writeln!(out, "{msg}");
-        for b in &bytes {
-            let _ = out.write_all(b);
-        }
-        if out.flush().is_err() {
-            return 0;
-        }
-    }
-}
-
-/// A long-lived worker: one process serving requests one after another, killed when it
-/// takes too long, and done for once it has crashed or hung (start another).
-pub struct Worker {
-    kind: String,
-    child: std::process::Child,
-    stdin: Option<std::process::ChildStdin>,
-    replies: mpsc::Receiver<std::result::Result<(Value, Vec<Vec<u8>>), String>>,
-    /// Why it's gone: set once it crashed, hung or went away.
-    dead: Option<String>,
-}
-
-impl Worker {
-    pub fn spawn(kind: &str) -> Result<Worker> {
-        let exe = worker_exe()?;
-        let mut child = Command::new(&exe)
-            .arg(WORKER_ARG)
-            .arg(kind)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| format!("starting a {kind} worker ({})", exe.display()))?;
-        forward_stderr(&mut child, kind);
-        let stdin = child.stdin.take();
-        let mut stdout = BufReader::new(child.stdout.take().unwrap());
-        let (tx, replies) = mpsc::channel();
-        // Reads replies, with their bytes, as they come.
-        std::thread::spawn(move || loop {
-            let mut line = String::new();
-            match stdout.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
-            }
-            let msg = (|| -> std::result::Result<(Value, Vec<Vec<u8>>), String> {
-                let v: Value = serde_json::from_str(&line).map_err(|e| format!("a garbled reply from the worker: {e}"))?;
-                let mut bulk = vec![];
-                for n in v["bulk"].as_array().cloned().unwrap_or_default() {
-                    let mut buf = vec![0u8; n.as_u64().unwrap_or(0) as usize];
-                    stdout.read_exact(&mut buf).map_err(|e| format!("reading the worker's reply: {e}"))?;
-                    bulk.push(buf);
-                }
-                Ok((v, bulk))
-            })();
-            if tx.send(msg).is_err() {
-                break;
-            }
-        });
-        Ok(Worker { kind: kind.to_string(), child, stdin, replies, dead: None })
-    }
-
-    /// Why the worker is gone, once it is.
-    pub fn dead(&self) -> Option<&str> {
-        self.dead.as_deref()
-    }
-
-    /// Sends one request with `bulk` bytes and waits at most `deadline` for the answer.
-    /// `what` says what the request does, for messages ("running a frame"). An Err is a
-    /// sentence: the worker's own error, or that it crashed or hung (then it's dead).
-    pub fn request(&mut self, cmd: &str, args: Value, bulk: &[&[u8]], deadline: Duration, what: &str) -> std::result::Result<(Value, Vec<Vec<u8>>), String> {
-        if let Some(why) = &self.dead {
-            return Err(format!("the {} worker has stopped ({why})", self.kind));
-        }
-        let header = json!({ "cmd": cmd, "args": args, "bulk": bulk.iter().map(|b| b.len()).collect::<Vec<_>>() });
-        let sent = (|| -> std::io::Result<()> {
-            let stdin = self.stdin.as_mut().ok_or(std::io::ErrorKind::BrokenPipe)?;
-            writeln!(stdin, "{header}")?;
-            for b in bulk {
-                stdin.write_all(b)?;
-            }
-            stdin.flush()
-        })();
-        let answer = match sent {
-            Err(_) => Err(mpsc::RecvTimeoutError::Disconnected),
-            Ok(()) => self.replies.recv_timeout(deadline),
-        };
-        match answer {
-            Ok(Ok((v, bulk))) if v["ok"].as_bool() == Some(true) => Ok((v["result"].clone(), bulk)),
-            Ok(Ok((v, _))) => Err(v["error"].as_str().unwrap_or("the worker failed").to_string()),
-            Ok(Err(garbled)) => Err(self.die(garbled)),
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                let _ = self.child.kill();
-                let _ = self.child.wait();
-                Err(self.die(format!("didn't finish {what} within {:.0} s", deadline.as_secs_f64().max(1.0))))
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let status = self.child.wait().ok();
-                Err(self.die(format!("{} {what}", describe_exit(status))))
-            }
-        }
-    }
-
-    fn die(&mut self, why: String) -> String {
-        self.stdin = None;
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        self.dead = Some(why.clone());
-        why
-    }
-}
-
-impl Drop for Worker {
-    fn drop(&mut self) {
-        // Closing stdin ends it; don't wait long for a worker that doesn't listen.
-        self.stdin = None;
-        let deadline = Instant::now() + Duration::from_millis(500);
-        while Instant::now() < deadline {
-            if let Ok(Some(_)) = self.child.try_wait() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
 // ---- batch commands ---------------------------------------------------------------------
 
 /// Set in a batch child: the command runs here, reporting progress to its supervisor.
@@ -513,7 +354,7 @@ pub fn supervise(dir: &std::path::Path) -> Result<Option<i32>> {
     let exe = worker_exe()?;
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let titles = crate::collection::Collection::open(dir).ok();
-    let title = |id: &str| titles.as_ref().and_then(|c| c.replays.get(id)).map(|r| r.title().to_string()).unwrap_or_default();
+    let title = |id: &str| titles.as_ref().and_then(|c| c.segments.get(id)).map(|r| r.title().to_string()).unwrap_or_default();
     let mut skip: Vec<String> = vec![];
     let mut failures: Vec<(String, u64, String)> = vec![];
     // Segments where the comparison core died: a failure there, recorded by the next child.

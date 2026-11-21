@@ -286,7 +286,7 @@ impl App {
         let rename = plain && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter) || i.consume_key(Modifiers::NONE, Key::F2));
         if rename && self.dlg.node.is_none() && self.dlg.frame.is_none() && self.dlg.renaming.is_none() {
             if let (Some(id), Some(col)) = (&self.selected, &self.col) {
-                let title = col.replays[id].title().to_string();
+                let title = col.segments[id].title().to_string();
                 self.dlg.renaming = Some((id.clone(), title, true));
                 // Make sure the row is visible.
                 if self.side.hoist.as_ref().is_some_and(|h| col.chain(id).is_ok_and(|c| !c.contains(&h.as_str()))) {

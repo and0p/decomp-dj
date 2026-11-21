@@ -30,7 +30,7 @@ pub(crate) fn status_color(s: Status) -> Color32 {
 }
 
 pub(crate) fn col_title(col: Option<&Collection>, id: &str) -> String {
-    col.and_then(|c| c.replays.get(id)).map_or(String::new(), |r| r.title().to_string())
+    col.and_then(|c| c.segments.get(id)).map_or(String::new(), |r| r.title().to_string())
 }
 
 pub(crate) fn status_dot(ui: &mut egui::Ui, s: Status) -> egui::Response {
@@ -82,7 +82,7 @@ pub(crate) struct ListedMarker<'a> {
 pub(crate) fn marker_list(ui: &mut egui::Ui, col: &Collection, filter: &mut String, at: Option<(&str, u64)>, scope: Option<&str>) -> Option<(String, u64)> {
     let mut all: Vec<ListedMarker> = vec![];
     let inside: Option<HashSet<&str>> = scope.map(|h| col.subtree(h).into_iter().collect());
-    for (id, r) in &col.replays {
+    for (id, r) in &col.segments {
         if inside.as_ref().is_some_and(|s| !s.contains(id.as_str())) {
             continue;
         }
@@ -102,7 +102,7 @@ pub(crate) fn marker_list(ui: &mut egui::Ui, col: &Collection, filter: &mut Stri
             all.push(ListedMarker { id, frame: l.frame, glyph, color, text, event });
         }
     }
-    all.sort_by_cached_key(|m| (!m.event, m.text.to_lowercase(), col.replays[m.id].title().to_lowercase(), m.frame));
+    all.sort_by_cached_key(|m| (!m.event, m.text.to_lowercase(), col.segments[m.id].title().to_lowercase(), m.frame));
     let mut pick = None;
     ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 22.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
         if !filter.is_empty() && ui.small_button("✖").on_hover_text(t::CLEAR_THE_FILTER_TIP).clicked() {
@@ -114,7 +114,7 @@ pub(crate) fn marker_list(ui: &mut egui::Ui, col: &Collection, filter: &mut Stri
     let needle = filter.trim().to_lowercase();
     let shown: Vec<&ListedMarker> = all
         .iter()
-        .filter(|m| needle.is_empty() || m.text.to_lowercase().contains(&needle) || col.replays[m.id].title().to_lowercase().contains(&needle))
+        .filter(|m| needle.is_empty() || m.text.to_lowercase().contains(&needle) || col.segments[m.id].title().to_lowercase().contains(&needle))
         .collect();
     let what = if needle.is_empty() { t::COUNT_MARKERS } else { t::COUNT_MATCHING_MARKERS };
     let place = match scope {
@@ -130,11 +130,11 @@ pub(crate) fn marker_list(ui: &mut egui::Ui, col: &Collection, filter: &mut Stri
                 ui.label(RichText::new(t::WRITES_AND_OTHER_LINES).weak().small());
                 was_event = false;
             }
-            let title = col.replays[m.id].title();
+            let title = col.segments[m.id].title();
             let here = at == Some((m.id, m.frame));
-            let path: Vec<&str> = col.chain(m.id).unwrap_or_default().iter().map(|i| col.replays[*i].title()).collect();
+            let path: Vec<&str> = col.chain(m.id).unwrap_or_default().iter().map(|i| col.segments[*i].title()).collect();
             // Second line: the segment, with its parent in front when another segment has the same title.
-            let twin = col.replays.iter().any(|(k, r)| k != m.id && r.title() == title);
+            let twin = col.segments.iter().any(|(k, r)| k != m.id && r.title() == title);
             let place = match (twin, path.len()) {
                 (true, n) if n >= 2 => format!("frame {} · {} › {title}", m.frame, path[n - 2]),
                 _ => format!("frame {} · {title}", m.frame),

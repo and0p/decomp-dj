@@ -46,7 +46,7 @@ impl App {
             ui.label(RichText::new(t::NO_AGENT_SESSIONS_DJ_MCP).weak());
         }
         for s in self.agents.sessions.clone() {
-            let title = self.col.as_ref().and_then(|c| c.replays.get(&s.draft)).map(|r| r.title().to_string()).unwrap_or_default();
+            let title = self.col.as_ref().and_then(|c| c.segments.get(&s.draft)).map(|r| r.title().to_string()).unwrap_or_default();
             let on = self.agents.follow.as_ref() == Some(&(s.pid, s.session.clone()));
             if ui.selectable_label(on, format!("{} · {title} · frame {}", s.session, s.frame)).clicked() {
                 self.agents.follow = if on { None } else { Some((s.pid, s.session.clone())) };
@@ -111,12 +111,12 @@ impl App {
         let Some(col) = &mut self.col else { return };
         let ids: Vec<String> = col.drafts.iter().cloned().collect();
         for id in ids {
-            col.replays.remove(&id);
+            col.segments.remove(&id);
             col.paths.remove(&id);
             self.edited.remove(&id);
         }
         col.drafts.clear();
-        if self.selected.as_ref().is_some_and(|s| !col.replays.contains_key(s)) {
+        if self.selected.as_ref().is_some_and(|s| !col.segments.contains_key(s)) {
             self.selected = None;
             { self.end_pass(); self.pb = None; }
         }
@@ -152,7 +152,7 @@ impl App {
             let now = self.selected.clone().map(|id| (id, self.pb.as_ref().and_then(|p| p.shown()).unwrap_or(0)));
             if now != self.agents.shared {
                 if let (Some((id, f)), Some(col)) = (&now, &self.col) {
-                    let title = col.replays.get(id).map(|r| r.title().to_string()).unwrap_or_default();
+                    let title = col.segments.get(id).map(|r| r.title().to_string()).unwrap_or_default();
                     agent::share_view(&root, Some((id, *f, &title, col.is_draft(id))));
                 }
                 self.agents.shared = now;
@@ -173,14 +173,14 @@ impl App {
             return;
         }
         let dir = col.root.join("segments");
-        let mut on_disk: BTreeMap<String, (PathBuf, dj_core::format::Replay)> = BTreeMap::new();
+        let mut on_disk: BTreeMap<String, (PathBuf, dj_core::format::Segment)> = BTreeMap::new();
         if let Ok(rd) = std::fs::read_dir(&dir) {
             for e in rd.flatten() {
                 let p = e.path();
                 if p.extension().and_then(|x| x.to_str()) != Some("segment") {
                     continue;
                 }
-                match dj_core::format::Replay::load(&p) {
+                match dj_core::format::Segment::load(&p) {
                     Ok(r) => {
                         if let Ok(id) = r.id().map(String::from) {
                             on_disk.insert(id, (p, r));
@@ -195,11 +195,11 @@ impl App {
         let mut changed: Vec<String> = vec![];
         let mut conflicts: Vec<String> = vec![];
         // New or changed files, parents first so a new child finds its parent.
-        let mut pending: Vec<(String, (PathBuf, dj_core::format::Replay))> = on_disk.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let mut pending: Vec<(String, (PathBuf, dj_core::format::Segment))> = on_disk.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         loop {
             let before = pending.len();
             pending.retain(|(id, (p, r))| {
-                let same = col.replays.get(id).is_some_and(|m| m.to_text() == r.to_text());
+                let same = col.segments.get(id).is_some_and(|m| m.to_text() == r.to_text());
                 if same {
                     if col.is_draft(id) {
                         // A draft saved by an agent: now a segment.
@@ -210,16 +210,16 @@ impl App {
                 }
                 if self.edited.contains(id) {
                     // Edited here (or deleted here and not saved yet): ours wins on save.
-                    if col.replays.contains_key(id) {
+                    if col.segments.contains_key(id) {
                         conflicts.push(id.clone());
                     }
                     return false;
                 }
-                if r.parent().is_some_and(|par| !col.replays.contains_key(par)) {
+                if r.parent().is_some_and(|par| !col.segments.contains_key(par)) {
                     return true; // wait for its parent
                 }
                 col.drafts.remove(id);
-                col.replays.insert(id.clone(), r.clone());
+                col.segments.insert(id.clone(), r.clone());
                 col.paths.insert(id.clone(), p.clone());
                 changed.push(id.clone());
                 false
@@ -231,17 +231,17 @@ impl App {
         // Files gone: remove those segments, leaves first, unless edited here.
         loop {
             let gone: Vec<String> = col
-                .replays
+                .segments
                 .keys()
                 .filter(|id| !col.is_draft(id) && !on_disk.contains_key(*id) && !self.edited.contains(*id))
-                .filter(|id| !col.replays.values().any(|r| r.parent() == Some(id.as_str())))
+                .filter(|id| !col.segments.values().any(|r| r.parent() == Some(id.as_str())))
                 .cloned()
                 .collect();
             if gone.is_empty() {
                 break;
             }
             for id in gone {
-                col.replays.remove(&id);
+                col.segments.remove(&id);
                 col.paths.remove(&id);
                 changed.push(id);
             }
@@ -259,7 +259,7 @@ impl App {
             self.info(format!("Picked up {} segment file(s) changed on disk", changed.len()));
         }
         if let Some(sel) = self.selected.clone().filter(|s| changed.contains(s)) {
-            if self.col.as_ref().is_some_and(|c| c.replays.contains_key(&sel)) {
+            if self.col.as_ref().is_some_and(|c| c.segments.contains_key(&sel)) {
                 let frame = self.pb.as_ref().and_then(|p| p.shown());
                 self.select(&sel);
                 if let Some(f) = frame {
@@ -275,30 +275,30 @@ impl App {
     pub(crate) fn reload_drafts(&mut self) {
         let Some(col) = &mut self.col else { return };
         // Drafts edited here and not saved yet keep the edits.
-        let keep: Vec<(String, dj_core::format::Replay)> = self.edited.iter().filter(|id| col.is_draft(id)).filter_map(|id| col.replays.get(id).map(|r| (id.clone(), r.clone()))).collect();
-        let old: Option<dj_core::format::Replay> = self.selected.as_ref().and_then(|s| col.replays.get(s)).cloned();
-        let deleted: Vec<String> = self.edited.iter().filter(|id| col.is_draft(id) && !col.replays.contains_key(*id)).cloned().collect();
+        let keep: Vec<(String, dj_core::format::Segment)> = self.edited.iter().filter(|id| col.is_draft(id)).filter_map(|id| col.segments.get(id).map(|r| (id.clone(), r.clone()))).collect();
+        let old: Option<dj_core::format::Segment> = self.selected.as_ref().and_then(|s| col.segments.get(s)).cloned();
+        let deleted: Vec<String> = self.edited.iter().filter(|id| col.is_draft(id) && !col.segments.contains_key(*id)).cloned().collect();
         let Ok(changed) = col.load_drafts() else { return };
         for id in &deleted {
             // Deleted here, not saved yet: its file goes on save.
-            col.replays.remove(id);
+            col.segments.remove(id);
         }
         for id in &changed {
-            if let Some(r) = col.replays.get(id) {
+            if let Some(r) = col.segments.get(id) {
                 self.saved_end.insert(id.clone(), ending_sig(r));
             }
         }
         for (id, r) in keep {
-            col.replays.insert(id.clone(), r);
+            col.segments.insert(id.clone(), r);
             col.drafts.insert(id);
         }
         let Some(sel) = self.selected.clone() else { return };
         if !changed.contains(&sel) || self.edited.contains(&sel) {
             return;
         }
-        let Some(new) = col.replays.get(&sel).cloned() else {
+        let Some(new) = col.segments.get(&sel).cloned() else {
             // The selected draft was saved or discarded.
-            let next = old.as_ref().and_then(|o| o.parent()).map(String::from).filter(|p| col.replays.contains_key(p));
+            let next = old.as_ref().and_then(|o| o.parent()).map(String::from).filter(|p| col.segments.contains_key(p));
             { self.end_pass(); self.pb = None; }
             self.selected = None;
             if let Some(p) = next {
@@ -347,11 +347,11 @@ impl App {
             return;
         }
         let Some(col) = &mut self.col else { return };
-        if !col.replays.contains_key(&s.draft) {
+        if !col.segments.contains_key(&s.draft) {
             let _ = col.load_drafts();
             self.agents.drafts_fp = 0;
         }
-        if !self.col.as_ref().is_some_and(|c| c.replays.contains_key(&s.draft)) {
+        if !self.col.as_ref().is_some_and(|c| c.segments.contains_key(&s.draft)) {
             return;
         }
         if self.selected.as_deref() != Some(s.draft.as_str()) {

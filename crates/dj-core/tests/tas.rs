@@ -42,7 +42,7 @@ fn import(col: &Collection, file: &Path, rom: &[u8], strict: bool) -> anyhow::Re
 }
 
 /// The input, reset and event lines of a segment, as text.
-fn lines_of(seg: &dj_core::format::Replay) -> Vec<String> {
+fn lines_of(seg: &dj_core::format::Segment) -> Vec<String> {
     seg.lines
         .iter()
         .filter_map(|l| match &l.command {
@@ -85,7 +85,7 @@ fn export_then_import_keeps_what_the_core_sees() {
     std::fs::write(&file, &ex.bytes).unwrap();
     let imp = import(&col, &file, &rom, true).unwrap();
     assert!(imp.warnings.is_empty(), "{:?}", imp.warnings);
-    let seg = &imp.replay;
+    let seg = &imp.segment;
     assert_eq!(seg.parent(), None);
     assert_eq!(seg.frames().unwrap(), 18);
     assert!(seg.get("tas-source").unwrap().starts_with("bk2 decomp-dj"), "{:?}", seg.get("tas-source"));
@@ -123,7 +123,7 @@ fn export_then_import_keeps_what_the_core_sees() {
 
     // A root that starts from a snapshot is part of the same warning.
     let mut col = col;
-    col.replays.get_mut("aaaaaaaa-0000-0000-0000-000000000000").unwrap().set("snapshot", "0123456789abcdef0123456789abcdef");
+    col.segments.get_mut("aaaaaaaa-0000-0000-0000-000000000000").unwrap().set("snapshot", "0123456789abcdef0123456789abcdef");
     let (_, warnings) = tas::from_chain(&col, ExportEnd { segment: "cccc", through: None }, Some(&rom), false).unwrap();
     assert!(warnings.iter().any(|w| w.contains("because the chain starts from a snapshot and contains:\n  * 1 memory write")), "{warnings:?}");
     let (_, warnings) = tas::from_chain(&col, ExportEnd { segment: "aaaa", through: None }, Some(&rom), false).unwrap();

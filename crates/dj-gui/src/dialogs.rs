@@ -137,9 +137,9 @@ impl App {
     /// Duplicate of a segment with children: copy them too?
     fn duplicate_window(&mut self, ctx: &egui::Context) {
         if let Some(id) = self.dlg.dup.clone() {
-            let info = self.col.as_ref().filter(|c| c.replays.contains_key(&id)).map(|c| {
+            let info = self.col.as_ref().filter(|c| c.segments.contains_key(&id)).map(|c| {
                 let below = &subtree(c, &id)[1..];
-                let frames: u64 = below.iter().filter_map(|i| c.replays.get(i).and_then(|r| r.frames().ok())).sum();
+                let frames: u64 = below.iter().filter_map(|i| c.segments.get(i).and_then(|r| r.frames().ok())).sum();
                 (below.len(), frames)
             });
             match info {
@@ -172,14 +172,14 @@ impl App {
 
     /// One confirmation for Edit > Delete and the tree's right-click Delete.
     fn delete_window(&mut self, ctx: &egui::Context) {
-        let pending = self.dlg.delete.clone().and_then(|id| self.col.as_ref().filter(|c| c.replays.contains_key(&id)).map(|c| (id, c)));
+        let pending = self.dlg.delete.clone().and_then(|id| self.col.as_ref().filter(|c| c.segments.contains_key(&id)).map(|c| (id, c)));
         if pending.is_none() {
             self.dlg.delete = None;
         }
         if let Some((id, col)) = pending {
-            let r = &col.replays[&id];
+            let r = &col.segments[&id];
             let ids = subtree(col, &id);
-            let frames: u64 = ids.iter().map(|i| col.replays[i].frames().unwrap_or(0)).sum();
+            let frames: u64 = ids.iter().map(|i| col.segments[i].frames().unwrap_or(0)).sum();
             let title = r.title().to_string();
             let mut open = true;
             let mut confirm = false;
@@ -231,7 +231,7 @@ impl App {
             let run = self.only_child_run(&top);
             let col = self.col.as_ref();
             let title = col_title(col, &top);
-            let total: u64 = std::iter::once(&top).chain(run.iter()).filter_map(|id| col.and_then(|c| c.replays.get(id)).and_then(|r| r.frames().ok())).sum();
+            let total: u64 = std::iter::once(&top).chain(run.iter()).filter_map(|id| col.and_then(|c| c.segments.get(id)).and_then(|r| r.frames().ok())).sum();
             let names: Vec<String> = run.iter().map(|id| col_title(col, id)).collect();
             let mut open = !run.is_empty();
             let (mut go, mut cancel) = (false, false);
@@ -263,8 +263,8 @@ impl App {
     fn join_window(&mut self, ctx: &egui::Context) {
         let pending = self.dlg.join.take().and_then(|d| {
             let col = self.col.as_ref()?;
-            let r = col.replays.get(&d.0)?;
-            let p = col.replays.get(r.parent()?)?;
+            let r = col.segments.get(&d.0)?;
+            let p = col.segments.get(r.parent()?)?;
             Some((d, r.title().to_string(), p.title().to_string(), p.frames().unwrap_or(0), r.frames().unwrap_or(0)))
         });
         if let Some(((id, mut mark, mut text), title, ptitle, pf, cf)) = pending {

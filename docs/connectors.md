@@ -107,8 +107,8 @@ set (a first version: nothing in dj reads them yet):
 | `armv4t` | 17 values of 32 bits in the host's byte order: r0 to r15, then CPSR. r15 is as the CPU holds it, two instructions past the one about to run |
 
 `dj_build_id` names the build exactly and the same way on every platform: the upstream
-commit and the connector patch, as `<core>@<commit, 8 hex digits>+dj.<the patch's sha256
-with \r removed, 8 hex digits>` (`mesen@0102910c+dj.34266c1a`). Each connector's
+commit and the connector, as `<core>@<commit, 8 hex digits>+dj.<sha256 of the patch and then
+the files under src/ in path order, with \r removed, 8 hex digits>` (`mesen@0102910c+dj.34266c1a`). Each connector's
 `build.sh` writes it into a header the connector includes. dj records it in a project's
 `[core] build` and warns when a core reports another ([config.md](config.md#core)); a core
 without it is named by its `library_name` and `library_version`, which often don't change
@@ -469,7 +469,7 @@ builds it and names it in a `[[compare]]` entry.
 3. Expose the functions above through the proc address callback.
 4. Check that state hashes are identical with and without the patch, on every segment of a project, and measure the slowdown (about 5% for Mesen). With a symbol map, `dj connector-check` compares the flags with the decoder ([cli.md](cli.md)). A disagreement can also mean data inside a function that annotations.toml doesn't mark yet, such as inline arguments after a `JSR`.
    Save states need a look too. A core may have to run on a little to reach a point where it can save: mupen64plus-next runs to its next interrupt when it is not at a frame's end, so a save taken right after a load or another save moves its memory, and the frame's state hash with it. What plays afterwards is the same, but the same frame would hash two ways. dj therefore keeps the state it last saved or loaded and gives it back, without asking the core, for as long as nothing has run or been written.
-5. Pin the upstream commit and ship a `build.sh` and the patch under `connectors/<core>/`, like Mesen's.
+5. Pin the upstream commit and ship a `build.sh`, your own files under `src/` and a patch that hooks them into the core under `connectors/<core>/`, like Mesen's.
 6. If dj has no decoder for the CPU, write one ([decoders.md](decoders.md)): a plugin, or exported by the core itself (`dj_decoders`).
 
 Rolling coverage up into functions and blocks also needs a decoder for the region's `cpu`.

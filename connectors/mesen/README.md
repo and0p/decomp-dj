@@ -5,10 +5,13 @@ so it reports which code ran, for decomp-dj.
 
 - **Pinned upstream:** `0102910c39ad1a62bc3f784466f3f67ca9eae335` (2026-04-20).
 - **Build:** `connectors/mesen/build.sh` clones that commit, applies
-  `dj-mesen.patch`, and builds `mesen_libretro.{so,dylib,dll}` into `build/cores/`.
-- **License:** Mesen is GPL-3.0, so this patch and the core built from it are
-  GPL-3.0 too ([LICENSE.txt](LICENSE.txt)). dj itself is MIT: it is a separate program that
-  loads the core at run time, like any libretro frontend.
+  `dj-mesen.patch`, copies in the files under `src/`, and builds
+  `mesen_libretro.{so,dylib,dll}` into `build/cores/`.
+- **License:** two parts. The connector's own files (`Core/DjCoverage.cpp`, `.h`, in [src/](src/)) are
+  decomp-dj's and MIT ([src/LICENSE.txt](src/LICENSE.txt)). `dj-mesen.patch` changes Mesen's own files to
+  hook them in, so it is GPL-3.0 like Mesen ([LICENSE.txt](LICENSE.txt)), and so is the core built from
+  them. dj itself (MIT) is a separate program that loads the core at run time, like any
+  libretro frontend.
 
 ## Why Mesen
 

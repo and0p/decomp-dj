@@ -14,19 +14,19 @@ fn main() -> anyhow::Result<()> {
     let local = col.load_local()?;
     let mut s = Session::open(&col, local.rom.as_ref().unwrap(), local.core.as_ref().unwrap())?;
     let chain: Vec<String> = col.chain(&id)?.into_iter().map(String::from).collect();
-    s.start_trunk(&col, &col.replays[&chain[0]])?;
+    s.start_root(&col, &col.segments[&chain[0]])?;
     let mut g = 0u64;
     let ram = region_memory_id("RAM").unwrap();
     for c in &chain {
         s.restore_inputs(&col, c, 0)?;
-        let n = col.replays[c].frames()?;
+        let n = col.segments[c].frames()?;
         for f in 0..n {
             s.step(&col, c, f, false)?;
             g += 1;
             if g % every == 0 || f + 1 == n {
                 let m = s.core.memory(ram).unwrap();
                 let v: Vec<String> = addrs.iter().map(|x| format!("{:02X}", m[*x])).collect();
-                println!("{g:6} {:<28} {:4} {}", &col.replays[c].title().chars().take(28).collect::<String>(), f, v.join(" "));
+                println!("{g:6} {:<28} {:4} {}", &col.segments[c].title().chars().take(28).collect::<String>(), f, v.join(" "));
             }
         }
     }

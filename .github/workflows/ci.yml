@@ -91,7 +91,7 @@ jobs:
         id: mesen
         with:
           path: build/cores
-          key: mesen-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('connectors/mesen/build.sh', 'connectors/mesen/dj-mesen.patch') }}
+          key: mesen-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('connectors/mesen/build.sh', 'connectors/mesen/dj-mesen.patch', 'connectors/mesen/src/**') }}
 
       - name: Build the Mesen core
         if: steps.mesen.outputs.cache-hit != 'true'

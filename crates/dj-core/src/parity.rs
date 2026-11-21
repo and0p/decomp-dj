@@ -735,7 +735,7 @@ impl Checker {
     /// runs, and copies the baseline when it can.
     pub fn sync(&mut self, cmp: &mut Comparison, baseline: &mut Core, col: &Collection, id: &str, k: u64, power_on_frame: u64) -> std::result::Result<(), String> {
         self.at = None;
-        let boot = k == 0 && col.replays.get(id).is_some_and(|r| r.parent().is_none() && r.get("snapshot").is_none());
+        let boot = k == 0 && col.segments.get(id).is_some_and(|r| r.parent().is_none() && r.get("snapshot").is_none());
         if cmp.takes_events() {
             // Held inputs aren't part of the baseline's state: set them as the segment has them.
             match crate::compare::InputState::at(col, id, k) {
@@ -970,7 +970,7 @@ impl Checker {
     /// A core that takes events is told nothing: no state was replaced, and what it holds
     /// goes with it.
     pub fn enter(&mut self, cmp: &mut Comparison, col: &Collection, parent: &str, child: &str) -> bool {
-        let end = col.replays.get(parent).and_then(|r| r.frames().ok());
+        let end = col.segments.get(parent).and_then(|r| r.frames().ok());
         if end.is_none() || self.at != Some((parent.to_string(), end.unwrap())) {
             self.at = None;
             return false;
@@ -1017,7 +1017,7 @@ pub fn preroll_route(col: &Collection, id: &str, frame: u64, n: u64) -> Result<V
             break;
         }
         if *seg != id {
-            to = col.replays[*seg].frames()?;
+            to = col.segments[*seg].frames()?;
         }
         let take = left.min(to);
         if take > 0 {

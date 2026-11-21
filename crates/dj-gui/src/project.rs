@@ -4,7 +4,7 @@ use crate::strings as t;
 use crate::{agent, App, ending_sig, Job, record, trim_snapshots};
 use anyhow::Result;
 use dj_core::collection::{Collection, LocalConfig};
-use dj_core::player::{trunk_start_frame, Session};
+use dj_core::player::{root_start_frame, Session};
 use std::path::{Path, PathBuf};
 
 impl App {
@@ -35,14 +35,14 @@ impl App {
                 self.history.redo.clear();
                 self.roll.forget();
                 let first = col.tree_order().first().map(|(id, _)| id.to_string());
-                let n = col.replays.len();
+                let n = col.segments.len();
                 self.max_memory_mb = col.settings().ok().and_then(|l| l.max_memory_mb).unwrap_or(512);
                 let local = col.settings().unwrap_or_default();
                 self.rec.bindings = record::Bindings::from_local(local.keyboard.as_ref());
                 self.rec.cfg = record::Settings::from_local(local.record.as_ref());
                 self.set_recording(false);
                 self.hydrating = None;
-                self.saved_end = col.replays.iter().map(|(id, r)| (id.clone(), ending_sig(r))).collect();
+                self.saved_end = col.segments.iter().map(|(id, r)| (id.clone(), ending_sig(r))).collect();
                 self.gui_mark = Some(dj_core::cache::GuiMark::new(&col.root));
                 // The project being left closes normally: nothing to recover from it.
                 if let Some(old) = &self.col {
@@ -131,7 +131,7 @@ impl App {
             let sel = self.selected.clone();
             self.open_collection(&root);
             if let Some(id) = sel {
-                if self.col.as_ref().is_some_and(|c| c.replays.contains_key(&id)) {
+                if self.col.as_ref().is_some_and(|c| c.segments.contains_key(&id)) {
                     self.select(&id);
                 }
             }
@@ -161,7 +161,7 @@ impl App {
         let n = chain.len();
         let fast = n == 1 || s.load_cached_state(col, &chain[n - 2])?.is_some();
         if fast {
-            let start_frame = s.enter_replay(col, id)?;
+            let start_frame = s.enter_segment(col, id)?;
             self.begin_playback(id, start_frame)?;
             self.roll.follow_to(0);
             self.seek(0);
@@ -178,12 +178,12 @@ impl App {
             }
         }
         if first == 0 {
-            s.start_trunk(col, &col.replays[&chain[0]])?;
+            s.start_root(col, &col.segments[&chain[0]])?;
         }
-        let frames = |c: &String| col.replays[c].frames().unwrap_or(0);
+        let frames = |c: &String| col.segments[c].frames().unwrap_or(0);
         let queue: Vec<String> = chain[first..n - 1].to_vec();
         let total = queue.iter().map(frames).sum();
-        let start_frame = trunk_start_frame(&col.replays[&chain[0]]) + chain[..n - 1].iter().map(frames).sum::<u64>();
+        let start_frame = root_start_frame(&col.segments[&chain[0]]) + chain[..n - 1].iter().map(frames).sum::<u64>();
         self.job = Some(Job::Enter { id: id.to_string(), queue, qi: 0, frame: 0, start_frame, done: 0, total, then_seek: None, rec: None });
         Ok(())
     }
@@ -191,7 +191,7 @@ impl App {
     /// Shows the selected segment again after hydration used the core.
     pub(crate) fn reselect(&mut self) {
         if let Some(id) = self.selected.clone() {
-            if self.col.as_ref().is_some_and(|c| c.replays.contains_key(&id)) {
+            if self.col.as_ref().is_some_and(|c| c.segments.contains_key(&id)) {
                 self.select(&id);
             }
         }

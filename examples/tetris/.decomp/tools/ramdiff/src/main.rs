@@ -96,11 +96,11 @@ fn dump(project: &Path, rom: &Path, core: &Path, leaf: &str) -> Result<()> {
     let mut session = Session::open_with(&col, rom, core, false).with_context(|| format!("opening {}", core.display()))?;
     let ram_id = region_memory_id("RAM").unwrap();
     let chain: Vec<String> = col.chain(leaf)?.into_iter().map(String::from).collect();
-    session.start_trunk(&col, &col.replays[&chain[0]])?;
+    session.start_root(&col, &col.segments[&chain[0]])?;
     let mut out = std::io::BufWriter::new(std::io::stdout().lock());
     for seg in &chain {
         session.restore_inputs(&col, seg, 0)?;
-        for f in 0..col.replays[seg].frames()? {
+        for f in 0..col.segments[seg].frames()? {
             session.step(&col, seg, f, false)?;
             let ram = session.core.memory(ram_id).context("the core exposes no RAM")?;
             out.write_all(ram)?;
@@ -140,7 +140,7 @@ fn main() -> Result<()> {
         None => BTreeMap::new(),
     };
     let leaves: Vec<String> = if args.segments.is_empty() {
-        col.replays.keys().filter(|id| col.children(Some(id)).is_empty()).cloned().collect()
+        col.segments.keys().filter(|id| col.children(Some(id)).is_empty()).cloned().collect()
     } else {
         args.segments.iter().map(|s| col.resolve(s).map(String::from)).collect::<Result<_>>()?
     };
@@ -151,7 +151,7 @@ fn main() -> Result<()> {
         let chain: Vec<String> = col.chain(leaf)?.into_iter().map(String::from).collect();
         let a_all = play_in_child(&args, &args.cores[0], leaf)?;
         let b_all = play_in_child(&args, &args.cores[1], leaf)?;
-        let total: u64 = chain.iter().map(|s| col.replays[s].frames()).sum::<Result<u64>>()?;
+        let total: u64 = chain.iter().map(|s| col.segments[s].frames()).sum::<Result<u64>>()?;
         if total == 0 {
             continue;
         }
@@ -160,8 +160,8 @@ fn main() -> Result<()> {
         let mut global = 0usize;
         let mut reported = 0;
         'chain: for seg in &chain {
-            let title = col.replays[seg].title().to_string();
-            let frames = col.replays[seg].frames()?;
+            let title = col.segments[seg].title().to_string();
+            let frames = col.segments[seg].frames()?;
             let mut seg_ok = true;
             for f in 0..frames {
                 let a = &a_all[global * size_a..(global + 1) * size_a];

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-use crate::format::Replay;
+use crate::format::Segment;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Config {
@@ -366,7 +366,7 @@ pub struct Collection {
     /// The decoders this project uses: its `[[decoders]]` plugins, the built-in ones, and any
     /// its core exports (docs/decoders.md).
     pub decoders: crate::decode::Decoders,
-    pub replays: BTreeMap<String, Replay>,
+    pub segments: BTreeMap<String, Segment>,
     pub paths: HashMap<String, PathBuf>,
     /// Segments loaded from .local/drafts/ (agent drafts, docs/mcp.md#drafts): shown and
     /// playable, but left out of coverage, xref and hydrating everything.
@@ -438,7 +438,7 @@ impl Collection {
         let warnings = check_versions(&table)?;
         let config: Config = toml::Value::Table(table).try_into().with_context(|| format!("reading the settings in {} and .local/local.toml", cfg_path.display()))?;
         config.hash.excluded().with_context(|| format!("reading the settings in {} and .local/local.toml", cfg_path.display()))?;
-        let mut replays = BTreeMap::new();
+        let mut segments = BTreeMap::new();
         let mut paths = HashMap::new();
         if dir.is_dir() {
             for entry in std::fs::read_dir(&dir)? {
@@ -446,16 +446,16 @@ impl Collection {
                 if path.extension().and_then(|e| e.to_str()) != Some(SEGMENT_EXT) {
                     continue;
                 }
-                let r = Replay::load(&path)?;
+                let r = Segment::load(&path)?;
                 let id = r.id()?.to_string();
                 if path.file_stem().and_then(|s| s.to_str()) != Some(id.as_str()) {
                     bail!("{} has id {id}; the file must be named {id}.{SEGMENT_EXT}", path.display());
                 }
                 paths.insert(id.clone(), path);
-                replays.insert(id, r);
+                segments.insert(id, r);
             }
         }
-        let mut c = Collection { root: root.to_path_buf(), config, warnings, replays, paths, drafts: Default::default(), decoders: crate::decode::Decoders::built_in() };
+        let mut c = Collection { root: root.to_path_buf(), config, warnings, segments, paths, drafts: Default::default(), decoders: crate::decode::Decoders::built_in() };
         c.decoders = crate::decode::Decoders::load(&c)?;
         c.check_tree()?;
         c.upgrade_blob_names()?;
@@ -463,9 +463,9 @@ impl Collection {
     }
 
     fn check_tree(&self) -> Result<()> {
-        for (id, r) in &self.replays {
+        for (id, r) in &self.segments {
             if let Some(p) = r.parent() {
-                if !self.replays.contains_key(p) {
+                if !self.segments.contains_key(p) {
                     bail!("segment {id} names parent {p}, which is not in segments/");
                 }
             }
@@ -477,7 +477,7 @@ impl Collection {
                     bail!("segment {id} has a parent loop");
                 }
                 seen.push(p);
-                cur = self.replays[p].parent();
+                cur = self.segments[p].parent();
             }
             if r.parent().is_some() && (r.get("snapshot").is_some() || r.get("sram").is_some()) {
                 bail!("segment {id} has a parent, so it cannot also name `snapshot` or `sram` (only root segments start from blobs)");
@@ -609,14 +609,14 @@ impl Collection {
     }
 
     pub fn children(&self, id: Option<&str>) -> Vec<&str> {
-        let mut v: Vec<&str> = self.replays.iter().filter(|(_, r)| r.parent() == id).map(|(k, _)| k.as_str()).collect();
-        v.sort_by_key(|k| (self.replays[*k].title().to_string(), k.to_string()));
+        let mut v: Vec<&str> = self.segments.iter().filter(|(_, r)| r.parent() == id).map(|(k, _)| k.as_str()).collect();
+        v.sort_by_key(|k| (self.segments[*k].title().to_string(), k.to_string()));
         v
     }
 
     /// `id` and every segment below it, parents before children. Empty if there is no `id`.
     pub fn subtree(&self, id: &str) -> Vec<&str> {
-        let Some((k, _)) = self.replays.get_key_value(id) else { return vec![] };
+        let Some((k, _)) = self.segments.get_key_value(id) else { return vec![] };
         let mut out = vec![k.as_str()];
         let mut i = 0;
         while i < out.len() {
@@ -627,13 +627,13 @@ impl Collection {
         out
     }
 
-    /// Replays from the trunk down to `id`, inclusive.
+    /// Segments from the root down to `id`, inclusive.
     pub fn chain(&self, id: &str) -> Result<Vec<&str>> {
         let mut out = vec![];
         let mut cur = Some(self.resolve(id)?);
         while let Some(c) = cur {
             out.push(c);
-            cur = self.replays[c].parent();
+            cur = self.segments[c].parent();
         }
         out.reverse();
         Ok(out)
@@ -641,10 +641,10 @@ impl Collection {
 
     /// Accepts a full id or a unique prefix.
     pub fn resolve<'a>(&'a self, id: &str) -> Result<&'a str> {
-        if let Some((k, _)) = self.replays.get_key_value(id) {
+        if let Some((k, _)) = self.segments.get_key_value(id) {
             return Ok(k.as_str());
         }
-        let m: Vec<&str> = self.replays.keys().filter(|k| k.starts_with(id)).map(|k| k.as_str()).collect();
+        let m: Vec<&str> = self.segments.keys().filter(|k| k.starts_with(id)).map(|k| k.as_str()).collect();
         match m.len() {
             1 => Ok(m[0]),
             0 => Err(anyhow!("no segment with id {id}")),
@@ -652,7 +652,7 @@ impl Collection {
         }
     }
 
-    /// Depth-first order, trunks first.
+    /// Depth-first order, roots first.
     pub fn tree_order(&self) -> Vec<(&str, usize)> {
         let mut out = vec![];
         fn walk<'a>(c: &'a Collection, id: Option<&str>, depth: usize, out: &mut Vec<(&'a str, usize)>) {
@@ -667,9 +667,9 @@ impl Collection {
 
     /// Status worked out from hashes alone (docs/playback.md, "Clean and dirty").
     pub fn status(&self, id: &str) -> Status {
-        let r = &self.replays[id];
+        let r = &self.segments[id];
         if let (Some(p), Some(start)) = (r.parent(), r.get("start-hash")) {
-            match self.replays[p].get("end-hash") {
+            match self.segments[p].get("end-hash") {
                 Some(pe) if pe != start => return Status::Dirty,
                 None => return Status::Dirty,
                 _ => {}
@@ -682,14 +682,14 @@ impl Collection {
         }
     }
 
-    /// Like `status`, but a replay below a dirty one is dirty too: its start
+    /// Like `status`, but a segment below a dirty one is dirty too: its start
     /// state can no longer be trusted until the branch above is re-verified.
     pub fn tree_status(&self, id: &str) -> Status {
         let s = self.status(id);
         if s == Status::Dirty {
             return s;
         }
-        match self.replays[id].parent() {
+        match self.segments[id].parent() {
             Some(p) if self.tree_status(p) == Status::Dirty => Status::Dirty,
             _ => s,
         }
@@ -714,22 +714,22 @@ impl Collection {
                 if p.extension().and_then(|x| x.to_str()) != Some(SEGMENT_EXT) {
                     continue;
                 }
-                let Ok(r) = Replay::load(&p) else { continue };
+                let Ok(r) = Segment::load(&p) else { continue };
                 let Ok(id) = r.id().map(String::from) else { continue };
-                if self.replays.contains_key(&id) && !self.drafts.contains(&id) {
+                if self.segments.contains_key(&id) && !self.drafts.contains(&id) {
                     continue; // a segment with that id exists: the draft was saved already
                 }
-                if self.replays.get(&id).map(|o| o.to_text()) != Some(r.to_text()) {
+                if self.segments.get(&id).map(|o| o.to_text()) != Some(r.to_text()) {
                     changed.push(id.clone());
                 }
-                self.replays.insert(id.clone(), r);
+                self.segments.insert(id.clone(), r);
                 self.paths.insert(id.clone(), p);
                 seen.insert(id);
             }
         }
         let gone: Vec<String> = self.drafts.difference(&seen).cloned().collect();
         for id in gone {
-            self.replays.remove(&id);
+            self.segments.remove(&id);
             self.paths.remove(&id);
             changed.push(id);
         }
@@ -743,29 +743,29 @@ impl Collection {
         if !self.drafts.contains(id) {
             bail!("{id} is not a draft");
         }
-        if let Some(p) = self.replays[id].parent() {
+        if let Some(p) = self.segments[id].parent() {
             if self.drafts.contains(p) {
                 bail!("its parent is a draft too: save that one first");
             }
         }
         let old = self.paths.remove(id);
-        let r = self.replays.get_mut(id).unwrap();
+        let r = self.segments.get_mut(id).unwrap();
         let keys: Vec<String> = r.header_keys().into_iter().filter(|k| k.starts_with("draft-")).collect();
         for k in keys {
             r.remove_all(&k);
         }
         self.drafts.remove(id);
-        self.save_replay(id)?;
+        self.save_segment(id)?;
         if let Some(o) = old {
             let _ = std::fs::remove_file(o);
         }
         Ok(())
     }
 
-    pub fn save_replay(&mut self, id: &str) -> Result<()> {
+    pub fn save_segment(&mut self, id: &str) -> Result<()> {
         let path = self.paths.get(id).cloned().unwrap_or_else(|| self.root.join("segments").join(format!("{id}.{SEGMENT_EXT}")));
         std::fs::create_dir_all(path.parent().unwrap())?;
-        write_atomic(&path, &self.replays[id].to_text())?;
+        write_atomic(&path, &self.segments[id].to_text())?;
         self.note_writer()?;
         self.paths.insert(id.to_string(), path);
         Ok(())
@@ -848,9 +848,9 @@ impl Collection {
         self.note_writer()
     }
 
-    /// Deletes the file of a replay that is no longer in the collection (after an undo of
-    /// a split or of a new segment). Does nothing if the replay was never saved.
-    pub fn delete_replay_file(&mut self, id: &str) -> Result<()> {
+    /// Deletes the file of a segment that is no longer in the collection (after an undo of
+    /// a split or of a new segment). Does nothing if the segment was never saved.
+    pub fn delete_segment_file(&mut self, id: &str) -> Result<()> {
         if let Some(path) = self.paths.remove(id) {
             if path.exists() {
                 std::fs::remove_file(&path)?;
@@ -867,7 +867,7 @@ impl Collection {
     /// Blobs used to be named `blake3-<64 hex>` with no extension. Renames the ones the
     /// segments name to the current form.
     fn upgrade_blob_names(&self) -> Result<()> {
-        for r in self.replays.values() {
+        for r in self.segments.values() {
             for field in ["snapshot", "sram"] {
                 let Some(blob) = r.get(field) else { continue };
                 let path = self.blob_path(blob, field);
@@ -1061,7 +1061,7 @@ mod version_tests {
         std::fs::write(dir.join("config.toml"), config).unwrap();
         std::fs::write(dir.join("segments/a.segment"), "dj-replay 1\nid: a\nparent: none\nframes: 1\n---\n").unwrap();
         let mut col = Collection::open(&dir).unwrap();
-        col.save_replay("a").unwrap();
+        col.save_segment("a").unwrap();
         let text = std::fs::read_to_string(dir.join("config.toml")).unwrap();
         assert_eq!(text, config.replacen("format = 1\n", &format!("format = 1\ndj = \"{DJ_VERSION}\"\n"), 1));
         assert!(std::fs::read_to_string(dir.join("segments/a.segment")).unwrap().starts_with("dj-segment 1\n"));
@@ -1069,7 +1069,7 @@ mod version_tests {
         std::fs::write(dir.join("config.toml"), config.replacen("format = 1\n", "format = 1\ndj = \"999.0.0\"\n", 1)).unwrap();
         let mut col = Collection::open(&dir).unwrap();
         assert!(col.warnings.iter().any(|w| w.contains("999.0.0")));
-        col.save_replay("a").unwrap();
+        col.save_segment("a").unwrap();
         assert!(std::fs::read_to_string(dir.join("config.toml")).unwrap().contains("dj = \"999.0.0\""));
         let _ = std::fs::remove_dir_all(&dir);
     }

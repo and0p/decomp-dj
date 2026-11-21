@@ -300,7 +300,7 @@ impl Server {
         let p = self.project()?;
         let mut rows = vec![];
         for (id, depth) in p.col.tree_order() {
-            let r = &p.col.replays[id];
+            let r = &p.col.segments[id];
             if let Some(f) = &filter {
                 if !r.title().to_lowercase().contains(f) && !id.starts_with(f.as_str()) {
                     continue;

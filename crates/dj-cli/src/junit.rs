@@ -33,7 +33,7 @@ pub struct Case {
 impl Case {
     /// A case for segment `id`.
     pub fn segment(col: &Collection, id: &str, seconds: f64, outcome: Outcome) -> Case {
-        let title = col.replays.get(id).map(|r| r.title()).unwrap_or("");
+        let title = col.segments.get(id).map(|r| r.title()).unwrap_or("");
         Case { classname: col.config.name.clone(), name: format!("{} {title}", &id[..8.min(id.len())]).trim_end().to_string(), file: segment_file(col, id), line: None, seconds, outcome }
     }
 }
@@ -64,7 +64,7 @@ pub fn segment_file(col: &Collection, id: &str) -> String {
 /// The segment file's line for `frame`: the last body line at or before it, or None when
 /// the segment has no line by then.
 pub fn segment_line(col: &Collection, id: &str, frame: u64) -> Option<usize> {
-    col.replays.get(id)?.lines.iter().take_while(|l| l.frame <= frame).last().map(|l| l.line_no)
+    col.segments.get(id)?.lines.iter().take_while(|l| l.frame <= frame).last().map(|l| l.line_no)
 }
 
 fn esc(s: &str) -> String {

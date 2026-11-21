@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use dj_core::format::Replay;
+use dj_core::format::Segment;
 
 use super::play::WorkerProc;
 use super::tools::{Allow, Args, Reply, Server, ToolDef};
@@ -739,7 +739,7 @@ fn describe(p: &Option<dj_core::query::Project>, offs: &[u64]) -> String {
 /// Copies a worker's tape, as it is now, into a kept draft.
 fn save_copy(cfg: &Cfg, tape: &str, title: &str, goal: bool, new: usize, job: &str) -> Result<String> {
     let dd = drafts_dir(&cfg.dir);
-    let mut r = Replay::load(&dd.join(format!("{tape}.segment")))?;
+    let mut r = Segment::load(&dd.join(format!("{tape}.segment")))?;
     let id = uuid::Uuid::new_v4().to_string();
     r.set("id", &id);
     r.set("title", title);

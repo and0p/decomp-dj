@@ -186,7 +186,7 @@ impl Project {
     }
 
     fn title(&self, id: &str) -> String {
-        self.col.replays.get(id).map(|r| r.title().to_string()).unwrap_or_default()
+        self.col.segments.get(id).map(|r| r.title().to_string()).unwrap_or_default()
     }
 
     fn nearest_snapshot(&self, keys: &std::collections::BTreeMap<String, (Option<String>, Status)>, id: &str, frame: u64) -> Result<Option<u64>> {
@@ -229,7 +229,7 @@ impl Project {
     pub fn segment_shares(&mut self) -> Result<Vec<SegmentShare>> {
         self.report()?;
         let rep = self.report.as_ref().unwrap();
-        Ok(rep.replays.iter().map(|r| SegmentShare { segment: r.id.clone(), short: self.short(&r.id), title: r.title.clone(), depth: r.depth, poked: r.poked, ticks: r.ticks, own: r.own, new_vs_ancestors: r.new_vs_ancestors, unique: r.unique }).collect())
+        Ok(rep.segments.iter().map(|r| SegmentShare { segment: r.id.clone(), short: self.short(&r.id), title: r.title.clone(), depth: r.depth, poked: r.poked, ticks: r.ticks, own: r.own, new_vs_ancestors: r.new_vs_ancestors, unique: r.unique }).collect())
     }
 
     /// The fewest segments that together run everything the counted ones do, as
@@ -267,7 +267,7 @@ impl Project {
             annotated_functions: t.annotated_functions,
             annotation_warnings: rep.annotation_warnings.iter().map(|w| w.text(&self.col)).collect(),
             executed_outside_symbols: t.executed_outside_symbols,
-            segments: rep.replays.len(),
+            segments: rep.segments.len(),
             segments_left_out: LeftOut { dirty: t.dirty_segments, unplayed: t.unplayed_segments, unsaved: t.unsaved_segments },
             unsaved_would_add: t.unsaved_new,
             if_cleaned: t.if_cleaned,
@@ -275,7 +275,7 @@ impl Project {
             functions_never_entered: rep.functions.iter().filter(|f| f.instructions_covered == 0).count(),
             functions_partly_covered: rep.functions.iter().filter(|f| f.instructions_covered > 0 && f.blocks_covered < f.blocks).count(),
             top_segments: {
-                let mut r: Vec<_> = rep.replays.iter().filter(|r| r.unique > 0).collect();
+                let mut r: Vec<_> = rep.segments.iter().filter(|r| r.unique > 0).collect();
                 r.sort_by_key(|r| std::cmp::Reverse(r.unique));
                 r.iter().take(5).map(|r| format!("{} {} (+{} only it runs)", &r.id[..8], r.title, r.unique)).collect()
             },
@@ -890,7 +890,7 @@ mod tests {
         }
         std::fs::write(dir.join(".local").join("local.toml"), format!("rom = {:?}\n", rom_path.display().to_string())).unwrap();
         let col = Collection::open(&dir).unwrap();
-        let body = cache::body_hash(&col.replays[id], &crate::player::devices_at_start(&col, id).unwrap()).unwrap();
+        let body = cache::body_hash(&col.segments[id], &crate::player::devices_at_start(&col, id).unwrap()).unwrap();
         let key = cache::content_key("setup", "a", &body);
         let mut flags = vec![0u8; 0x8000];
         flags[0] = FLAG_OPCODE;
@@ -1206,7 +1206,7 @@ impl Project {
             id: f.id,
             segment: f.segment.clone(),
             short: self.short(&f.segment),
-            title: if self.col.replays.contains_key(&f.segment) { self.title(&f.segment) } else { "(segment gone)".into() },
+            title: if self.col.segments.contains_key(&f.segment) { self.title(&f.segment) } else { "(segment gone)".into() },
             frame: f.frame,
             at: f.at.clone(),
             jump_segment: f.synced.0.clone(),

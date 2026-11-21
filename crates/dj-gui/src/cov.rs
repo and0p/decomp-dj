@@ -246,7 +246,7 @@ impl CovState {
             Ok(r) => {
                 self.took_ms = t0.elapsed().as_millis();
                 self.error = None;
-                self.unique = r.replays.iter().filter(|x| x.unique > 0).map(|x| (x.id.clone(), x.unique)).collect();
+                self.unique = r.segments.iter().filter(|x| x.unique > 0).map(|x| (x.id.clone(), x.unique)).collect();
                 self.build_cells(&r);
                 self.report = Some(r);
                 self.recount_live();
@@ -567,7 +567,7 @@ impl App {
     fn live_pending(&self, id: &str) -> &'static str {
         let Some(col) = &self.col else { return t::NOT_COUNTED_YET };
         let unsaved = self.edited.contains(id) || col.is_draft(id);
-        let dirty = col.replays.contains_key(id) && col.tree_status(id) == dj_core::collection::Status::Dirty;
+        let dirty = col.segments.contains_key(id) && col.tree_status(id) == dj_core::collection::Status::Dirty;
         let counted = self.cov.report.as_ref().is_some_and(|r| r.detail.per_segment_prg.contains_key(id));
         match (unsaved, dirty) {
             (true, false) => t::COUNTED_ONCE_SAVED,

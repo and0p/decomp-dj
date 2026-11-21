@@ -86,13 +86,13 @@ fn main() -> eframe::Result {
     )
 }
 
-/// Where playback stands inside the selected replay.
+/// Where playback stands inside the selected segment.
 struct Playback {
     id: String,
-    /// Frame of power-on at which this replay starts.
+    /// Frame of power-on at which this segment starts.
     start_frame: u64,
     frames: u64,
-    /// Frames of this replay run so far. The picture shown is frame `ran - 1`.
+    /// Frames of this segment run so far. The picture shown is frame `ran - 1`.
     ran: u64,
     /// Save states at the start of frame N (before frame N's lines apply).
     snapshots: BTreeMap<u64, Vec<u8>>,
@@ -103,7 +103,7 @@ struct Playback {
     checkpoints_seen: BTreeMap<u64, String>,
     /// State hash after the last frame, once playback has reached it.
     end_hash: Option<String>,
-    /// State hash at frame 0, before any of this replay's lines.
+    /// State hash at frame 0, before any of this segment's lines.
     start_hash: Option<String>,
     /// Frames with a snapshot in the local database, for this content.
     stored: Vec<u64>,
@@ -121,7 +121,7 @@ struct Playback {
 /// What the "!" compares with the saved file: the end hash, and for a root segment its
 /// start hash too (a root that starts somewhere new is a change the author should see).
 /// None until an end hash is recorded.
-fn ending_sig(r: &dj_core::format::Replay) -> Option<String> {
+fn ending_sig(r: &dj_core::format::Segment) -> Option<String> {
     let end = r.get("end-hash")?;
     Some(match (r.parent(), r.get("start-hash")) {
         (None, Some(start)) => format!("{start} {end}"),
@@ -619,7 +619,7 @@ struct Hydrating {
     paused: bool,
     what: String,
     /// The targets as they were before, for the undo step the clean leaves.
-    before: HashMap<String, dj_core::format::Replay>,
+    before: HashMap<String, dj_core::format::Segment>,
 }
 
 /// Work too long to do in one screen refresh.
@@ -658,7 +658,7 @@ const STEP_BACK_HOLD: f64 = 0.6;
 /// (None: the segment did not exist), and where the user was.
 struct UndoStep {
     label: String,
-    segments: Vec<(String, Option<dj_core::format::Replay>)>,
+    segments: Vec<(String, Option<dj_core::format::Segment>)>,
     selected: Option<String>,
     frame: Option<u64>,
 }
@@ -694,7 +694,7 @@ struct StartFile {
 }
 
 impl StartFile {
-    fn of(r: &dj_core::format::Replay, field: &str) -> StartFile {
+    fn of(r: &dj_core::format::Segment, field: &str) -> StartFile {
         StartFile { blob: r.get(field).map(String::from), pick: None }
     }
 
@@ -895,7 +895,7 @@ impl eframe::App for App {
             if let (Some(col), Some(id)) = (&self.col, &self.selected) {
                 let shown = self.pb.as_ref().and_then(|p| p.shown());
                 let nb = roll::Neighbours {
-                    prev: col.replays.get(id).and_then(|r| r.parent()).map(String::from),
+                    prev: col.segments.get(id).and_then(|r| r.parent()).map(String::from),
                     next: self.next_neighbour(),
                     dirty: self.dirty_band(id),
                 };

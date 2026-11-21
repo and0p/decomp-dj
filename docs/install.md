@@ -10,10 +10,10 @@ Each release has a ZIP for Linux (x86_64), macOS (Apple silicon) and Windows (x8
 | `dj` (`dj.exe`) | The command line ([cli.md](cli.md)) |
 | `dj-gui` (`dj-gui.exe`); `decomp-dj.app` on macOS | The GUI ([gui.md](gui.md)) |
 | `decoders/` | Decoder plugins: an example plugin ([decoders.md](decoders.md)). A bare `[[decoders]]` path is looked for here |
-| `connectors/` | The patches and scripts that build a core with a coverage connector. Cores aren't included |
+| `connectors/` | The patches, source files and scripts that build a core with a coverage connector. Cores aren't included |
 | `include/` | The C headers for decoder plugins, connectors and comparison cores (MIT) |
 | `linux/` | Linux: `install-desktop-entry.sh`, so launchers and Wayland desktops show dj-gui's icon |
-| `docs/`, `LICENSE.txt` | These docs, and the licence (MIT; each connector has its own `LICENSE.txt`) |
+| `docs/`, `LICENSE.txt` | These docs, and the licence (MIT; each connector's patch has its core's licence, in the connector's own `LICENSE.txt`) |
 
 - **macOS:** the app isn't signed with a Developer ID, so macOS stops it the first time.
   After unzipping, run `xattr -dr com.apple.quarantine decomp-dj-*` once in the folder you

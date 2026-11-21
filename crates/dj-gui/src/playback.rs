@@ -32,7 +32,7 @@ impl App {
     pub(crate) fn begin_playback(&mut self, id: &str, start_frame: u64) -> Result<()> {
         self.end_pass();
         let (Some(col), Some(s)) = (&self.col, &mut self.session) else { return Ok(()) };
-        let r = &col.replays[id];
+        let r = &col.segments[id];
         let frames = r.frames().unwrap_or(0);
         let checkpoints = r.checkpoints().unwrap_or_default().into_iter().collect();
         let rec = start_pass(s, col, id, start_frame)?;
@@ -51,7 +51,7 @@ impl App {
         Ok(())
     }
 
-    /// Runs one frame of the selected replay.
+    /// Runs one frame of the selected segment.
     pub(crate) fn run_one(&mut self, capture: bool) -> Result<()> {
         let Some(pb) = &self.pb else { return Ok(()) };
         if pb.ran >= pb.frames || self.col.is_none() || self.session.is_none() {
@@ -268,13 +268,13 @@ impl App {
         let (Some(end), Some(start)) = (pb.end_hash.clone(), pb.start_hash.clone()) else { return };
         let id = pb.id.clone();
         let seen: Vec<(u64, String)> = pb.checkpoints_seen.iter().map(|(f, h)| (*f, h.clone())).collect();
-        let before = col.replays[&id].clone();
+        let before = col.segments[&id].clone();
         let verdict = dj_core::hydrate::try_record(col, &id, &start, pb.start_frame, &end, Some(&seen));
         if matches!(verdict, "recorded" | "cleaned" | "changed") {
             self.history.fold_in(&id, before);
             let Some(col) = &self.col else { return };
             let title = col_title(Some(col), &id);
-            let cps: BTreeMap<u64, String> = col.replays[&id].checkpoints().unwrap_or_default().into_iter().collect();
+            let cps: BTreeMap<u64, String> = col.segments[&id].checkpoints().unwrap_or_default().into_iter().collect();
             if let Some(pb) = &mut self.pb {
                 pb.checkpoints = cps;
                 pb.checkpoint_miss = None;
@@ -290,7 +290,7 @@ impl App {
         }
     }
 
-    /// Shows frame `target` (0-based) of the selected replay.
+    /// Shows frame `target` (0-based) of the selected segment.
     pub(crate) fn seek(&mut self, target: u64) {
         if let Some(Job::Enter { then_seek, .. }) = &mut self.job {
             *then_seek = Some(target);
@@ -413,7 +413,7 @@ impl App {
         if let Some(pb) = &self.pb {
             let at = pb.shown();
             if delta < 0 && at.is_none_or(|f| f == 0) && self.job.is_none() {
-                if let Some(p) = self.col.as_ref().and_then(|c| c.replays.get(&pb.id)).and_then(|r| r.parent()).map(String::from) {
+                if let Some(p) = self.col.as_ref().and_then(|c| c.segments.get(&pb.id)).and_then(|r| r.parent()).map(String::from) {
                     self.segment_back(&p);
                     return;
                 }
@@ -535,7 +535,7 @@ impl App {
         if self.at_end() && self.play.stop_on_changed && !changed_before {
             // Only the first changed ending of a run: below it, a change is expected.
             let parent_changed = |id: &str| {
-                let parent = self.col.as_ref().and_then(|c| c.replays.get(id)).and_then(|r| r.parent().map(String::from));
+                let parent = self.col.as_ref().and_then(|c| c.segments.get(id)).and_then(|r| r.parent().map(String::from));
                 parent.is_some_and(|p| self.ending_changed(&p))
             };
             if let Some(id) = self.selected.clone().filter(|id| self.ending_changed(id) && !parent_changed(id)) {
@@ -583,7 +583,7 @@ impl App {
 
     /// Plays through to the end of `target`: on from the playhead when the current segment is
     /// on the way there, otherwise from the start of the first segment below where the two
-    /// paths meet (or from the trunk).
+    /// paths meet (or from the root).
     pub(crate) fn play_to(&mut self, target: &str) {
         let Some(col) = &self.col else { return };
         let Ok(path) = col.chain(target) else { return };
@@ -659,11 +659,11 @@ impl App {
         })
     }
 
-    /// Replay everything: ordinary playback in List mode from frame 0 of the first segment in
+    /// Segment everything: ordinary playback in List mode from frame 0 of the first segment in
     /// tree order (the focused segment, if the tree is focused), so it can be paused and watched.
     pub(crate) fn replay_everything(&mut self) {
         let Some(col) = &self.col else { return };
-        let first = match self.side.hoist.as_deref().filter(|h| col.replays.contains_key(*h)) {
+        let first = match self.side.hoist.as_deref().filter(|h| col.segments.contains_key(*h)) {
             Some(h) => Some(h.to_string()),
             None => col.tree_order().first().map(|(id, _)| id.to_string()),
         };
@@ -691,7 +691,7 @@ impl App {
     pub(crate) fn list_next(&mut self) {
         let (Some(col), Some(pb)) = (&self.col, &self.pb) else { return };
         let order: Vec<&str> = col.tree_order().into_iter().map(|(id, _)| id).collect();
-        let scope: Vec<&str> = match self.side.hoist.as_deref().filter(|h| col.replays.contains_key(*h)) {
+        let scope: Vec<&str> = match self.side.hoist.as_deref().filter(|h| col.segments.contains_key(*h)) {
             Some(h) => order.iter().copied().filter(|id| col.chain(id).is_ok_and(|c| c.contains(&h))).collect(),
             None => order,
         };
@@ -701,7 +701,7 @@ impl App {
             self.info(if self.side.hoist.is_some() { t::LIST_REACHED_THE_END_OF_THE } else { t::LIST_REACHED_THE_END_OF });
             return;
         };
-        let is_child = col.replays[&next].parent() == Some(pb.id.as_str());
+        let is_child = col.segments[&next].parent() == Some(pb.id.as_str());
         if is_child {
             if let Err(e) = self.continue_into(&next) {
                 self.playing = false;
@@ -737,7 +737,7 @@ impl App {
         let rec = start_pass(s, col, child, start_frame)?;
         let start_hash = Some(rec.start_hash.clone());
         let snap = s.snapshot()?;
-        let r = &col.replays[child];
+        let r = &col.segments[child];
         let frames = r.frames().unwrap_or(0);
         let checkpoints = r.checkpoints().unwrap_or_default().into_iter().collect();
         self.pb = Some(Playback { id: child.to_string(), start_frame, frames, ran: 0, snapshots: BTreeMap::from([(0, snap)]), checkpoints, checkpoint_miss: None, checkpoints_seen: BTreeMap::new(), end_hash: None, start_hash, stored: vec![], stale_from: None, picture_stale: false, rec: Some(rec) });
@@ -753,7 +753,7 @@ impl PlayState {
     /// The sticky tip, if it still exists.
     pub(crate) fn tip(&self, col: Option<&Collection>) -> Option<&str> {
         let t = self.sticky_tip.as_deref()?;
-        col?.replays.contains_key(t).then_some(t)
+        col?.segments.contains_key(t).then_some(t)
     }
 
     /// The tip's chain from the root segment, when sticky is on.
@@ -775,7 +775,7 @@ impl PlayState {
     pub(crate) fn update_sticky_tip(&mut self, col: Option<&Collection>, selected: Option<&str>) {
         let Some(sel) = selected else { return };
         let Some(col) = col else { return };
-        if !col.replays.contains_key(sel) {
+        if !col.segments.contains_key(sel) {
             return;
         }
         // A deleted tip falls back to its nearest surviving ancestor: the selection is shown

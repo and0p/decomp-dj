@@ -24,7 +24,7 @@ impl App {
     /// the parent takes `id`'s end hash, and `id`'s children move up to the parent.
     /// Opens the confirmation, which can leave a marker where the parent used to end.
     pub(crate) fn join_with_parent(&mut self, id: &str) {
-        let title = self.col.as_ref().and_then(|c| c.replays.get(id)).map(|r| r.title().to_string());
+        let title = self.col.as_ref().and_then(|c| c.segments.get(id)).map(|r| r.title().to_string());
         if let Some(t) = title {
             self.dlg.join = Some((id.to_string(), true, t));
         }
@@ -47,7 +47,7 @@ impl App {
         let Some(last) = run.last() else { return Err(anyhow!(t::THIS_SEGMENT_HAS_NO_ONLY)) };
         let col = self.col.as_ref().ok_or_else(|| anyhow!(t::NO_PROJECT))?;
         let kids: Vec<String> = col.children(Some(last)).into_iter().map(String::from).collect();
-        let titles: Vec<String> = run.iter().map(|id| col.replays[id].title().to_string()).collect();
+        let titles: Vec<String> = run.iter().map(|id| col.segments[id].title().to_string()).collect();
         let mut ids: Vec<&str> = vec![top];
         ids.extend(run.iter().map(String::as_str));
         ids.extend(kids.iter().map(String::as_str));
@@ -99,9 +99,9 @@ impl App {
             return;
         }
         let Some(col) = &mut self.col else { return };
-        let parent = col.replays.get(id).and_then(|r| r.parent().map(String::from));
+        let parent = col.segments.get(id).and_then(|r| r.parent().map(String::from));
         for i in &ids {
-            col.replays.remove(i);
+            col.segments.remove(i);
             self.edited.insert(i.clone());
             self.side.closed.remove(i);
         }
@@ -156,7 +156,7 @@ impl App {
             self.info(t::A_SEGMENT_CAN_T_MOVE);
             return;
         }
-        let had_start = col.replays.get(id).is_some_and(|r| r.get("sram").is_some() || r.get("snapshot").is_some());
+        let had_start = col.segments.get(id).is_some_and(|r| r.get("sram").is_some() || r.get("snapshot").is_some());
         let below = col.subtree(id).len() - 1;
         let dest = to.map(|t| format!("under \"{}\"", col_title(Some(col), t))).unwrap_or_else(|| t::TO_A_ROOT_SEGMENT_STARTING.to_string());
         if !self.remember(t::MOVE, &[id]) {
@@ -174,8 +174,8 @@ impl App {
     /// The Move to… window: pick the new parent from every segment not below this one.
     pub(crate) fn move_dialog_ui(&mut self, ctx: &egui::Context) {
         let Some((id, mut filter)) = self.dlg.move_to.take() else { return };
-        let Some(col) = self.col.as_ref().filter(|c| c.replays.contains_key(&id)) else { return };
-        let r = &col.replays[&id];
+        let Some(col) = self.col.as_ref().filter(|c| c.segments.contains_key(&id)) else { return };
+        let r = &col.segments[&id];
         let title = r.title().to_string();
         let parent = r.parent().map(String::from);
         let below: HashSet<&str> = col.subtree(&id).into_iter().collect();
@@ -186,7 +186,7 @@ impl App {
             if below.contains(k) {
                 continue;
             }
-            let path = if pre.is_empty() { col.replays[k].title().to_string() } else { format!("{pre} › {}", col.replays[k].title()) };
+            let path = if pre.is_empty() { col.segments[k].title().to_string() } else { format!("{pre} › {}", col.segments[k].title()) };
             for c in col.children(Some(k)).into_iter().rev() {
                 stack.push((c, path.clone()));
             }
@@ -232,7 +232,7 @@ impl App {
     /// roots), as one undo step.
     pub(crate) fn delete_keep_children(&mut self, id: &str) {
         let Some(col) = &self.col else { return };
-        let Some(r) = col.replays.get(id) else { return };
+        let Some(r) = col.segments.get(id) else { return };
         let parent = r.parent().map(String::from);
         let kids: Vec<String> = col.children(Some(id)).into_iter().map(String::from).collect();
         let mut ids: Vec<&str> = vec![id];
@@ -242,7 +242,7 @@ impl App {
         }
         let was_shown = self.selected.as_deref() == Some(id);
         if let Some(col) = &mut self.col {
-            col.replays.remove(id);
+            col.segments.remove(id);
         }
         self.edited.insert(id.to_string());
         self.side.closed.remove(id);
@@ -278,8 +278,8 @@ impl App {
         let id = Self::new_id();
         self.remember(t::NEW_ROOT_SEGMENT, &[&id]);
         let Some(col) = &mut self.col else { return };
-        let r = dj_core::format::Replay::new(&id, None, t::NEW_ROOT_SEGMENT, 600);
-        col.replays.insert(id.clone(), r);
+        let r = dj_core::format::Segment::new(&id, None, t::NEW_ROOT_SEGMENT, 600);
+        col.segments.insert(id.clone(), r);
         self.edited.insert(id.clone());
         self.side.hoist = None;
         self.info(t::ADDED_A_600_FRAME_ROOT);
@@ -302,7 +302,7 @@ impl App {
     /// start play the same, so the copies keep the originals' hashes and start clean.
     pub(crate) fn duplicate(&mut self, id: &str, children: bool) {
         let Some(col) = self.col.as_ref() else { return };
-        if !col.replays.contains_key(id) {
+        if !col.segments.contains_key(id) {
             return;
         }
         let copies = dj_core::edit::duplicate(col, id, children);
@@ -315,10 +315,10 @@ impl App {
         let Some(col) = &mut self.col else { return };
         for r in copies {
             let rid = r.get("id").unwrap_or_default().to_string();
-            col.replays.insert(rid.clone(), r);
+            col.segments.insert(rid.clone(), r);
             self.edited.insert(rid);
         }
-        if let Some(p) = col.replays[&new].parent().map(String::from) {
+        if let Some(p) = col.segments[&new].parent().map(String::from) {
             self.side.closed.remove(&p);
         }
         let n = ids.len();
@@ -335,8 +335,8 @@ impl App {
         let id = Self::new_id();
         self.remember(t::NEW_SEGMENT, &[&id]);
         let Some(col) = &mut self.col else { return };
-        let r = dj_core::format::Replay::new(&id, Some(parent), t::NEW_SEGMENT, 600);
-        col.replays.insert(id.clone(), r);
+        let r = dj_core::format::Segment::new(&id, Some(parent), t::NEW_SEGMENT, 600);
+        col.segments.insert(id.clone(), r);
         self.edited.insert(id.clone());
         self.side.closed.remove(parent);
         self.info(t::ADDED_A_600_FRAME_SEGMENT);
@@ -391,8 +391,8 @@ impl App {
         self.edited.insert(up_id.clone());
         self.roll.invalidate();
         if branch {
-            let r = dj_core::format::Replay::new(&b, Some(&up_id), t::NEW_BRANCH, 600);
-            col.replays.insert(b.clone(), r);
+            let r = dj_core::format::Segment::new(&b, Some(&up_id), t::NEW_BRANCH, 600);
+            col.segments.insert(b.clone(), r);
             self.edited.insert(b.clone());
             self.info(format!("Split at frame {f}: the first {f} frames are a new parent segment, and a new branch starts beside the rest."));
             self.select(&b);
@@ -407,7 +407,7 @@ impl App {
 
     pub(crate) fn open_node_dialog(&mut self, id: &str) {
         let Some(col) = &self.col else { return };
-        let r = &col.replays[id];
+        let r = &col.segments[id];
         self.dlg.node = Some(NodeDialog {
             id: id.to_string(),
             title: r.title().to_string(),
@@ -421,7 +421,7 @@ impl App {
 
     pub(crate) fn apply_node_dialog(&mut self, d: &NodeDialog) -> Result<()> {
         let Some(col) = &mut self.col else { return Ok(()) };
-        let r = col.replays.get_mut(&d.id).ok_or_else(|| anyhow!(t::SEGMENT_IS_GONE))?;
+        let r = col.segments.get_mut(&d.id).ok_or_else(|| anyhow!(t::SEGMENT_IS_GONE))?;
         let old_frames = r.frames()?;
         if let Some(last) = r.lines.last() {
             if d.frames <= last.frame {
@@ -451,7 +451,7 @@ impl App {
                 col.write_blob(data, field).map_err(|e| anyhow!("copying {} into blobs/: {e:#}", path.display()))?;
             }
         }
-        let r = col.replays.get_mut(&d.id).ok_or_else(|| anyhow!(t::SEGMENT_IS_GONE))?;
+        let r = col.segments.get_mut(&d.id).ok_or_else(|| anyhow!(t::SEGMENT_IS_GONE))?;
         r.set("title", d.title.trim());
         if tags_changed {
             // Tags change no state: nothing to replay.
@@ -494,7 +494,7 @@ impl App {
                 return Ok(());
             }
             let Some(col) = &mut self.col else { return Ok(()) };
-            let r = col.replays.get_mut(&d.id).ok_or_else(|| anyhow!(t::SEGMENT_IS_GONE))?;
+            let r = col.segments.get_mut(&d.id).ok_or_else(|| anyhow!(t::SEGMENT_IS_GONE))?;
             r.set("frames", &d.frames.to_string());
             self.roll.invalidate();
             if self.selected.as_deref() == Some(d.id.as_str()) {
@@ -522,7 +522,7 @@ impl App {
 
     pub(crate) fn refresh_frame_dialog(&mut self) {
         let (Some(col), Some(id), Some(d)) = (&self.col, &self.selected, &mut self.dlg.frame) else { return };
-        let r = &col.replays[id];
+        let r = &col.segments[id];
         d.rows = r.lines.iter().filter(|l| l.frame == d.frame && !matches!(l.command, Command::Input { .. })).filter_map(|l| r.line_command_text(l.line_no).map(|t| (l.line_no, t))).collect();
     }
 
@@ -530,7 +530,7 @@ impl App {
     /// existing line, or add a new one when `line_no` is None.
     pub(crate) fn edit_line(&mut self, frame: u64, line_no: Option<usize>, text: Option<&str>) {
         let (Some(col), Some(id)) = (&mut self.col, self.selected.clone()) else { return };
-        let r = col.replays.get(&id).unwrap();
+        let r = col.segments.get(&id).unwrap();
         // Events and screenshots don't touch the game; everything else may.
         let harmless = |t: &str| {
             let t = t.trim_start().to_ascii_uppercase();
@@ -549,7 +549,7 @@ impl App {
             return;
         }
         let Some(col) = &mut self.col else { return };
-        let r = col.replays.get_mut(&id).unwrap();
+        let r = col.segments.get_mut(&id).unwrap();
         let res = match (line_no, text) {
             (Some(n), t) => r.replace_line(n, t),
             (None, Some(t)) => r.insert_line(frame, t),

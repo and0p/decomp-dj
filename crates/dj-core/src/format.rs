@@ -145,15 +145,15 @@ enum HeaderLine {
 }
 
 #[derive(Clone, Debug)]
-pub struct Replay {
+pub struct Segment {
     header: Vec<HeaderLine>,
     body_text: Vec<String>,
     pub lines: Vec<Line>,
 }
 
-impl Replay {
-    pub fn new(id: &str, parent: Option<&str>, title: &str, frames: u64) -> Replay {
-        let mut r = Replay { header: vec![], body_text: vec![], lines: vec![] };
+impl Segment {
+    pub fn new(id: &str, parent: Option<&str>, title: &str, frames: u64) -> Segment {
+        let mut r = Segment { header: vec![], body_text: vec![], lines: vec![] };
         r.set("id", id);
         r.set("parent", parent.unwrap_or("none"));
         if !title.is_empty() {
@@ -163,12 +163,12 @@ impl Replay {
         r
     }
 
-    pub fn load(path: &Path) -> Result<Replay> {
+    pub fn load(path: &Path) -> Result<Segment> {
         let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        Replay::parse(&text).with_context(|| format!("parsing {}", path.display()))
+        Segment::parse(&text).with_context(|| format!("parsing {}", path.display()))
     }
 
-    pub fn parse(text: &str) -> Result<Replay> {
+    pub fn parse(text: &str) -> Result<Segment> {
         let mut it = text.lines().enumerate();
         let first = it.next().map(|(_, l)| l.trim()).unwrap_or("");
         if first != MAGIC && !OLD_MAGICS.contains(&first) {
@@ -215,7 +215,7 @@ impl Replay {
                 lines.push(Line { frame, command, line_no, body });
             }
         }
-        let r = Replay { header, body_text, lines };
+        let r = Segment { header, body_text, lines };
         r.id()?;
         r.frames()?;
         if r.get("parent").is_none() {
@@ -391,7 +391,7 @@ impl Replay {
         // Re-parse the whole file so line numbers and parsed commands stay in step.
         self.body_text = body;
         text.push_str(&self.to_text());
-        *self = Replay::parse(&text)?;
+        *self = Segment::parse(&text)?;
         Ok(())
     }
 
@@ -424,7 +424,7 @@ impl Replay {
     }
 
     fn reparse(&mut self) -> Result<()> {
-        *self = Replay::parse(&self.to_text())?;
+        *self = Segment::parse(&self.to_text())?;
         Ok(())
     }
 
@@ -493,15 +493,15 @@ impl Replay {
         Ok(())
     }
 
-    /// Splits this replay at `frame`. The downstream part (the rest, renumbered from 0)
+    /// Splits this segment at `frame`. The downstream part (the rest, renumbered from 0)
     /// keeps this id, title and children; the upstream part (frames `0..frame`) gets
-    /// `upstream_id`, takes this replay's place under its parent, and becomes the
+    /// `upstream_id`, takes this segment's place under its parent, and becomes the
     /// downstream part's parent. Inputs held across the split are pressed again at frame 0
-    /// of the downstream part, since every replay starts with all inputs released.
+    /// of the downstream part, since every segment starts with all inputs released.
     /// Hashes: the downstream part keeps the old end-hash and the later checkpoints; the
     /// upstream part keeps the earlier ones. The caller records the hash at the split
     /// as the upstream end-hash and the downstream start-hash.
-    pub fn split_at(&self, frame: u64, upstream_id: &str) -> Result<(Replay, Replay)> {
+    pub fn split_at(&self, frame: u64, upstream_id: &str) -> Result<(Segment, Segment)> {
         let frames = self.frames()?;
         if frame == 0 || frame >= frames {
             bail!("can only split inside the segment (1..{frames})");
@@ -566,7 +566,7 @@ impl Replay {
         Ok((up, down))
     }
 
-    /// Cuts the replay back to its first `frame` frames: later lines and checkpoints go,
+    /// Cuts the segment back to its first `frame` frames: later lines and checkpoints go,
     /// and so does the end hash.
     pub fn truncate_at(&mut self, frame: u64) -> Result<()> {
         let frames = self.frames()?;
@@ -638,15 +638,6 @@ impl Replay {
     /// The body text (everything after `---`).
     pub fn body(&self) -> String {
         self.body_text.join("\n")
-    }
-
-    #[allow(dead_code)]
-    pub fn push_body(&mut self, text: &str) -> Result<()> {
-        let (frame, command) = parse_body_line(text.trim())?;
-        let line_no = self.lines.iter().map(|l| l.line_no).max().unwrap_or(0) + 1;
-        self.lines.push(Line { frame, command, line_no, body: self.body_text.len() });
-        self.body_text.push(text.to_string());
-        Ok(())
     }
 }
 
@@ -858,7 +849,7 @@ fn pointer_id(s: &str) -> Option<u32> {
     })
 }
 
-/// RETROK_ key codes for the keys replays are most likely to use.
+/// RETROK_ key codes for the keys segments are most likely to use.
 fn key_id(s: &str) -> Option<u32> {
     if s.len() == 1 {
         let c = s.as_bytes()[0];
@@ -976,18 +967,18 @@ mod tests {
     fn first_lines_old_and_newer() {
         // Older first lines are read, and written back as dj-segment 1.
         for old in ["dj-replay 1", "emucov-replay 1"] {
-            let r = Replay::parse(&format!("{old}\nid: a\nparent: none\nframes: 1\n---\n")).unwrap();
+            let r = Segment::parse(&format!("{old}\nid: a\nparent: none\nframes: 1\n---\n")).unwrap();
             assert!(r.to_text().starts_with("dj-segment 1\n"));
         }
         // A newer format says so, naming the version.
-        let e = format!("{:#}", Replay::parse("dj-segment 2\nid: a\nparent: none\nframes: 1\n---\n").unwrap_err());
+        let e = format!("{:#}", Segment::parse("dj-segment 2\nid: a\nparent: none\nframes: 1\n---\n").unwrap_err());
         assert!(e.contains("segment format 2") && e.contains("update dj"), "{e}");
-        assert!(format!("{:#}", Replay::parse("hello\n").unwrap_err()).contains("dj-segment 1"));
+        assert!(format!("{:#}", Segment::parse("hello\n").unwrap_err()).contains("dj-segment 1"));
     }
 
     #[test]
     fn chunks_append_and_truncate() {
-        let mut r = Replay::new("d", Some("p"), "t", 0);
+        let mut r = Segment::new("d", Some("p"), "t", 0);
         r.append_chunk("0 P1 JOYPAD A 1\n# comment\n10 P1 JOYPAD A 0", 20).unwrap();
         r.append_chunk("5 P1 JOYPAD RIGHT 1", 10).unwrap();
         assert_eq!(r.frames().unwrap(), 30);
@@ -1022,7 +1013,7 @@ frames: 100
 
     #[test]
     fn parses_and_round_trips() {
-        let r = Replay::parse(SAMPLE).unwrap();
+        let r = Segment::parse(SAMPLE).unwrap();
         assert_eq!(r.id().unwrap(), "3b8f0f2c-1d44-4c1e-9e55-0d7a3c1b2e90");
         assert_eq!(r.parent(), None);
         assert_eq!(r.frames().unwrap(), 100);
@@ -1038,19 +1029,19 @@ frames: 100
         );
         assert_eq!(r.lines[4].command, Command::Write { region: "RAM".into(), address: 0x12, bytes: vec![0x13, 0xff], at: None });
         // With an instruction address: made when the baseline runs that instruction.
-        let w = Replay::parse("dj-segment 1\nid: w\nparent: none\nframes: 20\n---\n7 [WRITE] RAM 0x12 13 ff @prg:0x0197\n").unwrap();
+        let w = Segment::parse("dj-segment 1\nid: w\nparent: none\nframes: 20\n---\n7 [WRITE] RAM 0x12 13 ff @prg:0x0197\n").unwrap();
         assert_eq!(w.lines[0].command, Command::Write { region: "RAM".into(), address: 0x12, bytes: vec![0x13, 0xff], at: Some(("PRG".into(), 0x197)) });
         for bad in ["7 [WRITE] RAM 0x12 13 @0x197", "7 [WRITE] RAM 0x12 13 @PRG:zz", "7 [WRITE] RAM 0x12 @PRG:0x197", "7 [WRITE] RAM 0x12 @PRG:0x10 13"] {
-            assert!(Replay::parse(&format!("dj-segment 1\nid: w\nparent: none\nframes: 20\n---\n{bad}\n")).is_err(), "{bad}");
+            assert!(Segment::parse(&format!("dj-segment 1\nid: w\nparent: none\nframes: 20\n---\n{bad}\n")).is_err(), "{bad}");
         }
         assert_eq!(r.lines[5].command, Command::Event { text: "Title visible".into(), pos: Some((10, 20)) });
-        assert_eq!(Replay::parse(&r.to_text()).unwrap().to_text(), r.to_text());
+        assert_eq!(Segment::parse(&r.to_text()).unwrap().to_text(), r.to_text());
     }
 
     #[test]
     fn line_text_survives_header_edits() {
         let text = "dj-segment 1\nid: a\nparent: none\nframes: 100\nend-hash: x\n---\n0 P1 JOYPAD DOWN 1\n40 [WRITE] RAM 0x73 00 00 03\n50 P1 JOYPAD DOWN 0\n";
-        let mut r = Replay::parse(text).unwrap();
+        let mut r = Segment::parse(text).unwrap();
         let write = r.lines[1].line_no;
         // Fewer header lines (an edit drops the end hash), then more (a title, a checkpoint).
         r.remove_all("end-hash");
@@ -1068,7 +1059,7 @@ frames: 100
     #[test]
     fn splits_and_edits_lines() {
         let text = "dj-segment 1\nid: a\nparent: none\nframes: 100\nend-hash: x\ncheckpoint: 20 c20\ncheckpoint: 80 c80\n---\n# note\n0 P1 JOYPAD A 1\n10 P1 JOYPAD RIGHT 1\n30 [EVENT] middle\n60 P1 JOYPAD RIGHT 0\n70 [WRITE] RAM 0x10 01 02\n";
-        let r = Replay::parse(text).unwrap();
+        let r = Segment::parse(text).unwrap();
         let (up, down) = r.split_at(50, "b").unwrap();
         assert_eq!(up.id().unwrap(), "b");
         assert_eq!(up.parent(), None);
@@ -1103,7 +1094,7 @@ frames: 100
 
     #[test]
     fn edits_binary_spans() {
-        let mut r = Replay::parse(SAMPLE).unwrap();
+        let mut r = Segment::parse(SAMPLE).unwrap();
         let start = InputKey { port: 0, device: DEVICE_JOYPAD, index: 0, id: 3 };
         assert_eq!(r.binary_spans(start), vec![(0, 4)]);
         r.set_binary_spans(start, &[(2, 6), (5, 9), (90, 120)]).unwrap();
@@ -1116,13 +1107,13 @@ frames: 100
 
     #[test]
     fn rejects_bad_files() {
-        assert!(Replay::parse("nope").is_err());
+        assert!(Segment::parse("nope").is_err());
         let past_end = SAMPLE.replace("frames: 100", "frames: 5");
-        assert!(Replay::parse(&past_end).is_err());
+        assert!(Segment::parse(&past_end).is_err());
         let unordered = SAMPLE.replace("4 P1 JOYPAD START 0", "0 P1 JOYPAD START 0").replace("0 P1 JOYPAD START 1", "3 P1 JOYPAD START 1");
-        assert!(Replay::parse(&unordered).is_err());
+        assert!(Segment::parse(&unordered).is_err());
         let unknown = SAMPLE.replace("[RESETX]", "").replace("9 [DEVICE] P2 MOUSE", "9 [TELEPORT] P2");
-        assert!(Replay::parse(&unknown).is_err());
+        assert!(Segment::parse(&unknown).is_err());
     }
 
     #[test]
@@ -1133,7 +1124,7 @@ frames: 100
         let h32 = &h64[..32];
         assert_eq!(new, format!("dj-segment 1\r\nid: a\nparent: none\nframes: 10\nend-hash: {h32}\ncheckpoint: 5 {h32}\n# end-hash: blake3-keep\n---\n# blake3-{h64}\n"));
         // The parser reads the old form the same way.
-        let r = Replay::parse(&old).unwrap();
+        let r = Segment::parse(&old).unwrap();
         assert_eq!(r.get("end-hash"), Some(h32));
         assert_eq!(r.checkpoints().unwrap(), vec![(5, h32.to_string())]);
     }
@@ -1143,7 +1134,7 @@ frames: 100
         let h = "ab".repeat(16);
         let old = format!("dj-segment 1\nid: a\nparent: none\nframes: 10\nsave: blake3-{h}{h}\n---\n");
         assert_eq!(upgrade_text(&old), format!("dj-segment 1\nid: a\nparent: none\nframes: 10\nsnapshot: {h}\n---\n"));
-        let r = Replay::parse(&old).unwrap();
+        let r = Segment::parse(&old).unwrap();
         assert_eq!(r.get("snapshot"), Some(h.as_str()));
         assert!(r.to_text().contains(&format!("snapshot: {h}\n")));
     }

@@ -12,7 +12,7 @@ impl App {
     /// its tree dot. None when it is clean.
     pub(crate) fn dirty_band(&self, id: &str) -> Option<roll::DirtyBand> {
         let col = self.col.as_ref()?;
-        let r = col.replays.get(id)?;
+        let r = col.segments.get(id)?;
         let status = col.tree_status(id);
         if status == Status::Clean {
             return None;
@@ -57,8 +57,8 @@ impl App {
         };
         ui.add_space(4.0);
         ui.heading(&col.config.name);
-        let changed_endings: HashSet<String> = col.replays.keys().filter(|id| self.ending_changed(id)).cloned().collect();
-        let owned: HashSet<String> = col.replays.keys().filter(|id| self.agent_owned(id)).cloned().collect();
+        let changed_endings: HashSet<String> = col.segments.keys().filter(|id| self.ending_changed(id)).cloned().collect();
+        let owned: HashSet<String> = col.segments.keys().filter(|id| self.agent_owned(id)).cloned().collect();
         let flagged = changed_endings.len();
         summary(ui, col, flagged);
         ui.add_space(2.0);
@@ -77,7 +77,7 @@ impl App {
         }
         if self.side.tab == SideTab::Markers {
             let shown = self.selected.as_deref().zip(self.pb.as_ref().and_then(|b| b.shown()));
-            let scope = self.side.hoist.as_deref().filter(|h| col.replays.contains_key(*h));
+            let scope = self.side.hoist.as_deref().filter(|h| col.segments.contains_key(*h));
             if let Some((id, f)) = marker_list(ui, col, &mut self.side.marker_filter, shown, scope) {
                 if self.selected.as_deref() != Some(id.as_str()) {
                     self.select(&id);
@@ -89,7 +89,7 @@ impl App {
         }
         // Breadcrumbs while the tree is focused on one segment.
         let mut new_hoist: Option<Option<String>> = None;
-        let hoist: Option<&str> = self.side.hoist.as_deref().and_then(|h| col.replays.get_key_value(h)).map(|(k, _)| k.as_str());
+        let hoist: Option<&str> = self.side.hoist.as_deref().and_then(|h| col.segments.get_key_value(h)).map(|(k, _)| k.as_str());
         if self.side.hoist.is_some() && hoist.is_none() {
             new_hoist = Some(None);
         }
@@ -103,7 +103,7 @@ impl App {
             // Collapse every segment that has children, below the focused segment if there is one,
             // so the roots (or the focused segment's children) stay visible.
             Some(true) => {
-                for id in col.replays.keys() {
+                for id in col.segments.keys() {
                     let inside = hoist.is_none_or(|h| h != id && col.chain(id).is_ok_and(|c| c.contains(&h)));
                     if inside && !col.children(Some(id)).is_empty() {
                         self.side.closed.insert(id.clone());
@@ -141,7 +141,7 @@ impl App {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             for Row { id, indent, chained } in rows {
                 let depth = indent;
-                let r = &col.replays[id];
+                let r = &col.segments[id];
                 let has_kids = !col.children(Some(id)).is_empty();
                 let closed = self.side.closed.contains(id);
                 let row = ui.horizontal(|ui| {
@@ -303,10 +303,10 @@ impl App {
             self.dlg.renaming = None;
             // The Enter that ended the rename must not start another one.
             ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-            let changed = title.as_ref().is_some_and(|t| !t.is_empty() && self.col.as_ref().and_then(|c| c.replays.get(&id)).is_some_and(|r| r.title() != t));
+            let changed = title.as_ref().is_some_and(|t| !t.is_empty() && self.col.as_ref().and_then(|c| c.segments.get(&id)).is_some_and(|r| r.title() != t));
             let changed = changed && self.remember(t::RENAME, &[&id]);
             if let (Some(t), Some(col)) = (title.filter(|_| changed), &mut self.col) {
-                if let Some(r) = col.replays.get_mut(&id) {
+                if let Some(r) = col.segments.get_mut(&id) {
                     {
                         r.set("title", &t);
                         self.edited.insert(id);
@@ -368,7 +368,7 @@ struct TreeEvents {
 /// Under the project's name: how many segments are clean and dirty, changed endings, and agent drafts.
 fn summary(ui: &mut egui::Ui, col: &Collection, flagged: usize) {
     let (mut clean, mut dirty) = (0, 0);
-    for id in col.replays.keys().filter(|id| !col.is_draft(id)) {
+    for id in col.segments.keys().filter(|id| !col.is_draft(id)) {
         match col.tree_status(id) {
             Status::Clean => clean += 1,
             Status::Dirty => dirty += 1,
@@ -404,7 +404,7 @@ fn crumbs(ui: &mut egui::Ui, col: &Collection, h: &str) -> Option<Option<String>
         let short = |t: &str| if t.chars().count() > 18 { format!("{}…", t.chars().take(17).collect::<String>()) } else { t.to_string() };
         let crumb = |ui: &mut egui::Ui, id: &str, new_hoist: &mut Option<Option<String>>| {
             ui.label(RichText::new("›").weak());
-            let t = col.replays[id].title();
+            let t = col.segments[id].title();
             if id == h {
                 ui.label(RichText::new(short(t)).strong()).on_hover_text(t);
             } else if ui.link(short(t)).on_hover_text(t).clicked() {
@@ -418,7 +418,7 @@ fn crumbs(ui: &mut egui::Ui, col: &Collection, h: &str) -> Option<Option<String>
             ui.label(RichText::new("›").weak());
             ui.menu_button(format!("… {}", hidden.len()), |ui| {
                 for id in hidden {
-                    if ui.button(col.replays[*id].title()).clicked() {
+                    if ui.button(col.segments[*id].title()).clicked() {
                         new_hoist = Some(Some(id.to_string()));
                     }
                 }
@@ -451,7 +451,7 @@ fn filter_bar(ui: &mut egui::Ui, col: &Collection, side: &mut SideState) -> Opti
         }
         ui.add_space(2.0);
         let mut all_tags: BTreeMap<String, usize> = BTreeMap::new();
-        for r in col.replays.values() {
+        for r in col.segments.values() {
             // Case-insensitive, like the filter: "Town" and "town" are one tag, counted once a segment.
             let mine: BTreeSet<String> = r.get("tags").unwrap_or_default().split_whitespace().map(str::to_lowercase).collect();
             for t in mine {
@@ -483,7 +483,7 @@ fn filter_bar(ui: &mut egui::Ui, col: &Collection, side: &mut SideState) -> Opti
 }
 
 /// What a row shows on hover.
-fn row_hover(ui: &mut egui::Ui, r: &dj_core::format::Replay, id: &str, st: Status, edited: bool, is_draft: bool) {
+fn row_hover(ui: &mut egui::Ui, r: &dj_core::format::Segment, id: &str, st: Status, edited: bool, is_draft: bool) {
     let frames = r.frames().unwrap_or(0);
     ui.label(RichText::new(r.title()).strong());
     ui.label(format!("id {id}"));
@@ -518,7 +518,7 @@ struct RowMenu<'a> {
 /// A row's right-click menu. Returns the item chosen, as `TreeEvents::context`.
 fn row_menu(ui: &mut egui::Ui, col: &Collection, id: &str, m: &RowMenu) -> Option<(String, &'static str)> {
     let mut out = None;
-    let r = &col.replays[id];
+    let r = &col.segments[id];
     let is_draft = col.is_draft(id);
     if is_draft {
         if let Some(s) = m.sessions.iter().find(|s| s.draft == *id) {
@@ -627,7 +627,7 @@ fn filter_tree<'a>(col: &'a Collection, needle: &str, hoist: Option<&'a str>, be
     let mut m = HashSet::new();
     let mut sh = HashSet::new();
     let tag = needle.strip_prefix('#');
-    for (id, r) in &col.replays {
+    for (id, r) in &col.segments {
         let mut tags = r.get("tags").unwrap_or_default().split_whitespace().map(str::to_lowercase);
         let hit = match tag {
             Some(t) => tags.any(|x| x == t),

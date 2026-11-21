@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::collection::{Collection, Status};
-use crate::format::{Command, Replay};
+use crate::format::{Command, Segment};
 
 // ---- settings ------------------------------------------------------------------
 
@@ -148,7 +148,7 @@ impl CacheSettings {
 
 /// What a segment does, without its title, tags or comments: its length, the devices in
 /// effect at its start, and its lines.
-pub fn body_hash(r: &Replay, devices: &BTreeMap<u32, u32>) -> Result<String> {
+pub fn body_hash(r: &Segment, devices: &BTreeMap<u32, u32>) -> Result<String> {
     let mut h = blake3::Hasher::new();
     h.update(format!("frames {}\n", r.frames()?).as_bytes());
     for (p, d) in devices {
@@ -181,7 +181,7 @@ pub fn content_key(setup: &str, start_hash: &str, body: &str) -> String {
 }
 
 /// The marker frames of a segment (lines the GUI shows in the marker lane).
-pub fn marker_frames(r: &Replay) -> Vec<u64> {
+pub fn marker_frames(r: &Segment) -> Vec<u64> {
     let mut v: Vec<u64> = r
         .lines
         .iter()
@@ -303,10 +303,6 @@ impl Cache {
     }
 
     // -- snapshots and pages --
-
-    pub fn has_snapshot(&self, state_hash: &str) -> Result<bool> {
-        Ok(self.conn.query_row("SELECT 1 FROM snapshots WHERE setup = ?1 AND hash = ?2", params![self.setup, state_hash], |_| Ok(())).optional()?.is_some())
-    }
 
     /// Stores a snapshot as pages, each kept once by hash. Does nothing if it is stored.
     fn put_snapshot_tx(tx: &rusqlite::Transaction, setup: &str, page_bytes: Option<usize>, state_hash: &str, data: &[u8]) -> Result<()> {
@@ -446,23 +442,6 @@ impl Cache {
 
     // -- size and cleanup --
 
-    pub fn stats(&self) -> Result<Vec<(String, i64, i64)>> {
-        let mut out = vec![];
-        for (name, q) in [
-            ("contents", "SELECT count(*), 0 FROM contents"),
-            ("snapshots", "SELECT count(*), coalesce(sum(size),0) FROM snapshots"),
-            ("pages", "SELECT count(*), coalesce(sum(length(data)),0) FROM pages"),
-            ("stored frames", "SELECT count(*), 0 FROM frames"),
-            ("images", "SELECT count(*), coalesce(sum(length(png)),0) FROM images"),
-            ("coverage", "SELECT count(*), coalesce(sum(length(flags)),0) FROM coverage"),
-            ("first hits", "SELECT count(*), 0 FROM first_hits"),
-        ] {
-            let (n, b): (i64, i64) = self.conn.query_row(q, [], |r| Ok((r.get(0)?, r.get(1)?)))?;
-            out.push((name.to_string(), n, b));
-        }
-        Ok(out)
-    }
-
     /// Drops content no current segment uses, then snapshots no stored frame uses, then
     /// pages no snapshot uses. Returns (contents, snapshots, pages) removed.
     pub fn gc(&mut self, col: &Collection) -> Result<(usize, usize, usize)> {
@@ -570,10 +549,10 @@ pub fn current_keys(conn: &Connection, col: &Collection, setup: &str) -> Result<
     let mut out = BTreeMap::new();
     let mut last = conn.prepare_cached("SELECT c.key, c.body FROM segment_runs s JOIN contents c ON c.key = s.content WHERE s.segment_id = ?1 AND c.setup = ?2")?;
     for (id, _) in col.tree_order() {
-        let r = &col.replays[id];
+        let r = &col.segments[id];
         let devices = crate::player::devices_at_start(col, id)?;
         let body = body_hash(r, &devices)?;
-        let start = r.get("start-hash").map(String::from).or_else(|| r.parent().and_then(|p| col.replays[p].get("end-hash").map(String::from)));
+        let start = r.get("start-hash").map(String::from).or_else(|| r.parent().and_then(|p| col.segments[p].get("end-hash").map(String::from)));
         let key = match start {
             Some(s) => Some(content_key(setup, &s, &body)),
             None => last.query_row(params![id, setup], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).optional()?.filter(|(_, b)| *b == body).map(|(k, _)| k),

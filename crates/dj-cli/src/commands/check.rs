@@ -4,11 +4,11 @@ use crate::*;
 
 /// What a play of a segment produced, compared with the hashes its file records: ok, new
 /// (none recorded yet), dirty (it started somewhere else) or changed.
-pub(crate) fn judge(col: &Collection, res: &ReplayResult) -> &'static str {
+pub(crate) fn judge(col: &Collection, res: &SegmentResult) -> &'static str {
     dj_core::hydrate::judge_hashes(col, &res.id, &res.start_hash, &res.end_hash, Some(&res.checkpoints))
 }
 
-pub(crate) fn save_shots(res: &ReplayResult, dir: &Path) -> Result<()> {
+pub(crate) fn save_shots(res: &SegmentResult, dir: &Path) -> Result<()> {
     for (f, frame) in &res.screenshots {
         let p = dir.join(format!("{}-{:06}.png", &res.id[..8], f));
         libretro::write_png(frame, &p)?;
@@ -41,7 +41,7 @@ pub(crate) fn check_tree(dir: &Path, local: &Local, pick: &parity_cmd::Pick, fro
     }
     let opts = PlayOptions { end_screenshot: shots.is_some(), extra_shots, record: true };
     let mut last = std::time::Instant::now();
-    let mut report = |res: &ReplayResult| -> Result<()> {
+    let mut report = |res: &SegmentResult| -> Result<()> {
         let outcome = judge(&col, res);
         let seconds = std::mem::replace(&mut last, std::time::Instant::now()).elapsed().as_secs_f64();
         let o = match outcome {
@@ -49,12 +49,12 @@ pub(crate) fn check_tree(dir: &Path, local: &Local, pick: &parity_cmd::Pick, fro
             "new" => junit::Outcome::Skip { message: "no recorded hashes: nothing to compare with (dj clean records them)".into() },
             _ => junit::Outcome::Fail {
                 message: format!("{outcome}: it doesn't reproduce its recorded hashes"),
-                body: format!("start {}\nend {}\nrecorded start {}\nrecorded end {}", res.start_hash, res.end_hash, col.replays[&res.id].get("start-hash").unwrap_or("-"), col.replays[&res.id].get("end-hash").unwrap_or("-")),
+                body: format!("start {}\nend {}\nrecorded start {}\nrecorded end {}", res.start_hash, res.end_hash, col.segments[&res.id].get("start-hash").unwrap_or("-"), col.segments[&res.id].get("end-hash").unwrap_or("-")),
             },
         };
         found.cases.push(junit::Case::segment(&col, &res.id, seconds, o));
         let depth = col.chain(&res.id)?.len() - 1;
-        println!("{} {}{} {}  {}f{}", dj_core::style::verdict(outcome, 8), "  ".repeat(depth), &res.id[..8], col.replays[&res.id].title(), res.frames, res.ticks.map(|t| format!(", {t} ticks")).unwrap_or_default());
+        println!("{} {}{} {}  {}f{}", dj_core::style::verdict(outcome, 8), "  ".repeat(depth), &res.id[..8], col.segments[&res.id].title(), res.frames, res.ticks.map(|t| format!(", {t} ticks")).unwrap_or_default());
         if let Some(d) = shots {
             save_shots(res, d)?;
         }
@@ -133,7 +133,7 @@ pub(crate) fn fill(dir: &Path, local: &Local, segment: Option<String>, children:
     while !h.done() {
         for ev in h.step(&mut s, &mut col, std::time::Duration::from_secs(3600), 0)? {
             let depth = col.chain(&ev.id)?.len() - 1;
-            println!("{:<7} {} {}{} {}", ev.action, dj_core::style::verdict(ev.verdict, 9), "  ".repeat(depth), &ev.id[..8.min(ev.id.len())], col.replays[&ev.id].title());
+            println!("{:<7} {} {}{} {}", ev.action, dj_core::style::verdict(ev.verdict, 9), "  ".repeat(depth), &ev.id[..8.min(ev.id.len())], col.segments[&ev.id].title());
         }
     }
     let played = h.events.iter().filter(|e| e.action == "played").count();
@@ -143,7 +143,7 @@ pub(crate) fn fill(dir: &Path, local: &Local, segment: Option<String>, children:
     if !problems.is_empty() {
         println!("{} segments don't match their recorded hashes:", problems.len());
         for p in problems {
-            println!("  {} {}: {}", &p.id[..8.min(p.id.len())], col.replays[&p.id].title(), p.verdict);
+            println!("  {} {}: {}", &p.id[..8.min(p.id.len())], col.segments[&p.id].title(), p.verdict);
         }
     }
     Ok(())
@@ -162,14 +162,14 @@ pub(crate) fn clean(dir: &Path, local: &Local, segment: Option<String>, children
     while !h.done() {
         for ev in h.step(&mut s, &mut col, std::time::Duration::from_secs(3600), 0)? {
             if matches!(ev.verdict, "recorded" | "cleaned") || (accept && ev.verdict == "changed") {
-                col.save_replay(&ev.id)?;
+                col.save_segment(&ev.id)?;
             } else if ev.verdict == "changed" {
                 // Not written: put the file's version back, so the segments below wait for it.
                 let p = col.paths[&ev.id].clone();
-                col.replays.insert(ev.id.clone(), Replay::load(&p)?);
+                col.segments.insert(ev.id.clone(), Segment::load(&p)?);
             }
             let depth = col.chain(&ev.id)?.len() - 1;
-            println!("{:<7} {} {}{} {}", ev.action, dj_core::style::verdict(ev.verdict, 9), "  ".repeat(depth), &ev.id[..8.min(ev.id.len())], col.replays[&ev.id].title());
+            println!("{:<7} {} {}{} {}", ev.action, dj_core::style::verdict(ev.verdict, 9), "  ".repeat(depth), &ev.id[..8.min(ev.id.len())], col.segments[&ev.id].title());
         }
     }
     let n = |v: &str| h.events.iter().filter(|e| e.verdict == v).count();
@@ -188,7 +188,7 @@ pub(crate) fn clean(dir: &Path, local: &Local, segment: Option<String>, children
     if !changed.is_empty() {
         println!("{}", if accept { "endings changed (written; check them, e.g. with git diff):" } else { "endings changed (not written; check them, then run again with --accept):" });
         for id in &changed {
-            println!("  {} {}", &id[..8.min(id.len())], col.replays[*id].title());
+            println!("  {} {}", &id[..8.min(id.len())], col.segments[*id].title());
         }
     }
     if n("blocked") > 0 {

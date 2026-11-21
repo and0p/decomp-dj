@@ -13,9 +13,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use dj_core::collection::{sha256_file, Collection, Config, CoreConfig, HashConfig, LocalConfig, PortConfig, RomConfig, Status, SymbolsConfig};
-use dj_core::format::Replay;
+use dj_core::format::Segment;
 use dj_core::hydrate::Hydrator;
-use dj_core::player::{PlayOptions, ReplayResult, Session};
+use dj_core::player::{PlayOptions, SegmentResult, Session};
 
 use cli::*;
 use commands::{cache::*, check::*, project::*, tas::*};
@@ -95,7 +95,7 @@ fn real_main() -> Result<()> {
     }
     match cli.cmd {
         Cmd::Init { .. } => unreachable!("dj init is handled above"),
-        Cmd::New { parent, title, frames } => new_replay(&dir, parent, &title, frames),
+        Cmd::New { parent, title, frames } => new_segment(&dir, parent, &title, frames),
         Cmd::Status => status(&dir),
         Cmd::ImportTas { file, title, strict, rom } => import_tas(&dir, &file, title.as_deref(), strict, &rom.local()),
         Cmd::ExportTas { segment, out, through, author, strict, rom } => export_tas(&dir, &segment, &out, through, author.as_deref(), strict, &rom.local()),

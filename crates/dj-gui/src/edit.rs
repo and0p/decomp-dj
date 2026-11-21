@@ -13,7 +13,7 @@ impl App {
             return;
         }
         let Some(col) = &mut self.col else { return };
-        let r = col.replays.get_mut(&id).unwrap();
+        let r = col.segments.get_mut(&id).unwrap();
         for (key, spans) in edits {
             if let Err(e) = r.set_binary_spans(key, &spans) {
                 self.error(e);
@@ -28,7 +28,7 @@ impl App {
     pub(crate) fn invalidate_from(&mut self, id: &str, from: u64) {
         let Some(col) = &mut self.col else { return };
         let id = id.to_string();
-        let r = col.replays.get_mut(&id).unwrap();
+        let r = col.segments.get_mut(&id).unwrap();
         // The end state and later checkpoints are no longer known; children turn dirty.
         r.remove_all("end-hash");
         let keep: Vec<(u64, String)> = r.checkpoints().unwrap_or_default().into_iter().filter(|(f, _)| *f <= from).collect();
@@ -107,7 +107,7 @@ impl App {
             return false;
         }
         let Some(col) = &self.col else { return false };
-        let segments = ids.iter().map(|id| (id.to_string(), col.replays.get(*id).cloned())).collect();
+        let segments = ids.iter().map(|id| (id.to_string(), col.segments.get(*id).cloned())).collect();
         let frame = self.pb.as_ref().and_then(|p| p.shown());
         self.history.push(UndoStep { label: label.to_string(), segments, selected: self.selected.clone(), frame });
         self.coverage_stale();
@@ -124,7 +124,7 @@ impl App {
 
     /// Hashes a clean recorded become one undo step, so undo takes them back.
     pub(crate) fn undo_clean(&mut self, hy: &mut Hydrating) {
-        let mut segments: Vec<(String, Option<dj_core::format::Replay>)> = vec![];
+        let mut segments: Vec<(String, Option<dj_core::format::Segment>)> = vec![];
         for e in hy.h.events.iter().filter(|e| matches!(e.verdict, "recorded" | "cleaned" | "changed")) {
             if let Some(r) = hy.before.remove(&e.id) {
                 segments.push((e.id.clone(), Some(r)));
@@ -172,7 +172,7 @@ impl App {
         let mut reload = false;
         let mut back = vec![];
         for (id, before) in step.segments {
-            let now = col.replays.get(&id).cloned();
+            let now = col.segments.get(&id).cloned();
             if cur.as_deref() == Some(id.as_str()) {
                 match (&now, &before) {
                     // A root's save file or snapshot decides its first frame.
@@ -192,10 +192,10 @@ impl App {
             }
             match before {
                 Some(r) => {
-                    col.replays.insert(id.clone(), r);
+                    col.segments.insert(id.clone(), r);
                 }
                 None => {
-                    col.replays.remove(&id);
+                    col.segments.remove(&id);
                 }
             }
             self.edited.insert(id.clone());
@@ -203,8 +203,8 @@ impl App {
         }
         let reverse = UndoStep { label: step.label, segments: back, selected: cur.clone(), frame: here };
         self.roll.invalidate();
-        let target = step.selected.filter(|s| col.replays.contains_key(s));
-        if self.side.hoist.as_ref().is_some_and(|h| !col.replays.contains_key(h)) {
+        let target = step.selected.filter(|s| col.segments.contains_key(s));
+        if self.side.hoist.as_ref().is_some_and(|h| !col.segments.contains_key(h)) {
             self.side.hoist = None;
         }
         if target != cur || reload {
@@ -223,7 +223,7 @@ impl App {
             }
         } else if let (Some(from), Some(id)) = (first_diff, &cur) {
             // Same segment: drop what playback knew past the first change and redraw here.
-            let checkpoints: BTreeMap<u64, String> = col.replays[id].checkpoints().unwrap_or_default().into_iter().collect();
+            let checkpoints: BTreeMap<u64, String> = col.segments[id].checkpoints().unwrap_or_default().into_iter().collect();
             self.end_pass();
             if let Some(pb) = &mut self.pb {
                 pb.snapshots.retain(|k, _| *k <= from);
@@ -248,7 +248,7 @@ impl App {
     pub(crate) fn settle_edited(&mut self, ids: &[String]) {
         let Some(col) = &self.col else { return };
         for id in ids {
-            let (Some(r), Some(path)) = (col.replays.get(id), col.paths.get(id)) else { continue };
+            let (Some(r), Some(path)) = (col.segments.get(id), col.paths.get(id)) else { continue };
             if col.is_draft(id) {
                 continue;
             }
@@ -262,7 +262,7 @@ impl App {
         let notes = self.roll.selected_notes();
         let Some(base) = notes.iter().map(|(_, sp)| sp.0).min() else { return false };
         let n = notes.len();
-        // Also put the notes on the system clipboard as replay lines (frames relative to the
+        // Also put the notes on the system clipboard as segment lines (frames relative to the
         // first note). Some platforms only report Ctrl/Cmd+V when the clipboard holds text.
         let mut lines: Vec<(u64, String)> = vec![];
         for (k, sp) in &notes {
@@ -283,7 +283,7 @@ impl App {
             return;
         }
         let (Some(col), Some(id)) = (&self.col, &self.selected) else { return };
-        let r = &col.replays[id];
+        let r = &col.segments[id];
         let keys: BTreeSet<InputKey> = notes.iter().map(|(k, _)| *k).collect();
         let edits = keys.into_iter().map(|k| (k, r.binary_spans(k).into_iter().filter(|sp| !notes.contains(&(k, *sp))).collect())).collect();
         let from = notes.iter().map(|(_, sp)| sp.0).min().unwrap_or(0);
@@ -296,7 +296,7 @@ impl App {
     pub(crate) fn paste(&mut self) {
         let (Some(clip), Some(col), Some(id), Some(pb)) = (&self.history.clip, &self.col, &self.selected, &self.pb) else { return };
         let at = pb.shown().unwrap_or(0);
-        let r = &col.replays[id];
+        let r = &col.segments[id];
         let frames = r.frames().unwrap_or(0);
         let keys: BTreeSet<InputKey> = clip.notes.iter().map(|(k, _, _)| *k).collect();
         let mut edits = vec![];
@@ -344,7 +344,7 @@ impl History {
     /// Hashes recorded because of the last change (reaching a segment's end after an edit,
     /// say) join the last undo step, so one undo takes back the change and what it caused.
     /// `before` is the segment as it was before its hashes were recorded.
-    pub(crate) fn fold_in(&mut self, id: &str, before: dj_core::format::Replay) {
+    pub(crate) fn fold_in(&mut self, id: &str, before: dj_core::format::Segment) {
         if let Some(step) = self.undo.last_mut() {
             if !step.segments.iter().any(|(s, _)| s == id) {
                 step.segments.push((id.to_string(), Some(before)));
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn a_segment_folds_into_the_last_step_once() {
         let mut h = History::default();
-        let before = dj_core::format::Replay::new("b", None, "b", 10);
+        let before = dj_core::format::Segment::new("b", None, "b", 10);
         h.fold_in("b", before.clone());
         assert!(h.undo.is_empty(), "nothing to fold into");
         h.push(step("edit", "a"));

@@ -96,14 +96,14 @@ fn main() -> Result<()> {
     let waits: Vec<&Bp> = bps.iter().filter(|b| b.kind == "wait").collect();
     let name_of = |o: i64| bps.iter().find(|b| b.offset == o).map(|b| b.name.as_str()).unwrap_or("?");
 
-    let mut ids: Vec<String> = col.replays.keys().cloned().collect();
-    ids.sort_by_key(|id| col.replays[id].title().to_string());
+    let mut ids: Vec<String> = col.segments.keys().cloned().collect();
+    ids.sort_by_key(|id| col.segments[id].title().to_string());
     let mut totals: BTreeMap<&str, u64> = BTreeMap::new();
     for id in &ids {
-        let n = col.replays[id].frames()?;
-        let root = col.replays[id].parent().is_none();
+        let n = col.segments[id].frames()?;
+        let root = col.segments[id].parent().is_none();
         unsafe { set(std::ptr::null(), 0, None, std::ptr::null_mut()) };
-        s.enter_replay(&col, id)?;
+        s.enter_segment(&col, id)?;
         rec().hits.clear();
         // Replaces dj's own list (the [tick] address) until the segment ends.
         unsafe { set(list.as_ptr(), list.len(), Some(on_break), std::ptr::null_mut()) };
@@ -117,7 +117,7 @@ fn main() -> Result<()> {
         unsafe { set(std::ptr::null(), 0, None, std::ptr::null_mut()) };
         let hits = std::mem::take(&mut rec().hits);
 
-        println!("\n== {} \"{}\" ({n} frames{})", &id[..8], col.replays[id].title(), if root { ", from power-on" } else { "" });
+        println!("\n== {} \"{}\" ({n} frames{})", &id[..8], col.segments[id].title(), if root { ", from power-on" } else { "" });
         // 1. per breakpoint
         for b in &bps {
             let mine: Vec<&Hit> = hits.iter().filter(|h| h.offset == b.offset).collect();

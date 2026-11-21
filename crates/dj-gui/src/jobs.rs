@@ -56,7 +56,7 @@ impl App {
                         return Ok(());
                     }
                     let q = &queue[qi];
-                    let qframes = col.replays[q].frames().unwrap_or(0);
+                    let qframes = col.segments[q].frames().unwrap_or(0);
                     if frame < qframes {
                         if frame == 0 {
                             s.restore_inputs(col, q, 0)?;
@@ -196,7 +196,7 @@ impl App {
         // From here the baseline is somewhere else than the playback says.
         self.cmp.displaced = true;
         self.cmp.base_next = None;
-        let base = s.enter_replay(col, &first)?;
+        let base = s.enter_segment(col, &first)?;
         let (mut at, mut keep) = (0, None);
         if from > 0 {
             let start = s.state_hash(col)?;
@@ -281,10 +281,10 @@ impl App {
     /// dirty segment whose exact content and start were played before is clean again without
     /// playing. Unsaved changes, like any recorded hashes.
     pub(crate) fn hashes_from_cache(&mut self) {
-        let skip: HashSet<String> = self.col.as_ref().map(|c| c.replays.keys().filter(|id| self.agent_owned(id)).cloned().collect()).unwrap_or_default();
+        let skip: HashSet<String> = self.col.as_ref().map(|c| c.segments.keys().filter(|id| self.agent_owned(id)).cloned().collect()).unwrap_or_default();
         let (Some(col), Some(s)) = (&mut self.col, &self.session) else { return };
         let Some(c) = &s.cache else { return };
-        let before: HashMap<String, dj_core::format::Replay> = col.replays.iter().filter(|(id, _)| col.tree_status(id) != Status::Clean).map(|(id, r)| (id.clone(), r.clone())).collect();
+        let before: HashMap<String, dj_core::format::Segment> = col.segments.iter().filter(|(id, _)| col.tree_status(id) != Status::Clean).map(|(id, r)| (id.clone(), r.clone())).collect();
         match dj_core::hydrate::record_from_cache(col, c, &skip) {
             Ok(done) if !done.is_empty() => {
                 let mut before = before;
@@ -347,7 +347,7 @@ impl App {
         match found {
             Ok(h) if how != Clean::Everything && nothing(&h) => self.info(format!("Nothing to clean: {what} are clean and stored already.")),
             Ok(h) => {
-                let before = h.targets.iter().filter_map(|id| col.replays.get(id).map(|r| (id.clone(), r.clone()))).collect();
+                let before = h.targets.iter().filter_map(|id| col.segments.get(id).map(|r| (id.clone(), r.clone()))).collect();
                 self.playing = false;
                 self.job = None;
                 { self.end_pass(); self.pb = None; }

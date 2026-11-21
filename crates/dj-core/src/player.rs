@@ -1,4 +1,4 @@
-//! Plays replays on a loaded core (docs/playback.md).
+//! Plays segments on a loaded core (docs/playback.md).
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 
 use crate::cache::{self, Cache, CacheSettings, ContentRow, Recording};
 use crate::collection::{sha256_file, Collection, Status};
-use crate::format::{device_from_name, Command, Replay};
+use crate::format::{device_from_name, Command, Segment};
 use crate::libretro::{region_memory_id, Core, CoverageRegion, Frame};
 
-pub struct ReplayResult {
+pub struct SegmentResult {
     pub id: String,
     pub start_frame: u64,
     pub frames: u64,
@@ -25,7 +25,7 @@ pub struct ReplayResult {
 
 #[derive(Default, Clone)]
 pub struct PlayOptions {
-    /// Capture the video frame of the last frame of each replay.
+    /// Capture the video frame of the last frame of each segment.
     pub end_screenshot: bool,
     /// Extra frames (relative) to capture, besides [SCREENSHOT] lines.
     pub extra_shots: Vec<u64>,
@@ -81,7 +81,7 @@ pub fn devices_at_start(col: &Collection, id: &str) -> Result<BTreeMap<u32, u32>
     }
     let chain = col.chain(id)?;
     for anc in &chain[..chain.len() - 1] {
-        for l in &col.replays[*anc].lines {
+        for l in &col.segments[*anc].lines {
             if let Command::Device { port, device } = l.command {
                 devs.insert(port, device);
             }
@@ -90,7 +90,7 @@ pub fn devices_at_start(col: &Collection, id: &str) -> Result<BTreeMap<u32, u32>
     Ok(devs)
 }
 
-/// A loaded core plus what it needs to play replays. It does not hold the
+/// A loaded core plus what it needs to play segments. It does not hold the
 /// collection, so a GUI can keep editing the collection while a session is open;
 /// every method takes the collection it should read.
 #[allow(dead_code)]
@@ -232,7 +232,7 @@ impl Session {
 
     /// The content key `id` has when it starts from a state with hash `start_hash`.
     pub fn content_key(&self, col: &Collection, id: &str, start_hash: &str) -> Result<String> {
-        let body = cache::body_hash(&col.replays[id], &devices_at_start(col, id)?)?;
+        let body = cache::body_hash(&col.segments[id], &devices_at_start(col, id)?)?;
         Ok(cache::content_key(&self.setup_id, start_hash, &body))
     }
 
@@ -280,8 +280,8 @@ impl Session {
         Ok(crate::format::hash_hex(&h.finalize()))
     }
 
-    /// Puts the core at the start of trunk `r`.
-    pub fn start_trunk(&mut self, col: &Collection, r: &Replay) -> Result<()> {
+    /// Puts the core at the start of root segment `r`.
+    pub fn start_root(&mut self, col: &Collection, r: &Segment) -> Result<()> {
         let boot = self.boot_state.clone();
         self.core.unserialize(&boot)?;
         // (Only when the boot state didn't bring it back itself: a write makes the core's
@@ -319,8 +319,8 @@ impl Session {
         self.core.unserialize(state)
     }
 
-    /// Plays one replay from the core's current state.
-    pub fn play(&mut self, col: &Collection, id: &str, start_frame: u64, opts: &PlayOptions) -> Result<ReplayResult> {
+    /// Plays one segment from the core's current state.
+    pub fn play(&mut self, col: &Collection, id: &str, start_frame: u64, opts: &PlayOptions) -> Result<SegmentResult> {
         let mut rec = self.begin(col, id, start_frame, opts)?;
         while !self.advance(col, &mut rec, false)? {}
         self.finish(col, rec)
@@ -329,7 +329,7 @@ impl Session {
     /// Starts playing `id` from the core's current state. Call `advance` until it returns
     /// true, then `finish`.
     pub fn begin(&mut self, col: &Collection, id: &str, start_frame: u64, opts: &PlayOptions) -> Result<Recorder> {
-        let r = &col.replays[id];
+        let r = &col.segments[id];
         let frames = r.frames()?;
         let devices = devices_at_start(col, id)?;
         for (port, dev) in &devices {
@@ -466,7 +466,7 @@ impl Session {
     }
 
     /// Ends a played segment: end hash, coverage, and (when recording) the database rows.
-    pub fn finish(&mut self, col: &Collection, mut rec: Recorder) -> Result<ReplayResult> {
+    pub fn finish(&mut self, col: &Collection, mut rec: Recorder) -> Result<SegmentResult> {
         let end_hash = self.state_hash(col)?;
         let ticks = if col.config.tick.is_some() { self.core.tick_count() } else { None };
         let coverage = if rec.record {
@@ -476,7 +476,7 @@ impl Session {
         };
         let end_state = self.state_to_store()?;
         let has_children = !col.children(Some(&rec.id)).is_empty();
-        let poked = col.replays[&rec.id].is_poked();
+        let poked = col.segments[&rec.id].is_poked();
         if let Some(c) = &mut self.cache {
             if rec.record {
                 if has_children {
@@ -489,7 +489,7 @@ impl Session {
                 c.put_snapshot(&end_hash, &end_state)?;
             }
         }
-        Ok(ReplayResult {
+        Ok(SegmentResult {
             id: rec.id,
             start_frame: rec.start_frame,
             frames: rec.frames,
@@ -549,9 +549,9 @@ impl Session {
         Ok(state)
     }
 
-    /// Plays every replay in tree order. `from_scratch` replays each chain from its
-    /// trunk instead of reusing parents' end states (a determinism check).
-    pub fn play_all(&mut self, col: &Collection, opts: &PlayOptions, from_scratch: bool, mut each: impl FnMut(&mut Self, &ReplayResult) -> Result<()>) -> Result<()> {
+    /// Plays every segment in tree order. `from_scratch` replays each chain from its
+    /// root instead of reusing parents' end states (a determinism check).
+    pub fn play_all(&mut self, col: &Collection, opts: &PlayOptions, from_scratch: bool, mut each: impl FnMut(&mut Self, &SegmentResult) -> Result<()>) -> Result<()> {
         let order: Vec<String> = col.tree_order().into_iter().map(|(id, _)| id.to_string()).collect();
         let mut end_states: HashMap<String, (Vec<u8>, u64)> = HashMap::new();
         for id in &order {
@@ -563,17 +563,17 @@ impl Session {
             let result = if from_scratch {
                 let mut start_frame = 0;
                 let quiet = PlayOptions::default();
-                self.start_trunk(col, &col.replays[&chain[0]])?;
+                self.start_root(col, &col.segments[&chain[0]])?;
                 for anc in &chain[..chain.len() - 1] {
                     let res = self.play(col, anc, start_frame, &quiet)?;
                     start_frame += res.frames;
                 }
                 self.play(col, id, start_frame, opts)?
             } else {
-                let start_frame = match col.replays[id].parent() {
+                let start_frame = match col.segments[id].parent() {
                     None => {
-                        self.start_trunk(col, &col.replays[id])?;
-                        trunk_start_frame(&col.replays[id])
+                        self.start_root(col, &col.segments[id])?;
+                        root_start_frame(&col.segments[id])
                     }
                     Some(p) => {
                         let (state, sf) = end_states.get(p).ok_or_else(|| anyhow!("internal: no end state for parent {p}"))?.clone();
@@ -592,24 +592,24 @@ impl Session {
     }
 
     /// Plays the chain down to `id`, starting from the deepest cached ancestor state when allowed.
-    pub fn play_chain(&mut self, col: &Collection, id: &str, opts: &PlayOptions, use_cache: bool) -> Result<Vec<ReplayResult>> {
+    pub fn play_chain(&mut self, col: &Collection, id: &str, opts: &PlayOptions, use_cache: bool) -> Result<Vec<SegmentResult>> {
         let chain: Vec<String> = col.chain(id)?.into_iter().map(String::from).collect();
         let mut start_at = 0;
-        let mut start_frame = trunk_start_frame(&col.replays[&chain[0]]);
+        let mut start_frame = root_start_frame(&col.segments[&chain[0]]);
         let mut loaded = false;
         if use_cache {
             for i in (0..chain.len() - 1).rev() {
                 if let Some(state) = self.load_cached_state(col, &chain[i])? {
                     self.load_state(&state)?;
                     start_at = i + 1;
-                    start_frame = chain[..=i].iter().map(|c| col.replays[c].frames().unwrap_or(0)).sum::<u64>() + trunk_start_frame(&col.replays[&chain[0]]);
+                    start_frame = chain[..=i].iter().map(|c| col.segments[c].frames().unwrap_or(0)).sum::<u64>() + root_start_frame(&col.segments[&chain[0]]);
                     loaded = true;
                     break;
                 }
             }
         }
         if !loaded {
-            self.start_trunk(col, &col.replays[&chain[0]])?;
+            self.start_root(col, &col.segments[&chain[0]])?;
         }
         let mut results = vec![];
         for (i, c) in chain.iter().enumerate().skip(start_at) {
@@ -624,17 +624,17 @@ impl Session {
     // ---- frame-by-frame playback, for interactive tools ----
 
     /// Puts the core at frame 0 of `id`: plays (or loads the cached end state of)
-    /// its ancestors, then sets devices and releases inputs. Returns the replay's
+    /// its ancestors, then sets devices and releases inputs. Returns the segment's
     /// start frame counted from power-on.
-    pub fn enter_replay(&mut self, col: &Collection, id: &str) -> Result<u64> {
+    pub fn enter_segment(&mut self, col: &Collection, id: &str) -> Result<u64> {
         let chain: Vec<String> = col.chain(id)?.into_iter().map(String::from).collect();
         let quiet = PlayOptions { record: true, ..Default::default() };
-        let mut start_frame = trunk_start_frame(&col.replays[&chain[0]]);
+        let mut start_frame = root_start_frame(&col.segments[&chain[0]]);
         if chain.len() == 1 {
-            self.start_trunk(col, &col.replays[&chain[0]])?;
+            self.start_root(col, &col.segments[&chain[0]])?;
         } else {
             let parent = &chain[chain.len() - 2];
-            let ancestors_frames: u64 = chain[..chain.len() - 1].iter().map(|c| col.replays[c].frames().unwrap_or(0)).sum();
+            let ancestors_frames: u64 = chain[..chain.len() - 1].iter().map(|c| col.segments[c].frames().unwrap_or(0)).sum();
             if let Some(state) = self.load_cached_state(col, parent)? {
                 self.load_state(&state)?;
                 start_frame += ancestors_frames;
@@ -652,7 +652,7 @@ impl Session {
 
     /// Sets port devices and held inputs to what they are at the start of
     /// frame `frame` of `id` (before that frame's lines apply). Needed after
-    /// loading a mid-replay snapshot, because input state is not part of a save state.
+    /// loading a mid-segment snapshot, because input state is not part of a save state.
     pub fn restore_inputs(&mut self, col: &Collection, id: &str, frame: u64) -> Result<()> {
         restore_inputs_on(&mut self.core, col, id, frame)
     }
@@ -660,7 +660,7 @@ impl Session {
     /// Applies frame `frame`'s lines of `id` and runs that frame.
     pub fn step(&mut self, col: &Collection, id: &str, frame: u64, capture: bool) -> Result<Option<Frame>> {
         crate::crash::set_place(id, frame);
-        let r = &col.replays[id];
+        let r = &col.segments[id];
         let mut impulses = vec![];
         let first = r.lines.partition_point(|l| l.frame < frame);
         for line in r.lines[first..].iter().take_while(|l| l.frame == frame) {
@@ -704,7 +704,7 @@ impl Session {
         if col.tree_status(id) != Status::Clean {
             return Ok(None);
         }
-        match col.replays[id].get("end-hash") {
+        match col.segments[id].get("end-hash") {
             Some(h) => c.get_snapshot(h),
             None => Ok(None),
         }
@@ -783,7 +783,7 @@ pub fn write_memory(core: &mut Core, region: &str, address: u64, bytes: &[u8]) -
 pub fn restore_inputs_on(core: &mut Core, col: &Collection, id: &str, frame: u64) -> Result<()> {
     let mut devs = devices_at_start(col, id)?;
     core.clear_inputs();
-    for l in col.replays[id].lines.iter().take_while(|l| l.frame < frame) {
+    for l in col.segments[id].lines.iter().take_while(|l| l.frame < frame) {
         match &l.command {
             Command::Input { key, value, impulse: false } => core.set_input(*key, *value),
             Command::Device { port, device } => {
@@ -798,7 +798,7 @@ pub fn restore_inputs_on(core: &mut Core, col: &Collection, id: &str, frame: u64
     Ok(())
 }
 
-pub fn trunk_start_frame(r: &Replay) -> u64 {
+pub fn root_start_frame(r: &Segment) -> u64 {
     if r.get("snapshot").is_some() {
         r.get("start-frame").and_then(|s| s.parse().ok()).unwrap_or(0)
     } else {

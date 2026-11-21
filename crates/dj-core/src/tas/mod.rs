@@ -14,7 +14,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 use crate::collection::Collection;
-use crate::format::{Command, InputKey, Replay};
+use crate::format::{Command, InputKey, Segment};
 pub use profile::Profile;
 
 /// A movie in memory: one record per frame, every button in every record.
@@ -220,7 +220,7 @@ pub fn text(files: &BTreeMap<String, Vec<u8>>, name: &str) -> Option<String> {
 
 /// A movie turned into a root segment, not saved yet.
 pub struct Imported {
-    pub replay: Replay,
+    pub segment: Segment,
     pub movie: Movie,
     /// Things the author should know: the ROM didn't match, core options differ, and so on.
     pub warnings: Vec<String>,
@@ -278,22 +278,22 @@ pub fn import(ctx: &Ctx, file: &Path, title: Option<&str>, strict: bool) -> Resu
             }
         }
     };
-    let (mut replay, mut more) = to_segment(&movie, &profile, &id, &title, &file_name)?;
+    let (mut segment, mut more) = to_segment(&movie, &profile, &id, &title, &file_name)?;
     warnings.append(&mut more);
     match &movie.start {
         Start::PowerOn => {}
         Start::SaveRam(data) => {
             let blob = col.write_blob(data, "sram")?;
-            replay.set("sram", &blob);
+            segment.set("sram", &blob);
         }
         Start::Savestate(_) => unreachable!("to_segment refuses it"),
     }
-    Ok(Imported { replay, movie, warnings })
+    Ok(Imported { segment, movie, warnings })
 }
 
 /// The segment a movie plays as: a root segment whose lines change inputs only where the
 /// movie's records do. It refuses what a segment can't hold, naming the frame.
-pub fn to_segment(movie: &Movie, profile: &Profile, id: &str, title: &str, file_name: &str) -> Result<(Replay, Vec<String>)> {
+pub fn to_segment(movie: &Movie, profile: &Profile, id: &str, title: &str, file_name: &str) -> Result<(Segment, Vec<String>)> {
     if let Start::Savestate(who) = &movie.start {
         bail!("the movie starts from {who}'s own savestate, which dj can't load: only movies that start from power-on or from save RAM can be imported");
     }
@@ -355,7 +355,7 @@ pub fn to_segment(movie: &Movie, profile: &Profile, id: &str, title: &str, file_
         };
         warnings.push(format!("on {lossy} frames the core can't read the movie's input exactly: {why}. Those frames may play differently"));
     }
-    let mut r = Replay::new(id, None, title, movie.frames.len() as u64);
+    let mut r = Segment::new(id, None, title, movie.frames.len() as u64);
     r.set("tags", "tas imported");
     r.set("tas-source", &one_line(&format!("bk2 {}", movie.meta.emulator)));
     r.set("tas-file", &one_line(file_name));
@@ -370,7 +370,7 @@ pub fn to_segment(movie: &Movie, profile: &Profile, id: &str, title: &str, file_
         text.push_str(&l);
         text.push('\n');
     }
-    Ok((Replay::parse(&text).context("the imported segment didn't read back")?, warnings))
+    Ok((Segment::parse(&text).context("the imported segment didn't read back")?, warnings))
 }
 
 /// The frames on which a pad holds Left and Right, or Up and Down, at once, if any.
@@ -441,7 +441,7 @@ pub fn from_chain(col: &Collection, end: ExportEnd, rom: Option<&[u8]>, strict: 
     let platform = profile.platform.clone();
     let mut warnings = profile.check_options(&col.config.core.options);
     let keys = profile.keys();
-    let root = &col.replays[chain[0]];
+    let root = &col.segments[chain[0]];
     let mut left_out = LeftOut { snapshot: root.get("snapshot").is_some(), ..Default::default() };
     let start = match root.get("sram") {
         Some(b) => Start::SaveRam(col.read_blob(b, "sram")?),
@@ -452,7 +452,7 @@ pub fn from_chain(col: &Collection, end: ExportEnd, rom: Option<&[u8]>, strict: 
     let mut markers = vec![];
     let mut dirty = 0;
     for (n, id) in chain.iter().enumerate() {
-        let seg = &col.replays[*id];
+        let seg = &col.segments[*id];
         let mut len = seg.frames()?;
         if n + 1 == chain.len() {
             if let Some(t) = end.through {
@@ -502,7 +502,7 @@ pub fn from_chain(col: &Collection, end: ExportEnd, rom: Option<&[u8]>, strict: 
     if dirty > 0 {
         warnings.push(format!("{dirty} of the {} segments are dirty, so nothing has checked that the chain still plays as recorded", chain.len()));
     }
-    let last = &col.replays[*chain.last().unwrap()];
+    let last = &col.segments[*chain.last().unwrap()];
     let mut meta = Meta { emulator: format!("decomp-dj {}", env!("CARGO_PKG_VERSION")), game: Some(col.config.name.clone()), ..Default::default() };
     meta.comments.push(format!("Exported by decomp-dj from segment {} \"{}\"{}, {} frames", end.segment, one_line(last.title()), end.through.map(|t| format!(" through frame {t}")).unwrap_or_default(), frames.len()));
     // A Game Boy Color game is a GBC movie.

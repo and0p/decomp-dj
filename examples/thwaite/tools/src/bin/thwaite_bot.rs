@@ -97,7 +97,7 @@ fn main() -> Result<()> {
     let mut col = Collection::open(Path::new(&a[1]))?;
     let id = col.resolve(&a[4])?.to_string();
     let mut s = Session::open_with(&col, Path::new(&a[2]), Path::new(&a[3]), false)?;
-    s.enter_replay(&col, &id)?;
+    s.enter_segment(&col, &id)?;
     let mut bot = Bot { held: BTreeMap::new(), lines: vec![] };
     let mut frame = 0u64;
     let ram = |s: &mut Session| -> Result<Vec<u8>> { Ok(s.core.memory(MEMORY_SYSTEM_RAM).ok_or_else(|| anyhow!("no RAM"))?.to_vec()) };

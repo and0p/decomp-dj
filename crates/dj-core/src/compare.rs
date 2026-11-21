@@ -525,11 +525,6 @@ impl Comparison {
         restore_inputs_on(&mut self.core, col, id, 0)
     }
 
-    /// `enter`, with the inputs held at frame 0 given.
-    pub fn enter_with(&mut self, inputs: &InputState) {
-        inputs.apply(&mut self.core);
-    }
-
     /// Applies frame `frame`'s lines of `id` and runs that frame, for a `sync = "state"` core.
     pub fn step(&mut self, col: &Collection, id: &str, frame: u64, capture: bool) -> Result<Stepped> {
         self.step_with(&Action::of_frame(col, id, frame), capture)
@@ -704,8 +699,7 @@ pub enum Loads {
     File(PathBuf),
 }
 
-/// Everything needed to load a comparison core, resolved from the project: what a
-/// comparison worker gets (.agents/_archive/ISOLATION_PLAN.md).
+/// Everything needed to load a comparison core, resolved from the project.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct OpenSpec {
     pub name: String,
@@ -719,9 +713,8 @@ pub struct OpenSpec {
     pub options: BTreeMap<String, String>,
     /// `.local/compare/<name>/`: the core's save and system folders.
     pub work: PathBuf,
-    /// The baseline core and its options, for a worker's copy of it.
+    /// The baseline core's library: a comparison core can't be the same file.
     pub baseline_library: PathBuf,
-    pub baseline_options: BTreeMap<String, String>,
     pub rom: Option<PathBuf>,
 }
 
@@ -753,7 +746,6 @@ impl OpenSpec {
             options: cfg.options.clone(),
             work: col.local_dir().join("compare").join(sanitize(name)),
             baseline_library: crate::libretro::library_path(baseline_core),
-            baseline_options: col.config.core.options.clone(),
             rom: rom.map(Path::to_path_buf),
         })
     }
@@ -771,7 +763,7 @@ impl InputState {
     pub fn at(col: &Collection, id: &str, frame: u64) -> Result<InputState> {
         let mut devs = crate::player::devices_at_start(col, id)?;
         let mut held: BTreeMap<InputKey, i16> = BTreeMap::new();
-        for l in col.replays[id].lines.iter().take_while(|l| l.frame < frame) {
+        for l in col.segments[id].lines.iter().take_while(|l| l.frame < frame) {
             match &l.command {
                 Command::Input { key, value, impulse: false } => {
                     held.insert(*key, *value);
@@ -810,7 +802,7 @@ pub enum Action {
 impl Action {
     /// The lines of frame `frame` of segment `id` a comparison core acts on.
     pub fn of_frame(col: &Collection, id: &str, frame: u64) -> Vec<Action> {
-        let r = &col.replays[id];
+        let r = &col.segments[id];
         let first = r.lines.partition_point(|l| l.frame < frame);
         r.lines[first..]
             .iter()
@@ -824,223 +816,6 @@ impl Action {
                 Command::Event { .. } | Command::Screenshot => None,
             })
             .collect()
-    }
-}
-
-/// The comparison worker (`__dj-worker compare`): the comparison core, and a copy of the
-/// baseline core, loaded with the baseline's state before a sync or a check. Only for
-/// `sync = "state"`: a core that takes events reads the baseline in the middle of a frame,
-/// which a copy in another process can't give it. dj doesn't use the worker; it is kept so
-/// that going back is cheap (.agents/yield-parity/PLAN.md, "Built so far").
-#[derive(Default)]
-pub struct CompareWorker {
-    cmp: Option<Comparison>,
-    shadow: Option<Core>,
-    /// The shadow's private copy of the library, when it's the comparison core's own file.
-    shadow_copy: Option<PathBuf>,
-}
-
-impl Drop for CompareWorker {
-    fn drop(&mut self) {
-        self.cmp = None;
-        self.shadow = None;
-        if let Some(c) = &self.shadow_copy {
-            let _ = std::fs::remove_file(c);
-        }
-    }
-}
-
-fn verdict_json(v: &Verdict) -> serde_json::Value {
-    match v {
-        Verdict::Match => serde_json::json!({ "match": true }),
-        Verdict::Mismatch(w, d) => serde_json::json!({ "mismatch": w, "diffs": d }),
-        Verdict::Skip(w) => serde_json::json!({ "skip": w }),
-    }
-}
-
-impl CompareWorker {
-    /// Loads the baseline's copy. When it's the comparison core's own library, both load
-    /// from private copies of the file, at paths of their own: macOS hands back an
-    /// already-loaded library when the path asked for is its install name, and a library
-    /// built with its absolute path as install name would otherwise have its copy given back
-    /// for the original (the two cores sharing one instance). Loaded first, as in dj's own
-    /// process. Returns the core and its copy's path, to remove.
-    fn load_shadow(spec: &OpenSpec) -> Result<(Core, Option<PathBuf>)> {
-        let work = spec.work.join("baseline");
-        std::fs::create_dir_all(&work)?;
-        let same = std::fs::canonicalize(&spec.library).ok().is_some_and(|p| std::fs::canonicalize(&spec.baseline_library).ok() == Some(p));
-        let copy = if same {
-            let file = spec.baseline_library.file_name().ok_or_else(|| anyhow!("bad core path {}", spec.baseline_library.display()))?.to_string_lossy().into_owned();
-            // Copies left by workers that were killed (a file still loaded elsewhere stays).
-            for e in std::fs::read_dir(&work).into_iter().flatten().flatten() {
-                if e.file_name().to_string_lossy().ends_with(&format!("-{file}")) {
-                    let _ = std::fs::remove_file(e.path());
-                }
-            }
-            let copy = work.join(format!("{}-{file}", std::process::id()));
-            std::fs::copy(&spec.baseline_library, &copy).with_context(|| format!("copying {} for the baseline's copy", spec.baseline_library.display()))?;
-            Some(copy)
-        } else {
-            None
-        };
-        let path = copy.as_deref().unwrap_or(&spec.baseline_library);
-        let core = (|| -> Result<Core> {
-            let mut core = Core::load_in(crate::libretro::BASELINE, path, &work, &spec.baseline_options).context("loading a copy of the baseline core for the comparison core's handle")?;
-            match &spec.rom {
-                Some(rom) => core.load_game(rom)?,
-                None => core.load_no_game()?,
-            }
-            Ok(core)
-        })();
-        match core {
-            Ok(core) => Ok((core, copy)),
-            Err(e) => {
-                if let Some(c) = copy {
-                    let _ = std::fs::remove_file(c);
-                }
-                Err(e)
-            }
-        }
-    }
-
-    /// The baseline's copy, with `state` loaded into it.
-    fn shadow<'a>(shadow: &'a mut Option<Core>, state: &[u8]) -> Result<&'a mut Core> {
-        let core = shadow.as_mut().ok_or_else(|| anyhow!("no copy of the baseline is loaded"))?;
-        core.unserialize(state).context("loading the baseline's state into its copy")?;
-        Ok(core)
-    }
-
-    pub fn request(&mut self, cmd: &str, req: crate::isolate::Request) -> crate::isolate::Reply {
-        use serde_json::json;
-        let state = req.bulk.first().map(Vec::as_slice);
-        if cmd == "open" {
-            let spec: OpenSpec = serde_json::from_value(req.args["spec"].clone())?;
-            let (shadow, copy) = Self::load_shadow(&spec)?;
-            self.shadow = Some(shadow);
-            self.shadow_copy = copy;
-            let c = Comparison::open_spec(&spec)?;
-            let info = json!({ "aspect": c.aspect() });
-            self.cmp = Some(c);
-            return Ok((info, vec![]));
-        }
-        let Some(c) = self.cmp.as_mut() else { bail!("no comparison core is loaded") };
-        match cmd {
-            "sync" => {
-                let inputs: InputState = serde_json::from_value(req.args["inputs"].clone())?;
-                let shadow = Self::shadow(&mut self.shadow, state.ok_or_else(|| anyhow!("a sync needs the baseline's state"))?)?;
-                let out = c.sync_with(shadow, &inputs)?;
-                Ok((match out {
-                    SyncOutcome::Synced => json!({ "synced": true }),
-                    SyncOutcome::Failed(why) => json!({ "failed": why }),
-                }, vec![]))
-            }
-            "enter" => {
-                c.enter_with(&serde_json::from_value(req.args["inputs"].clone())?);
-                Ok((json!(null), vec![]))
-            }
-            "step" => {
-                let actions: Vec<Action> = serde_json::from_value(req.args["actions"].clone())?;
-                let st = c.step_with(&actions, req.args["capture"].as_bool().unwrap_or(false))?;
-                let size = st.frame.as_ref().map(|f| json!({ "width": f.width, "height": f.height }));
-                Ok((json!({ "frame": size }), st.frame.map(|f| vec![f.rgb]).unwrap_or_default()))
-            }
-            "check" => {
-                let shadow = Self::shadow(&mut self.shadow, state.ok_or_else(|| anyhow!("a parity check needs the baseline's state"))?)?;
-                let v = c.check(shadow)?;
-                Ok((verdict_json(&v), vec![]))
-            }
-            other => bail!("unknown comparison request {other}"),
-        }
-    }
-}
-
-/// How long a comparison worker may take: to load, and for anything else.
-const OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
-const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// A comparison core running in a worker process (.agents/_archive/ISOLATION_PLAN.md): the same
-/// calls as [`Comparison`], and a crash or hang in the core ends the worker, not dj.
-pub struct RemoteComparison {
-    pub name: String,
-    pub build: String,
-    pub mode: SyncMode,
-    aspect: f32,
-    worker: crate::isolate::Worker,
-}
-
-impl RemoteComparison {
-    pub fn open(col: &Collection, name: &str, baseline_core: &Path, rom: Option<&Path>) -> Result<RemoteComparison> {
-        let spec = OpenSpec::resolve(col, name, baseline_core, rom)?;
-        if spec.mode != SyncMode::State {
-            bail!("[[compare]] \"{name}\" takes events, and such a core runs in dj's own process: only sync = \"state\" can run in a worker");
-        }
-        let mut worker = crate::isolate::Worker::spawn("compare")?;
-        let (info, _) = worker
-            .request("open", serde_json::json!({ "spec": spec }), &[], crate::isolate::timeout(OPEN_TIMEOUT), "while loading")
-            .map_err(|why| if worker.dead().is_some() { anyhow!("the comparison core {why}") } else { anyhow!("{why}") })?;
-        Ok(RemoteComparison {
-            name: spec.name,
-            build: spec.build,
-            mode: spec.mode,
-            aspect: info["aspect"].as_f64().unwrap_or(0.0) as f32,
-            worker,
-        })
-    }
-
-    /// Why the worker is gone (it crashed or hung), once it is: the core must be loaded again.
-    pub fn dead(&self) -> Option<&str> {
-        self.worker.dead()
-    }
-
-    fn call(&mut self, cmd: &str, args: serde_json::Value, bulk: &[&[u8]], what: &str) -> Result<(serde_json::Value, Vec<Vec<u8>>)> {
-        self.worker.request(cmd, args, bulk, crate::isolate::timeout(CALL_TIMEOUT), what).map_err(|why| {
-            if self.worker.dead().is_some() {
-                anyhow!("the comparison core {why}; Compare > Restart comparison core loads it again")
-            } else {
-                anyhow!("{why}")
-            }
-        })
-    }
-
-    pub fn sync(&mut self, baseline: &mut Core, col: &Collection, id: &str, frame: u64) -> Result<SyncOutcome> {
-        let state = baseline.serialize().context("saving the baseline's state")?;
-        let args = serde_json::json!({ "inputs": InputState::at(col, id, frame)? });
-        let (v, _) = self.call("sync", args, &[&state], "while loading the baseline's state")?;
-        Ok(match v["failed"].as_str() {
-            Some(why) => SyncOutcome::Failed(why.to_string()),
-            None => SyncOutcome::Synced,
-        })
-    }
-
-    pub fn enter(&mut self, col: &Collection, id: &str) -> Result<()> {
-        self.call("enter", serde_json::json!({ "inputs": InputState::at(col, id, 0)? }), &[], "while entering a segment")?;
-        Ok(())
-    }
-
-    pub fn step(&mut self, col: &Collection, id: &str, frame: u64, capture: bool) -> Result<Stepped> {
-        let actions = Action::of_frame(col, id, frame);
-        let (v, mut bytes) = self.call("step", serde_json::json!({ "actions": actions, "capture": capture }), &[], &format!("while running frame {frame}"))?;
-        let frame = match (&v["frame"], bytes.pop()) {
-            (serde_json::Value::Object(size), Some(rgb)) => Some(Frame { width: size["width"].as_u64().unwrap_or(0) as u32, height: size["height"].as_u64().unwrap_or(0) as u32, rgb }),
-            _ => None,
-        };
-        Ok(Stepped { frame })
-    }
-
-    pub fn check(&mut self, baseline: &mut Core) -> Result<Verdict> {
-        let state = baseline.serialize().context("saving the baseline's state")?;
-        let (v, _) = self.call("check", serde_json::json!({}), &[&state], "while comparing RAM")?;
-        Ok(if let Some(w) = v["mismatch"].as_str() {
-            Verdict::Mismatch(w.to_string(), serde_json::from_value(v["diffs"].clone()).unwrap_or_default())
-        } else if let Some(w) = v["skip"].as_str() {
-            Verdict::Skip(w.to_string())
-        } else {
-            Verdict::Match
-        })
-    }
-
-    pub fn aspect(&self) -> f32 {
-        self.aspect
     }
 }
 

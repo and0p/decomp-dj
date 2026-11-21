@@ -13,7 +13,7 @@ CC ?= cc
 CFLAGS ?= -O2
 BUILD ?= ../../build/decomp
 # decomp-dj's header for comparison cores (dj_compare.h).
-DJ_INCLUDE ?= ../../../../connectors/include
+DJ_INCLUDE ?= ../../../../include
 
 UNAME := $(shell uname -s)
 ifeq ($(UNAME),Darwin)

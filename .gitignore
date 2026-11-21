@@ -1,4 +1,4 @@
-# Rust output: each crate builds into its own target/ (player/target, gui/target)
+# Rust output: the workspace builds into target/
 target/
 # Cores and other build products
 build/

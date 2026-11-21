@@ -1,0 +1,11 @@
+[package]
+name = "thwaite-tools"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Scratch tools for the Thwaite example and its decomp: a bot that records segments, a breakpoint-table check, and side-by-side pictures"
+publish = false
+
+[dependencies]
+dj-core.workspace = true
+anyhow.workspace = true

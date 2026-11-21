@@ -52,7 +52,7 @@ sha256 = "…"                       # optional pin
 
 ## Writing a plugin in C
 
-Copy [decoders/include/dj_decoder.h](../decoders/include/dj_decoder.h) (MIT) and export
+Copy [include/dj_decoder.h](../include/dj_decoder.h) (MIT) and export
 `dj_decoders`:
 
 ```c
@@ -85,7 +85,7 @@ const struct dj_decoder* const* dj_decoders(size_t* count) { *count = 1; return 
 ```
 
 Build it as a shared library (`cc -shared -fPIC -O2 -o libmine.so mine.c`).
-[player/tests/testdecoder/toy.c](../player/tests/testdecoder/toy.c) is a complete one, for a
+[crates/dj-core/tests/testdecoder/toy.c](../player/tests/testdecoder/toy.c) is a complete one, for a
 made-up instruction set.
 
 ### The rules
@@ -122,7 +122,7 @@ made-up instruction set.
 
 ## Writing a plugin in Rust
 
-The [dj-decoder](../decoders/dj-decoder/) crate has the `Decoder` trait dj uses itself, and
+The [dj-decoder](../crates/dj-decoder/) crate has the `Decoder` trait dj uses itself, and
 `export_decoders!`, which exports Rust decoders through the C interface:
 
 ```toml
@@ -130,7 +130,7 @@ The [dj-decoder](../decoders/dj-decoder/) crate has the `Decoder` trait dj uses 
 crate-type = ["cdylib"]
 
 [dependencies]
-dj-decoder = { path = "../decomp-dj/decoders/dj-decoder" }
+dj-decoder = { path = "../decomp-dj/crates/dj-decoder" }
 ```
 
 ```rust
@@ -149,7 +149,7 @@ dj_decoder::export_decoders!(Wdc65816);
 ```
 
 Decoders are unit structs that implement `Default`. A panic inside `decode` is caught and
-reads as "not an instruction" rather than crossing into dj. [decoders/reference](../decoders/reference/)
+reads as "not an instruction" rather than crossing into dj. [crates/dj-reference-decoders](../crates/dj-reference-decoders/)
 exports the built-in decoders this way; dj's tests check that it decodes exactly as they do.
 
 ## Decoders in a core

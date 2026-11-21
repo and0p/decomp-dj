@@ -9,7 +9,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
-version="$(sed -n 's/^version = "\(.*\)"/\1/p' player/Cargo.toml | head -1)"
+version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 case "$(uname -s)" in
   Darwin) os=macos ;;
   Linux) os=linux ;;
@@ -26,9 +26,7 @@ exe=""; lib="libdj_reference_decoders.so"
 [ "$os" = macos ] && lib="libdj_reference_decoders.dylib"
 
 if [ "${1:-}" = "--build" ]; then
-  (cd player && cargo build --release --locked)
-  (cd gui && cargo build --release --locked)
-  (cd decoders/reference && cargo build --release --locked)
+  cargo build --release --locked
 fi
 
 name="decomp-dj-$version-$os-$arch"
@@ -37,36 +35,35 @@ rm -rf "$out" "dist/$name.zip"
 mkdir -p "$out"
 
 # The programs. On macOS the GUI is an app bundle (its icon in Finder and the Dock).
-cp "player/target/release/dj$exe" "$out/"
+cp "target/release/dj$exe" "$out/"
 if [ "$os" = macos ]; then
-  gui/macos/bundle.sh --no-build >/dev/null
-  cp -R gui/target/release/decomp-dj.app "$out/"
+  crates/dj-gui/macos/bundle.sh --no-build >/dev/null
+  cp -R target/release/decomp-dj.app "$out/"
 else
-  cp "gui/target/release/dj-gui$exe" "$out/"
+  cp "target/release/dj-gui$exe" "$out/"
 fi
 
-# Decoder plugins (docs/decoders.md): the C header, and the reference plugin as an example
-# to load. A bare [[decoders]] path is looked for here, next to dj.
+# Decoder plugins (docs/decoders.md): the reference plugin as an example to load. A bare
+# [[decoders]] path is looked for here, next to dj.
 mkdir -p "$out/decoders"
-cp decoders/include/dj_decoder.h "$out/decoders/"
-cp "decoders/reference/target/release/$lib" "$out/decoders/"
+cp "target/release/$lib" "$out/decoders/"
 
 # Connectors: the patches and build scripts that make a core report coverage. Cores aren't
 # shipped; connectors/README.md says how to build one.
 mkdir -p "$out/connectors"
 for d in connectors/*/; do
   mkdir -p "$out/$d"
-  cp "$d"*.patch "$d"*.sh "$d"README.md "$out/$d" 2>/dev/null || true
+  cp "$d"*.patch "$d"*.sh "$d"README.md "$d"LICENSE.txt "$out/$d" 2>/dev/null || true
 done
 cp connectors/README.md "$out/connectors/"
-# The header for comparison cores.
-mkdir -p "$out/connectors/include"
-cp connectors/include/dj_compare.h connectors/include/dj_connector.h "$out/connectors/include/"
+# The C headers: decoder plugins, connectors and comparison cores.
+mkdir -p "$out/include"
+cp include/*.h "$out/include/"
 
 # Linux: the desktop entry, so launchers and Wayland desktops show the icon.
 if [ "$os" = linux ]; then
   mkdir -p "$out/linux"
-  cp gui/linux/decomp-dj.desktop gui/linux/install-desktop-entry.sh "$out/linux/"
+  cp crates/dj-gui/linux/decomp-dj.desktop crates/dj-gui/linux/install-desktop-entry.sh "$out/linux/"
   cp assets/icon_gui.png "$out/linux/decomp-dj.png"
 fi
 

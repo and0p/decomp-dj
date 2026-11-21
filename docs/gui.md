@@ -5,7 +5,7 @@ libretro core, shows the segment tree, plays and seeks with live video, and edit
 inputs on a piano roll. It is a prototype.
 
 ```sh
-gui/target/release/dj-gui examples/thwaite       # or File > Open project…
+target/release/dj-gui examples/thwaite       # or File > Open project…
 ```
 
 The ROM and core come from the project's `.local/local.toml` (written by the CLI's

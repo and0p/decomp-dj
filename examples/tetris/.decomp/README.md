@@ -109,7 +109,7 @@ a GPU backend can draw the same list.
 
 For decomp-dj it is a comparison core that takes events (decomp-dj's
 `docs/connectors.md`, "Comparison cores"), built on the helper in decomp-dj's
-`connectors/include/dj_compare.h` (the Makefile's `DJ_INCLUDE` says where that is). dj
+`include/dj_compare.h` (the Makefile's `DJ_INCLUDE` says where that is). dj
 tells it where the original has got to; it runs itself to the same place and compares with
 `tetris_check_nes_parity`.
 

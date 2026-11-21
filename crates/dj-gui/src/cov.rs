@@ -1,0 +1,1146 @@
+//! The Functions tab in the left sidebar: totals, a ROM map, a function list, and live
+//! coverage of the segment being played (docs/coverage.md).
+//!
+//! The project's coverage comes from `dj_core::coverage::build_report`, the same numbers
+//! as `dj summary`: segments that aren't dirty and whose current content has been played into
+//! the local database. Live coverage is what the core's connector has seen since the
+//! selected segment started playing (or was last edited); it never counts towards the
+//! project until the segment is clean and stored.
+
+use crate::strings as t;
+use dj_core::coverage::{FirstHit, Report, FLAG_OPCODE};
+use eframe::egui::{self, Color32, RichText};
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use crate::App;
+
+/// Same colors as docs/concepts.md: green covered, blue unreachable (annotations.toml's
+/// unreachable code and data alike).
+pub const COVERED: Color32 = Color32::from_rgb(92, 184, 92);
+pub const UNREACHABLE: Color32 = Color32::from_rgb(90, 140, 230);
+/// New code not counted yet: run by unsaved segments (drafts too) or by the segment being
+/// played, and by no segment that counts. A segment counts once it is saved, clean, and a
+/// full pass of its current content is in the database (`App::live_pending` says which is
+/// missing).
+pub const LIVE: Color32 = Color32::from_rgb(214, 226, 110);
+/// Run only by dirty segments, the last time each played: it counts once they are clean.
+pub const DIRTY_ONLY: Color32 = Color32::from_rgb(58, 92, 62);
+const EMPTY: Color32 = Color32::from_gray(58);
+
+/// How long a square stays highlighted after live play reaches new code in it.
+const FLASH_SECS: f64 = 1.5;
+/// How long a square glows after its code runs (new or not).
+const GLOW_SECS: f64 = 0.5;
+/// In `CovState::cell_at`: no unit at this offset.
+const NO_CELL: u32 = u32::MAX;
+
+/// What the ROM map under the sidebar shows (its tabs).
+#[derive(Clone, Copy, PartialEq)]
+pub enum MapView {
+    /// Coverage, with parity's purple, orange and red over it.
+    Combined,
+    Coverage,
+    Parity,
+    /// Only the tabs.
+    Hidden,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Sort {
+    Rom,
+    MostUncovered,
+    LeastCovered,
+    Name,
+}
+
+/// One square of the ROM map: a function, or (without a symbol map) a fixed slice of PRG.
+pub struct Cell {
+    pub name: String,
+    pub offset: u64,
+    pub size: u64,
+    pub cpu_addr: Option<u64>,
+    /// Instructions (bytes without symbols) that count towards coverage.
+    pub units: usize,
+    pub covered: usize,
+    pub unreachable: usize,
+    /// Bytes annotations.toml marks as data (none of them count).
+    pub data: usize,
+    pub blocks: usize,
+    pub blocks_covered: usize,
+    /// Units only dirty segments ran (not counted, and not new in unsaved ones either).
+    pub dirty: usize,
+    /// Index into `Report::functions`, when the cell is a function.
+    pub function: Option<usize>,
+}
+
+#[derive(Default)]
+pub struct Live {
+    /// Segment the live flags belong to.
+    pub id: Option<String>,
+    /// The connector's PRG flags as last read.
+    pub prg: Vec<u8>,
+    /// Units the live play or an unsaved segment ran that no segment that counts runs, in all
+    /// and per cell (yellow-green).
+    pub new: usize,
+    /// ... of which the selected segment ran: in the live play, or in its own unsaved pass.
+    pub segment: usize,
+    pub new_per_cell: Vec<usize>,
+    /// When each cell last gained live coverage (seconds, egui time).
+    pub flash: HashMap<usize, f64>,
+    /// When each cell's code last ran at all (seconds, egui time): the activity glow.
+    pub glow: HashMap<usize, f64>,
+}
+
+pub struct CovState {
+    pub report: Option<Report>,
+    pub error: Option<String>,
+    /// The report no longer matches the segments or the database.
+    pub stale: bool,
+    pub cells: Vec<Cell>,
+    /// Cell holding each PRG offset's unit, for live updates: (cell, unit offset).
+    unit_cells: Vec<(usize, u64)>,
+    /// The same by offset: the cell of the unit at each PRG offset (`NO_CELL`: none), so
+    /// a frame's flags are looked up where they are set, not unit by unit.
+    cell_at: Vec<u32>,
+    /// Unique instructions per segment (the tree's "+N" marks).
+    pub unique: HashMap<String, usize>,
+    pub sort: Sort,
+    pub filter: String,
+    pub selected: Option<usize>,
+    /// Scroll the list to the selected cell on the next draw.
+    scroll_to_selected: bool,
+    hits: Option<(usize, Result<Vec<FirstHit>, String>)>,
+    pub live: Live,
+    rom: Option<(PathBuf, Vec<u8>)>,
+    /// How long building the last report took, for the tooltip.
+    took_ms: u128,
+    /// Per cell: parity with the loaded comparison core (crate::parity::Counts).
+    pub parity_cells: Vec<crate::parity::Counts>,
+    /// The cells or what ran changed: count parity again.
+    parity_stale: bool,
+}
+
+impl Default for CovState {
+    fn default() -> Self {
+        CovState {
+            report: None,
+            error: None,
+            stale: true,
+            cells: vec![],
+            unit_cells: vec![],
+            cell_at: vec![],
+            unique: HashMap::new(),
+            sort: Sort::Rom,
+            filter: String::new(),
+            selected: None,
+            scroll_to_selected: false,
+            hits: None,
+            live: Live::default(),
+            rom: None,
+            took_ms: 0,
+            parity_cells: vec![],
+            parity_stale: true,
+        }
+    }
+}
+
+pub(crate) fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
+}
+
+/// A cell's fill: grey when nothing ran, green as more of it is covered (full green only
+/// at 100%), yellow-green where unsaved segments or live play add new code, dark faded green
+/// where only dirty segments ran it, blue when it is all unreachable or data.
+fn cell_color(c: &Cell, live_new: usize) -> Color32 {
+    let base = counted_color(c);
+    if c.units == 0 {
+        base
+    } else if live_new > 0 {
+        let after = (c.covered + live_new) as f32 / c.units as f32;
+        mix(base, LIVE, 0.45 + 0.55 * after)
+    } else if c.dirty > 0 {
+        let after = (c.covered + c.dirty) as f32 / c.units as f32;
+        mix(base, DIRTY_ONLY, 0.5 + 0.5 * after)
+    } else {
+        base
+    }
+}
+
+fn counted_color(c: &Cell) -> Color32 {
+    if c.units == 0 {
+        return if c.unreachable + c.data > 0 { UNREACHABLE } else { EMPTY };
+    }
+    if c.covered == 0 {
+        EMPTY
+    } else if c.covered >= c.units {
+        COVERED
+    } else {
+        mix(EMPTY, COVERED, 0.3 + 0.55 * c.covered as f32 / c.units as f32)
+    }
+}
+
+/// The annotations.toml entries over a cell, with why each is there.
+fn annotation_notes(ui: &mut egui::Ui, ann: &dj_core::annotations::Annotations, region: &str, c: &Cell) {
+    use dj_core::annotations::Kind;
+    for e in ann.entries.iter().filter(|e| e.region == region && e.start < c.offset + c.size.max(1) && e.end >= c.offset) {
+        let (color, what) = match e.kind {
+            Kind::Unreachable => (UNREACHABLE, t::UNREACHABLE.to_string()),
+            Kind::Data => (UNREACHABLE, t::DATA.to_string()),
+            Kind::Function if e.start == c.offset => (Color32::GRAY, format!("named {}", e.name.as_deref().unwrap_or(""))),
+            Kind::Function => continue,
+        };
+        let why = if e.why.is_empty() { String::new() } else { format!(": {}", e.why) };
+        ui.label(RichText::new(format!("{} {what}{why}", e.range_text())).small().color(color));
+    }
+}
+
+fn pct(a: usize, b: usize) -> String {
+    if b == 0 {
+        "-".into()
+    } else {
+        format!("{:.1}%", a as f64 * 100.0 / b as f64)
+    }
+}
+
+/// A thin bar: covered in green, new (unsaved or live) in yellow-green, dirty-only in dark
+/// green, the rest grey.
+fn bar(ui: &mut egui::Ui, width: f32, covered: usize, live: usize, dirty: usize, total: usize) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 6.0), egui::Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, 2.0, EMPTY);
+    if total > 0 {
+        let w = |n: usize| rect.width() * (n as f32 / total as f32).min(1.0);
+        let c = egui::Rect::from_min_size(rect.min, egui::vec2(w(covered), rect.height()));
+        p.rect_filled(c, 2.0, COVERED);
+        if live > 0 {
+            let l = egui::Rect::from_min_size(egui::pos2(c.right(), rect.top()), egui::vec2(w(live).min(rect.right() - c.right()), rect.height()));
+            p.rect_filled(l, 2.0, LIVE);
+        }
+        if dirty > 0 {
+            let x = (c.right() + w(live)).min(rect.right());
+            let d = egui::Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(w(dirty).min(rect.right() - x), rect.height()));
+            p.rect_filled(d, 2.0, DIRTY_ONLY);
+        }
+    }
+    resp
+}
+
+impl CovState {
+    /// Rebuilds the report from the local database.
+    fn rebuild(&mut self, app_col: &dj_core::collection::Collection, s: &dj_core::player::Session, unsaved: &std::collections::HashSet<String>) {
+        self.stale = false;
+        self.hits = None;
+        let Some(c) = &s.cache else {
+            self.report = None;
+            self.error = Some(t::COVERAGE_NEEDS_THE_LOCAL_DATABASE.into());
+            return;
+        };
+        if self.rom.as_ref().is_none_or(|(p, _)| *p != s.rom_path) {
+            self.rom = std::fs::read(&s.rom_path).ok().map(|b| (s.rom_path.clone(), b));
+        }
+        let t0 = std::time::Instant::now();
+        match dj_core::coverage::build_report_with(app_col, c.conn(), self.rom.as_ref().map(|(_, b)| b.as_slice()), Some(&c.setup), unsaved) {
+            Ok(r) => {
+                self.took_ms = t0.elapsed().as_millis();
+                self.error = None;
+                self.unique = r.replays.iter().filter(|x| x.unique > 0).map(|x| (x.id.clone(), x.unique)).collect();
+                self.build_cells(&r);
+                self.report = Some(r);
+                self.recount_live();
+            }
+            Err(e) => {
+                self.report = None;
+                self.cells.clear();
+                self.unit_cells.clear();
+                self.cell_at.clear();
+                self.unique.clear();
+                let msg = format!("{e:#}");
+                self.error = Some(if msg.contains("run `dj clean`") {
+                    t::NO_COVERAGE_RECORDED_YET_CLEAN.into()
+                } else {
+                    msg
+                });
+            }
+        }
+    }
+
+    fn build_cells(&mut self, r: &Report) {
+        self.cells.clear();
+        self.unit_cells.clear();
+        let d = &r.detail;
+        if r.symbols {
+            let mut order: Vec<usize> = (0..d.analyzed.len()).collect();
+            order.sort_by_key(|i| d.analyzed[*i].func.offset);
+            for i in order {
+                let f = &d.analyzed[i];
+                let row = &r.functions[i];
+                let cell = self.cells.len();
+                for ins in &f.instructions {
+                    self.unit_cells.push((cell, ins.offset));
+                }
+                self.cells.push(Cell {
+                    name: f.func.name.clone(),
+                    offset: f.func.offset,
+                    size: f.func.size,
+                    cpu_addr: f.func.cpu_addr,
+                    units: row.instructions,
+                    covered: row.instructions_covered,
+                    unreachable: d.unreachable_per_function.get(i).copied().unwrap_or(0),
+                    data: (f.func.offset..f.func.offset + f.func.size).filter(|o| d.is_data(*o)).count(),
+                    blocks: row.blocks,
+                    blocks_covered: row.blocks_covered,
+                    dirty: f.instructions.iter().filter(|ins| d.dirty_hit(ins.offset) && !d.hit(ins.offset) && !d.unsaved_hit(ins.offset)).count(),
+                    function: Some(i),
+                });
+            }
+        } else {
+            // No symbol map: fixed slices of PRG, about 1024 squares, counting opcode bytes.
+            let len = d.prg.len() as u64;
+            let size = (len.div_ceil(1024)).max(16).next_power_of_two();
+            let mut off = 0;
+            while off < len {
+                let end = (off + size).min(len);
+                let cell = self.cells.len();
+                let mut covered = 0;
+                let mut unreachable = 0;
+                let mut data = 0;
+                let mut dirty = 0;
+                for o in off..end {
+                    if d.is_data(o) {
+                        data += 1;
+                        continue;
+                    }
+                    if d.is_unreachable(o) {
+                        unreachable += 1;
+                        continue;
+                    }
+                    self.unit_cells.push((cell, o));
+                    if d.hit(o) {
+                        covered += 1;
+                    } else if d.dirty_hit(o) && !d.unsaved_hit(o) {
+                        dirty += 1;
+                    }
+                }
+                self.cells.push(Cell {
+                    name: format!("PRG:{off:#06x}"),
+                    offset: off,
+                    size: end - off,
+                    cpu_addr: None,
+                    units: (end - off) as usize - unreachable - data,
+                    covered,
+                    unreachable,
+                    data,
+                    blocks: 0,
+                    blocks_covered: 0,
+                    dirty,
+                    function: None,
+                });
+                off = end;
+            }
+        }
+        let len = self.unit_cells.iter().map(|(_, o)| *o as usize + 1).max().unwrap_or(0);
+        self.cell_at = vec![NO_CELL; len];
+        for (cell, off) in &self.unit_cells {
+            self.cell_at[*off as usize] = *cell as u32;
+        }
+        self.live.new_per_cell = vec![0; self.cells.len()];
+        self.parity_stale = true;
+    }
+
+    /// Recounts live coverage against the report. Returns the cells that gained some.
+    fn recount_live(&mut self) -> Vec<usize> {
+        let mut per = vec![0usize; self.cells.len()];
+        let (mut total, mut segment) = (0, 0);
+        if let Some(r) = &self.report {
+            // The selected segment's own pass, once stored: what it ran stays its, not the live play's.
+            let own = self.live.id.as_ref().and_then(|id| r.detail.unsaved_per_segment.get(id));
+            for (cell, off) in &self.unit_cells {
+                if r.detail.hit(*off) {
+                    continue;
+                }
+                let live = self.live.prg.get(*off as usize).is_some_and(|b| b & FLAG_OPCODE != 0);
+                let mine = live || own.is_some_and(|p| p.get(*off as usize).is_some_and(|b| b & FLAG_OPCODE != 0));
+                if mine || r.detail.unsaved_hit(*off) {
+                    per[*cell] += 1;
+                    total += 1;
+                    if mine {
+                        segment += 1;
+                    }
+                }
+            }
+        }
+        let gained = per.iter().enumerate().filter(|(i, n)| **n > self.live.new_per_cell.get(*i).copied().unwrap_or(0)).map(|(i, _)| i).collect();
+        self.live.new_per_cell = per;
+        self.live.new = total;
+        self.live.segment = segment;
+        self.parity_stale = true;
+        gained
+    }
+
+    /// Forgets live coverage (a new segment, or an edit).
+    pub fn clear_live(&mut self, id: Option<&str>) {
+        self.live.id = id.map(String::from);
+        self.live.prg.clear();
+        self.recount_live();
+        self.live.flash.clear();
+        self.live.glow.clear();
+    }
+
+    /// ORs connector flags read just now into live coverage: the glow, and the flash where
+    /// they reach new code.
+    pub(crate) fn absorb(&mut self, flags: &[u8], now: f64) {
+        if !dj_core::coverage::any_set(flags) {
+            return;
+        }
+        let live = &mut self.live;
+        if live.prg.len() < flags.len() {
+            live.prg.resize(flags.len(), 0);
+        }
+        // Only where this frame's flags are set (a few blocks of a region that can be
+        // megabytes): the glow for what ran, and the counts for what ran for the first time.
+        const BLOCK: usize = 4096;
+        let report = self.report.as_ref();
+        let own = report.and_then(|r| live.id.as_ref().and_then(|id| r.detail.unsaved_per_segment.get(id)));
+        let mut gained_opcode = false;
+        for (bi, (a, b)) in flags.chunks(BLOCK).zip(live.prg.chunks_mut(BLOCK)).enumerate() {
+            if !dj_core::coverage::any_set(a) {
+                continue;
+            }
+            for (j, (x, y)) in a.iter().zip(b.iter_mut()).enumerate() {
+                if *x == 0 {
+                    continue;
+                }
+                let off = bi * BLOCK + j;
+                let first = x & FLAG_OPCODE != 0 && *y & FLAG_OPCODE == 0;
+                *y |= *x;
+                if x & FLAG_OPCODE == 0 {
+                    continue;
+                }
+                let Some(cell) = self.cell_at.get(off).copied().filter(|c| *c != NO_CELL).map(|c| c as usize) else { continue };
+                live.glow.insert(cell, now);
+                if !first {
+                    continue;
+                }
+                gained_opcode = true;
+                // As `recount_live` counts, for the one unit that just ran for the first time.
+                let Some(r) = report else { continue };
+                let o = off as u64;
+                if r.detail.hit(o) {
+                    continue;
+                }
+                let own_hit = own.is_some_and(|p| p.get(off).is_some_and(|b| b & FLAG_OPCODE != 0));
+                if !own_hit {
+                    live.segment += 1;
+                    if !r.detail.unsaved_hit(o) {
+                        live.new += 1;
+                        if let Some(n) = live.new_per_cell.get_mut(cell) {
+                            *n += 1;
+                        }
+                        live.flash.insert(cell, now);
+                    }
+                }
+            }
+        }
+        if gained_opcode {
+            self.parity_stale = true;
+        }
+    }
+
+    /// Counts each cell's parity: failed (this build, an older one), passed, ran unchecked.
+    fn count_parity(&mut self, p: &crate::parity::Parity) {
+        use crate::parity::St;
+        let mut per = vec![[0usize; 4]; self.cells.len()];
+        if let Some(r) = &self.report {
+            for (cell, off) in &self.unit_cells {
+                let o = *off as usize;
+                let i = match p.status(o) {
+                    St::FailedNow => 0,
+                    St::FailedOld => 1,
+                    St::Passed => 2,
+                    St::Untested => {
+                        let ran = r.detail.hit(*off) || r.detail.dirty_hit(*off) || r.detail.unsaved_hit(*off) || self.live.prg.get(o).is_some_and(|b| b & FLAG_OPCODE != 0);
+                        if !ran {
+                            continue;
+                        }
+                        3
+                    }
+                };
+                per[*cell][i] += 1;
+            }
+        }
+        self.parity_cells = per;
+        self.parity_stale = false;
+    }
+
+    /// Cell `i`'s colour in `view` (Hidden draws as Combined); `parity`: results are loaded.
+    pub(crate) fn fill(&self, i: usize, view: MapView, parity: bool) -> Color32 {
+        let c = &self.cells[i];
+        let live_new = self.live.new_per_cell.get(i).copied().unwrap_or(0);
+        let base = cell_color(c, live_new);
+        let pc = self.parity_cells.get(i).copied().unwrap_or_default();
+        match view {
+            _ if !parity => base,
+            MapView::Coverage => base,
+            MapView::Parity => crate::parity::color(&pc),
+            MapView::Combined | MapView::Hidden => {
+                use crate::parity::{FAILED, FAILED_OLD, PARITY};
+                if pc[0] > 0 {
+                    mix(base, FAILED, 0.85)
+                } else if pc[1] > 0 {
+                    mix(base, FAILED_OLD, 0.85)
+                } else if pc[2] > 0 {
+                    mix(base, PARITY, 0.4 + 0.5 * pc[2] as f32 / (pc[2] + pc[3]) as f32)
+                } else {
+                    base
+                }
+            }
+        }
+    }
+
+    /// The colour key for `view`: only the colours some square shows.
+    fn legend(&self, view: MapView, parity: bool) -> Vec<(Color32, &'static str)> {
+        let mut out = vec![];
+        let any = |f: &dyn Fn(usize) -> bool| (0..self.cells.len()).any(f);
+        let pc = |i: usize| self.parity_cells.get(i).copied().unwrap_or_default();
+        let with_parity = parity && view != MapView::Coverage;
+        if with_parity {
+            use crate::parity::{FAILED, FAILED_OLD, PARITY, UNTESTED};
+            for (k, color, label) in [(2, PARITY, t::LEGEND_PARITY), (0, FAILED, t::FAILED), (1, FAILED_OLD, t::FAILED_OLDER_BUILD)] {
+                if any(&|i| pc(i)[k] > 0) {
+                    out.push((color, label));
+                }
+            }
+            if view == MapView::Parity {
+                if any(&|i| pc(i)[3] > 0) {
+                    out.push((UNTESTED, t::NOT_CHECKED));
+                }
+                if any(&|i| pc(i).iter().sum::<usize>() == 0) {
+                    out.push((EMPTY, t::NEVER_RUN));
+                }
+                return out;
+            }
+        }
+        let c = &self.cells;
+        let live = |i: usize| self.live.new_per_cell.get(i).copied().unwrap_or(0);
+        if any(&|i| c[i].covered > 0) {
+            out.push((COVERED, t::COVERED));
+        }
+        if any(&|i| live(i) > 0) {
+            out.push((LIVE, t::NEW_NOT_COUNTED_YET));
+        }
+        if any(&|i| c[i].dirty > 0 && live(i) == 0) {
+            out.push((DIRTY_ONLY, t::DIRTY_ONLY));
+        }
+        if any(&|i| c[i].units > c[i].covered + live(i)) {
+            out.push((EMPTY, t::NEVER_RUN));
+        }
+        if any(&|i| c[i].units == 0 && c[i].unreachable + c[i].data > 0) {
+            out.push((UNREACHABLE, t::UNREACHABLE));
+        }
+        out
+    }
+
+    fn visible_cells(&self) -> Vec<usize> {
+        let needle = self.filter.trim().to_lowercase();
+        let mut v: Vec<usize> = (0..self.cells.len()).filter(|i| needle.is_empty() || self.cells[*i].name.to_lowercase().contains(&needle)).collect();
+        let c = &self.cells;
+        match self.sort {
+            Sort::Rom => {}
+            Sort::MostUncovered => v.sort_by_key(|i| std::cmp::Reverse(c[*i].units.saturating_sub(c[*i].covered))),
+            Sort::LeastCovered => v.sort_by(|a, b| {
+                let f = |i: usize| if c[i].units == 0 { 2.0 } else { c[i].covered as f64 / c[i].units as f64 };
+                f(*a).partial_cmp(&f(*b)).unwrap().then(c[*b].units.cmp(&c[*a].units))
+            }),
+            Sort::Name => v.sort_by_key(|i| c[*i].name.to_lowercase()),
+        }
+        v
+    }
+}
+
+impl App {
+    /// Why what the selected segment `id` runs doesn't count yet, for the "+N new" line:
+    /// unsaved, dirty, or saved and clean but with no full pass of its current content in
+    /// the database (edited outside dj-gui, or played with another core or setup).
+    fn live_pending(&self, id: &str) -> &'static str {
+        let Some(col) = &self.col else { return t::NOT_COUNTED_YET };
+        let unsaved = self.edited.contains(id) || col.is_draft(id);
+        let dirty = col.replays.contains_key(id) && col.tree_status(id) == dj_core::collection::Status::Dirty;
+        let counted = self.cov.report.as_ref().is_some_and(|r| r.detail.per_segment_prg.contains_key(id));
+        match (unsaved, dirty) {
+            (true, false) => t::COUNTED_ONCE_SAVED,
+            (true, true) => t::COUNTED_ONCE_SAVED_AND_CLEAN,
+            (false, true) => t::COUNTED_ONCE_THE_SEGMENT_IS,
+            (false, false) if !counted => t::NOT_COUNTED_NO_FULL_PASS,
+            (false, false) => t::NOT_COUNTED_YET,
+        }
+    }
+
+    /// The report is out of date: rebuild it the next time it is needed.
+    pub(crate) fn coverage_stale(&mut self) {
+        self.cov.stale = true;
+    }
+
+    /// Keeps the report current and reads the connector for live coverage. Runs every frame.
+    pub(crate) fn coverage_update(&mut self, now: f64) {
+        if self.hydrating.is_some() || self.job.as_ref().is_some_and(|j| matches!(j, crate::Job::Enter { .. } | crate::Job::Preroll { .. })) {
+            return;
+        }
+        let (Some(col), Some(s)) = (&self.col, &mut self.session) else {
+            self.cov.report = None;
+            self.cov.cells.clear();
+            self.cov.unique.clear();
+            return;
+        };
+        if self.cov.stale {
+            let mut unsaved: std::collections::HashSet<String> = self.edited.iter().cloned().collect();
+            unsaved.extend(col.drafts.iter().cloned());
+            self.cov.rebuild(col, s, &unsaved);
+        }
+        // Live: what the connector has seen since the selected segment started.
+        let id = self.pb.as_ref().map(|p| p.id.clone());
+        if id != self.cov.live.id {
+            self.cov.clear_live(id.as_deref());
+        }
+        // The connector's flags hold what ran since they were last cleared. They are read and
+        // cleared every screen refresh, so they say what ran since the last one (the glow),
+        // and are OR'd into `live.prg` for everything since the segment started. Clearing is
+        // safe for the pass being recorded: it gathers the flags after every frame.
+        if let Some(flags) = dj_core::parity::take_code_flags(&mut s.core) {
+            self.cov.absorb(&flags, now);
+        }
+        self.cov.live.flash.retain(|_, t| now - *t < FLASH_SECS);
+        self.cov.live.glow.retain(|_, t| now - *t < GLOW_SECS);
+        if let Some(p) = &mut self.cmp.parity {
+            if self.cov.parity_stale || p.changed {
+                p.changed = false;
+                self.cov.count_parity(p);
+            }
+            p.save(s.cache.as_ref(), now, false);
+            // Results `dj parity` (or another dj-gui) wrote: counted at the next refresh.
+            p.poll(s.cache.as_ref(), now);
+        }
+    }
+
+    /// Clears the connector and live coverage, so live counts start again from here.
+    pub(crate) fn coverage_restart_live(&mut self) {
+        if let Some(s) = &mut self.session {
+            s.core.coverage_clear();
+        }
+        let id = self.pb.as_ref().map(|p| p.id.clone());
+        self.cov.clear_live(id.as_deref());
+    }
+
+    /// Selects the segment where `cell` first runs, at that frame.
+    fn go_to_hit(&mut self, h: &FirstHit) {
+        let (id, frame) = (h.id.clone(), h.frame);
+        if self.selected.as_deref() != Some(id.as_str()) {
+            self.select(&id);
+        }
+        self.seek(frame);
+        self.roll.follow_to(frame);
+    }
+
+    fn load_hits(&mut self, cell: usize) {
+        if self.cov.hits.as_ref().is_some_and(|(c, _)| *c == cell) {
+            return;
+        }
+        let (Some(col), Some(s)) = (&self.col, &self.session) else { return };
+        let Some(c) = &s.cache else { return };
+        let Some(cl) = self.cov.cells.get(cell) else { return };
+        let end = cl.offset + cl.size.max(1) - 1;
+        let region = self.cov.report.as_ref().map_or("PRG".to_string(), |r| r.detail.region.clone());
+        let res = dj_core::coverage::first_hits_in(col, c.conn(), &c.setup, &region, cl.offset, end).map_err(|e| format!("{e:#}"));
+        self.cov.hits = Some((cell, res));
+    }
+
+    /// The ROM map at the bottom of the sidebar, shown whatever the tab: live coverage,
+    /// a legend, and one square per function (or slice of PRG).
+    /// The map's tabs (Combined, Coverage, Parity, Hidden) and the recount button.
+    pub(crate) fn map_tabs(&mut self, ui: &mut egui::Ui) {
+        let mut refresh = false;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            for (v, name, tip) in [
+                (MapView::Hidden, t::HIDE, t::HIDE_THE_MAP),
+                (MapView::Combined, t::COMBINED, t::COVERAGE_WITH_PARITY_S_PURPLE),
+                (MapView::Coverage, t::COVERAGE, t::COVERAGE_ONLY),
+                (MapView::Parity, t::MAP_PARITY, t::PARITY_WITH_THE_COMPARISON_CORE),
+            ] {
+                if ui.selectable_label(self.map_view == v, RichText::new(name).small()).on_hover_text(tip).clicked() {
+                    self.map_view = v;
+                }
+            }
+            if self.cov.report.is_some() && self.map_view != MapView::Hidden {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("⟳").on_hover_text(format!("Recount from the local database (took {} ms)", self.cov.took_ms)).clicked() {
+                        refresh = true;
+                    }
+                });
+            }
+        });
+        if refresh {
+            self.cov.stale = true;
+        }
+    }
+
+    pub(crate) fn coverage_map(&mut self, ui: &mut egui::Ui) {
+        ui.set_max_width(ui.available_width());
+        self.map_tabs(ui);
+        let now = ui.input(|i| i.time);
+        if !self.cov.live.flash.is_empty() || !self.cov.live.glow.is_empty() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+        }
+        if self.cov.report.is_none() {
+            let text = if self.hydrating.is_some() {
+                t::COVERAGE_UPDATES_WHEN_THE_CLEAN.to_string()
+            } else {
+                self.cov.error.clone().unwrap_or_else(|| t::NO_COVERAGE_YET.into())
+            };
+            ui.label(RichText::new(text).small().weak());
+            return;
+        }
+        let view = self.map_view;
+        let has_parity = self.cmp.parity.is_some();
+        if view == MapView::Parity && !has_parity {
+            ui.label(RichText::new(t::LOAD_A_COMPARISON_CORE_COMPARE).small().weak());
+            return;
+        }
+        let mut pick: Option<usize> = None;
+        {
+            let cov = &self.cov;
+            let r = cov.report.as_ref().unwrap();
+            let w = ui.available_width();
+            let legend = cov.legend(view, has_parity);
+
+            // Live.
+            if let Some(id) = &cov.live.id {
+                ui.horizontal(|ui| {
+                    let title = crate::widgets::col_title(self.col.as_ref(), id);
+                    let n = cov.live.segment;
+                    let text = if n > 0 { RichText::new(format!("+{n} new in this segment, {}", self.live_pending(id))).small().strong().color(LIVE) } else { RichText::new(t::NO_NEW_CODE_IN_THIS).small().weak() };
+                    ui.label(text).on_hover_text(format!(
+                        "Code that \"{title}\" runs (while playing now, or in its last full pass since it changed) and that no segment that counts runs. A segment counts once it is saved, clean, and a full pass of its current content is recorded in the local database (playing it from its start to its end records one)."
+                    ));
+                });
+            }
+            // The ROM map.
+            let gap = 1.0;
+            let avail = w;
+            // Squares as big as fit in the rest of the panel, between 5 and 16 px.
+            // Room for the colour key under the map.
+            let key_h = 34.0;
+            let fit_h = (ui.available_height() - 12.0 - key_h).max(30.0);
+            let px = ((avail * fit_h / cov.cells.len().max(1) as f32).sqrt() - gap).floor().clamp(5.0, 16.0);
+            let cols = ((avail + gap) / (px + gap)).floor().max(1.0) as usize;
+            let rows = cov.cells.len().div_ceil(cols);
+            let map_h = rows as f32 * (px + gap);
+            let max_h = (ui.available_height() - key_h).max(20.0);
+            egui::ScrollArea::vertical().id_salt("cov_map").max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(avail, map_h), egui::Sense::click());
+                let p = ui.painter_at(rect);
+                let at = |i: usize| egui::Rect::from_min_size(rect.min + egui::vec2((i % cols) as f32 * (px + gap), (i / cols) as f32 * (px + gap)), egui::vec2(px, px));
+                for i in 0..cov.cells.len() {
+                    let rr = at(i);
+                    if !ui.is_rect_visible(rr) {
+                        continue;
+                    }
+                    let mut fill = cov.fill(i, view, has_parity);
+                    if let Some(t0) = cov.live.glow.get(&i) {
+                        // Ran just now: brighter, fading back over GLOW_SECS.
+                        fill = mix(fill, Color32::WHITE, 0.4 * (1.0 - (now - t0) / GLOW_SECS).clamp(0.0, 1.0) as f32);
+                    }
+                    p.rect_filled(rr, 1.0, fill);
+                    if let Some(t0) = cov.live.flash.get(&i) {
+                        let a = (1.0 - (now - t0) / FLASH_SECS).clamp(0.0, 1.0) as f32;
+                        p.rect_stroke(rr.expand(1.0), 1.0, egui::Stroke::new(1.5, Color32::WHITE.gamma_multiply(a)), egui::StrokeKind::Outside);
+                    }
+                    if cov.selected == Some(i) {
+                        p.rect_stroke(rr.expand(1.0), 1.0, egui::Stroke::new(1.5, ui.visuals().selection.stroke.color), egui::StrokeKind::Outside);
+                    }
+                }
+                let cell_at = |pos: egui::Pos2| -> Option<usize> {
+                    let v = pos - rect.min;
+                    if v.x < 0.0 || v.y < 0.0 {
+                        return None;
+                    }
+                    let (cx, cy) = ((v.x / (px + gap)) as usize, (v.y / (px + gap)) as usize);
+                    let i = cy * cols + cx;
+                    (cx < cols && i < cov.cells.len()).then_some(i)
+                };
+                if let Some(i) = resp.hover_pos().and_then(cell_at) {
+                    let c = &cov.cells[i];
+                    let live_new = cov.live.new_per_cell.get(i).copied().unwrap_or(0);
+                    resp.clone().on_hover_ui_at_pointer(|ui| {
+                        ui.label(RichText::new(&c.name).strong());
+                        if r.symbols {
+                            let addr = c.cpu_addr.map(|a| format!("${a:04X}  ")).unwrap_or_default();
+                            ui.label(RichText::new(format!("{addr}PRG:{:#x}, {} bytes", c.offset, c.size)).small().monospace());
+                            ui.label(format!("{} of {} instructions ({}), {} of {} blocks", c.covered, c.units, pct(c.covered, c.units), c.blocks_covered, c.blocks));
+                        } else {
+                            ui.label(format!("{} of {} bytes ran as an opcode", c.covered, c.units));
+                        }
+                        if live_new > 0 {
+                            ui.label(RichText::new(format!("+{live_new} new, not counted yet")).color(LIVE));
+                        }
+                        if has_parity && view != MapView::Coverage {
+                            let pc = cov.parity_cells.get(i).copied().unwrap_or_default();
+                            ui.label(RichText::new(crate::parity::describe(&pc)).color(crate::parity::color(&pc)));
+                        }
+                        if c.dirty > 0 {
+                            ui.label(RichText::new(format!("+{} run only by dirty segments", c.dirty)).color(DIRTY_ONLY.gamma_multiply(1.6)));
+                        }
+                        if c.unreachable > 0 {
+                            ui.label(RichText::new(format!("{} unreachable", c.unreachable)).color(UNREACHABLE));
+                        }
+                        if c.data > 0 {
+                            ui.label(RichText::new(format!("{} bytes of data", c.data)).color(UNREACHABLE));
+                        }
+                        annotation_notes(ui, &r.detail.annotations, &r.detail.region, c);
+                    });
+                }
+                if resp.clicked() {
+                    if let Some(i) = resp.interact_pointer_pos().and_then(cell_at) {
+                        pick = Some(i);
+                    }
+                }
+            });
+            // The colour key, under the map.
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                for (color, label) in legend {
+                    let (rr, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rr, 1.0, color);
+                    ui.label(RichText::new(label).small().weak());
+                }
+            });
+        }
+        // A square opens its function in the Functions tab.
+        if let Some(i) = pick {
+            self.side.tab = crate::SideTab::Coverage;
+            self.cov.selected = Some(i);
+            self.cov.scroll_to_selected = true;
+            self.load_hits(i);
+        }
+    }
+
+    /// The Functions tab.
+    /// The Functions tab with no symbol map: what to add, and a button that adds one.
+    fn no_symbols_panel(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.label(RichText::new(t::NO_SYMBOL_MAP_ADD_ONE).strong());
+        ui.label(RichText::new(t::DJ_ROLLS_COVERAGE_UP_INTO).small().weak());
+        ui.add_space(4.0);
+        for (format, from) in [
+            ("ca65-dbg", t::CC65_S_DBG_LD65_DBGFILE),
+            ("mesen-mlb", t::A_MESEN_LABEL_FILE_MLB),
+            ("splat", t::A_DECOMP_S_SYMBOL_ADDRS),
+            ("ld-map", t::A_GNU_LD_MAP_MAP),
+            ("elf", t::THE_ELF_THE_DECOMP_BUILDS),
+            ("csv", t::NAME_REGION_OFFSET_SIZE_CPU),
+        ] {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.label(RichText::new(format).small().monospace());
+                ui.label(RichText::new(from).small());
+            });
+        }
+        ui.add_space(4.0);
+        ui.label(RichText::new(t::IN_CONFIG_TOML_OR_DJ).small());
+        ui.label(RichText::new(t::SYMBOLS_FILE_SYMBOLS_GAME_DBG).small().monospace().weak());
+        ui.label(RichText::new(t::MORE_IN_DOCS_COVERAGE_MD).small().weak());
+        ui.add_space(4.0);
+        let busy = self.hydrating.is_some() || self.job.is_some();
+        if ui
+            .add_enabled(self.col.is_some() && !busy, egui::Button::new(t::ADD_SYMBOL_MAP))
+            .on_hover_text(t::ADD_SYMBOL_MAP_TIP)
+            .on_disabled_hover_text(t::BUSY_WAIT_FOR_THE_CLEAN_TIP)
+            .clicked()
+        {
+            if let Some(f) = rfd::FileDialog::new().set_title(t::CHOOSE_A_SYMBOL_MAP).pick_file() {
+                let r = self.col.as_mut().map(|c| c.add_symbol_map(&f));
+                match r {
+                    Some(Ok((e, copied))) => {
+                        self.coverage_stale();
+                        let how = if copied { t::COPIED_INTO_THE_PROJECT } else { "" };
+                        self.info(format!("Added symbol map {} ({}){how}", e.file, e.format));
+                    }
+                    Some(Err(e)) => self.error(format!("Could not add the symbol map: {e:#}")),
+                    None => {}
+                }
+            }
+        }
+    }
+
+    pub(crate) fn coverage_tab(&mut self, ui: &mut egui::Ui) {
+        // Nothing here may widen the sidebar.
+        ui.set_max_width(ui.available_width());
+        if self.session.is_none() {
+            ui.label(RichText::new(self.core_error.clone().unwrap_or_else(|| t::COVERAGE_NEEDS_THE_ROM_AND.into())).weak());
+            return;
+        }
+        if let Some(e) = &self.cov.error {
+            ui.label(RichText::new(e).weak());
+            if self.cov.report.is_none() {
+                return;
+            }
+        }
+        if self.cov.report.is_none() {
+            if self.hydrating.is_some() {
+                ui.label(RichText::new(t::COVERAGE_UPDATES_WHEN_THE_CLEAN).weak());
+            }
+            return;
+        }
+        // (cell, picked on the map): a pick on the map scrolls the list to it.
+        let mut pick: Option<(usize, bool)> = None;
+        let mut go: Option<FirstHit> = None;
+        let mut go_fail: Option<(String, u64)> = None;
+        {
+            let cov = &self.cov;
+            let r = cov.report.as_ref().unwrap();
+            let t = &r.totals;
+            // Totals.
+            let w = ui.available_width();
+            // A label and the numbers on one line, a full-width bar under them.
+            let line = |ui: &mut egui::Ui, label: &str, a: usize, b: usize, live: usize, dirty: usize| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(label).small());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new(pct(a, b)).small().strong());
+                        ui.label(RichText::new(format!("{a} / {b}")).small().monospace().weak());
+                    });
+                });
+                bar(ui, w, a, live, dirty, b);
+                ui.add_space(2.0);
+            };
+            if r.symbols {
+                line(ui, t::FUNCTIONS, t.functions_entered, t.functions, 0, 0);
+                line(ui, t::BLOCKS, t.blocks_covered, t.blocks, 0, 0);
+            }
+            line(ui, if r.symbols { t::INSTRUCTIONS } else { t::OPCODE_BYTES }, t.instructions_covered, t.instructions, cov.live.new, t.if_cleaned);
+            if cov.live.new > 0 || t.if_cleaned > 0 {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if cov.live.new > 0 {
+                        ui.label(RichText::new(format!("+{} unsaved", cov.live.new)).small().color(LIVE))
+                            .on_hover_text(t::NEW_CODE_RUN_BY_UNSAVED_TIP);
+                    }
+                    if t.if_cleaned > 0 {
+                        ui.label(RichText::new(format!("+{} if cleaned", t.if_cleaned)).small().color(DIRTY_ONLY.gamma_multiply(1.6)))
+                            .on_hover_text(t::CODE_ONLY_DIRTY_SEGMENTS_RAN_TIP);
+                    }
+                });
+            }
+            let mut notes = vec![];
+            if t.dirty_segments > 0 {
+                notes.push(format!("{} dirty", t.dirty_segments));
+            }
+            if t.unplayed_segments > 0 {
+                notes.push(format!("{} not stored", t.unplayed_segments));
+            }
+            if t.unsaved_segments > 0 {
+                notes.push(format!("{} unsaved", t.unsaved_segments));
+            }
+            if !notes.is_empty() || t.unreachable_instructions > 0 || t.data_bytes > 0 || t.annotated_functions > 0 || !r.annotation_warnings.is_empty() || !r.symbols {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    if !notes.is_empty() {
+                        ui.label(RichText::new(format!("Left out: {}", notes.join(", "))).small().weak())
+                            .on_hover_text(t::ONLY_SAVED_SEGMENTS_THAT_AREN_TIP);
+                    }
+                    if t.unreachable_instructions > 0 {
+                        ui.label(RichText::new(format!("{} unreachable", t.unreachable_instructions)).small().color(UNREACHABLE)).on_hover_text(t::INSIDE_ANNOTATIONS_TOML_S_UNREACHABLE_TIP);
+                    }
+                    if t.data_bytes > 0 {
+                        ui.label(RichText::new(format!("{} data bytes", t.data_bytes)).small().color(UNREACHABLE)).on_hover_text(t::INSIDE_ANNOTATIONS_TOML_S_DATA_TIP);
+                    }
+                    if t.annotated_functions > 0 {
+                        let names: Vec<&str> = r.detail.annotated_functions.iter().map(|f| f.name.as_str()).collect();
+                        ui.label(RichText::new(format!("{} functions left out", t.annotated_functions)).small().weak())
+                            .on_hover_text(format!("Wholly unreachable or data in annotations.toml, so not counted or shown: {}", names.join(", ")));
+                    }
+                    for w in &r.annotation_warnings {
+                        ui.label(RichText::new(format!("⚠ {} ran as code", w.entry)).small().color(Color32::from_rgb(230, 160, 60))).on_hover_text(match &self.col {
+                            Some(col) => w.text(col),
+                            None => format!("{} ({}) ran as code at {}", w.entry, w.range, w.at),
+                        });
+                    }
+                    if !r.symbols {
+                        ui.label(RichText::new(t::NO_SYMBOL_MAP_COUNTING_OPCODE).small().weak());
+                    }
+                });
+            }
+            // The selected cell.
+            if let Some(i) = cov.selected.filter(|i| *i < cov.cells.len()) {
+                let c = &cov.cells[i];
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&c.name).strong());
+                    if let Some(a) = c.cpu_addr {
+                        ui.label(RichText::new(format!("${a:04X}")).small().monospace().weak());
+                    }
+                });
+                if r.symbols {
+                    ui.label(RichText::new(format!("{} of {} instructions, {} of {} blocks", c.covered, c.units, c.blocks_covered, c.blocks)).small());
+                    if let Some(f) = c.function.and_then(|f| r.functions.get(f)) {
+                        if !f.uncovered_blocks.is_empty() {
+                            ui.label(RichText::new(format!("Uncovered blocks: {}", f.uncovered_blocks.join(" "))).small().monospace().weak());
+                        }
+                    }
+                }
+                if let Some(p) = &self.cmp.parity {
+                    let pc = cov.parity_cells.get(i).copied().unwrap_or_default();
+                    ui.label(RichText::new(crate::parity::describe(&pc)).small().color(crate::parity::color(&pc)));
+                    // The failure that ran it: this build's first, then the oldest.
+                    let touches = |f: &&dj_core::parity::Failure| cov.unit_cells.iter().any(|(cell, off)| *cell == i && f.flags.get(*off as usize).is_some_and(|b| b & FLAG_OPCODE != 0));
+                    let first = p.failures.iter().filter(|f| !p.is_old(f)).find(touches).or_else(|| p.failures.iter().find(touches));
+                    if let Some(f) = first {
+                        let title = crate::widgets::col_title(self.col.as_ref(), &f.segment);
+                        if ui.link(RichText::new(format!("First failing frame: {title}, frame {}", f.frame)).small()).on_hover_text(&f.reason).clicked() {
+                            go_fail = Some((f.segment.clone(), f.frame));
+                        }
+                    }
+                }
+                match cov.hits.as_ref().filter(|(c, _)| *c == i).map(|(_, h)| h) {
+                    Some(Ok(hits)) if hits.is_empty() => {
+                        ui.label(RichText::new(t::NO_CURRENT_SEGMENT_RUNS_THIS).small().weak());
+                    }
+                    Some(Ok(hits)) => {
+                        // Code that runs every frame (the NMI handler, the main loop) first runs in
+                        // every segment, so show the best hit (clean, shallowest, earliest: the
+                        // order first_hits_in sorts by) and keep the rest in a list that opens.
+                        let col = self.col.as_ref();
+                        let link = |ui: &mut egui::Ui, h: &FirstHit, lead: &str| -> bool {
+                            let title = crate::widgets::col_title(col, &h.id);
+                            let dirty = if h.status == dj_core::collection::Status::Dirty { t::DIRTY } else { "" };
+                            ui.link(RichText::new(format!("{lead}{title}, from frame {}{dirty}", h.frame)).small())
+                                .on_hover_text(format!("Go to the first frame of this segment where it runs (depth {} in the tree)", h.depth))
+                                .clicked()
+                        };
+                        let first = &hits[0];
+                        let lead = if hits.len() == 1 { t::RUNS_IN.to_string() } else { format!("Runs in {} segments; nearest the top: ", hits.len()) };
+                        if link(ui, first, &lead) {
+                            go = Some(FirstHit { id: first.id.clone(), frame: first.frame, offset: first.offset, status: first.status, depth: first.depth });
+                        }
+                        let rest = &hits[..];
+                        if hits.len() > 1 {
+                            egui::CollapsingHeader::new(RichText::new(format!("All {}", rest.len())).small())
+                                .id_salt(("first_hits_more", i))
+                                .default_open(false)
+                                .show(ui, |ui| {
+                                    let fid = egui::Id::unique(("first_hits_filter", i));
+                                    let mut q: String = ui.data_mut(|d| d.get_temp(fid)).unwrap_or_default();
+                                    if rest.len() > 20 {
+                                        ui.add(egui::TextEdit::singleline(&mut q).hint_text(t::FILTER_BY_SEGMENT_TITLE).desired_width(ui.available_width()));
+                                        ui.data_mut(|d| d.insert_temp(fid, q.clone()));
+                                    }
+                                    let ql = q.trim().to_lowercase();
+                                    egui::ScrollArea::vertical().id_salt(("first_hits_list", i)).max_height(180.0).auto_shrink([false, true]).show(ui, |ui| {
+                                        let mut shown = 0;
+                                        for h in rest {
+                                            if !ql.is_empty() && !crate::widgets::col_title(col, &h.id).to_lowercase().contains(&ql) {
+                                                continue;
+                                            }
+                                            shown += 1;
+                                            if link(ui, h, "") {
+                                                go = Some(FirstHit { id: h.id.clone(), frame: h.frame, offset: h.offset, status: h.status, depth: h.depth });
+                                            }
+                                        }
+                                        if shown == 0 {
+                                            ui.label(RichText::new(t::NO_SEGMENT_TITLE_MATCHES).small().weak());
+                                        }
+                                    });
+                                });
+                        }
+                    }
+                    Some(Err(e)) => {
+                        ui.label(RichText::new(e).small().weak());
+                    }
+                    None => {}
+                }
+            }
+            ui.separator();
+        }
+        self.parity_section(ui);
+
+        // Without a symbol map there are no functions to list: say how to add one.
+        if !self.cov.report.as_ref().is_some_and(|r| r.symbols) {
+            self.no_symbols_panel(ui);
+        } else {
+            // Sort and filter.
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                egui::ComboBox::from_id_salt("cov_sort")
+                    .selected_text(match self.cov.sort {
+                        Sort::Rom => t::ROM_ORDER,
+                        Sort::MostUncovered => t::MOST_UNCOVERED,
+                        Sort::LeastCovered => t::LEAST_COVERED,
+                        Sort::Name => t::NAME,
+                    })
+                    .width(110.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.cov.sort, Sort::Rom, t::ROM_ORDER);
+                        ui.selectable_value(&mut self.cov.sort, Sort::MostUncovered, t::MOST_UNCOVERED).on_hover_text(t::MOST_UNCOVERED_TIP);
+                        ui.selectable_value(&mut self.cov.sort, Sort::LeastCovered, t::LEAST_COVERED).on_hover_text(t::LEAST_COVERED_TIP);
+                        ui.selectable_value(&mut self.cov.sort, Sort::Name, t::NAME);
+                    });
+                let w = ui.available_width();
+                ui.add(egui::TextEdit::singleline(&mut self.cov.filter).id_salt("cov_filter").hint_text(t::FILTER_BY_NAME).desired_width(w));
+            });
+
+            // The list.
+            let visible = self.cov.visible_cells();
+            let row_h = 18.0;
+            let scroll_row = if self.cov.scroll_to_selected { self.cov.selected.and_then(|s| visible.iter().position(|v| *v == s)) } else { None };
+            self.cov.scroll_to_selected = false;
+            let mut area = egui::ScrollArea::vertical().id_salt("cov_list").auto_shrink([false, false]);
+            if let Some(r) = scroll_row {
+                area = area.vertical_scroll_offset((r as f32 * (row_h + ui.spacing().item_spacing.y) - 60.0).max(0.0));
+            }
+            area.show_rows(ui, row_h, visible.len(), |ui, range| {
+                for &i in &visible[range] {
+                    let c = &self.cov.cells[i];
+                    let live_new = self.cov.live.new_per_cell.get(i).copied().unwrap_or(0);
+                    let sel = self.cov.selected == Some(i);
+                    let resp = ui
+                        .horizontal(|ui| {
+                            ui.set_height(row_h);
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            let (sq, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                            let fill = self.cov.fill(i, self.map_view, self.cmp.parity.is_some());
+                            ui.painter().rect_filled(sq, 1.0, fill);
+                            let name: String = if c.name.chars().count() > 26 { format!("{}…", c.name.chars().take(25).collect::<String>()) } else { c.name.clone() };
+                            let r = ui.selectable_label(sel, RichText::new(name).small().monospace());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.add_sized([62.0, row_h], egui::Label::new(RichText::new(format!("{}/{}", c.covered, c.units)).small().monospace().weak()).halign(egui::Align::RIGHT));
+                                bar(ui, (ui.available_width() - 2.0).clamp(20.0, 80.0), c.covered, live_new, if live_new > 0 { 0 } else { c.dirty }, c.units);
+                            });
+                            r
+                        })
+                        .inner;
+                    if resp.clicked() {
+                        pick = Some((i, false));
+                    }
+                }
+            });
+        }
+
+        if let Some((i, from_map)) = pick {
+            if self.cov.selected == Some(i) && !from_map {
+                self.cov.selected = None;
+            } else {
+                self.cov.selected = Some(i);
+                self.cov.scroll_to_selected = from_map;
+                self.load_hits(i);
+            }
+        }
+        if let Some(h) = go {
+            self.go_to_hit(&h);
+        }
+        if let Some((id, f)) = go_fail {
+            self.go_to(&id, f);
+        }
+    }
+}

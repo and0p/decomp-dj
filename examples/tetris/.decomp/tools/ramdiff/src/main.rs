@@ -15,9 +15,9 @@
 //! (this program, run as `ramdiff --dump <project> <rom> <core> <leaf>`), which writes the
 //! RAM after every frame of the chain to its standard output.
 use anyhow::{bail, Context, Result};
-use decomp_dj::collection::Collection;
-use decomp_dj::libretro::region_memory_id;
-use decomp_dj::player::Session;
+use dj_core::collection::Collection;
+use dj_core::libretro::region_memory_id;
+use dj_core::player::Session;
 use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};

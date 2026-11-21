@@ -1,5 +1,5 @@
 /* The dj API, as the decomp uses it: dj's own headers, from the repository's
- * connectors/include (CMakeLists.txt). dj_connector.h has what any connector exports (the
+ * include (CMakeLists.txt). dj_connector.h has what any connector exports (the
  * API version, coverage regions, the build id, the trace hook); dj_compare.h what a
  * comparison core exports (events, breakpoints, writes, diffs).
  *

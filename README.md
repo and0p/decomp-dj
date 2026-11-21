@@ -36,10 +36,15 @@ TODO
 
 ## License
 
-decomp-dj is free software under the [GNU General Public License v3.0 or later](LICENSE.txt).
-Its source, for every release, is in this repository at the release's tag.
+decomp-dj is free software under the [MIT License](LICENSE.txt): the command line, the GUI,
+the decoder plugin SDK and the C headers in [include/](include/).
 
-Some parts are MIT so they can go into code under any licence: the decoder plugin header
-and SDK (`decoders/`: [decoders.md](docs/decoders.md)) and the new files in the mGBA
-connector. Each connector's patch takes its emulator's licence, as
-its README in [connectors/](connectors/) says. Cores aren't included.
+Two kinds of folder carry their own license, each with its own `LICENSE.txt`:
+
+- Each connector's patch takes its emulator's license, as its README in
+  [connectors/](connectors/) says: GPL-3.0 for Mesen, GPL-2.0 for Mupen64Plus-Next and
+  MPL-2.0 for mGBA.
+- The Thwaite example in [examples/thwaite/](examples/thwaite/) is GPL-3.0-or-later, as
+  Thwaite is.
+
+Cores aren't included.

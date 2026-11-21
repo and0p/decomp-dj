@@ -186,10 +186,10 @@ beside the baseline on the same input lines. There are two kinds
 - **A core that takes events** (the default). It exports `dj_handle_event`, found by name
   like the rest: through the core's proc address callback, then its library exports. The
   rest of this section is about these.
-  - `connectors/include/dj_compare.h` declares what such a core exports, with the
+  - `include/dj_compare.h` declares what such a core exports, with the
     [helper](#the-helper).
   - A core that also reports its own coverage or traces exports the connector API above
-    as well. `connectors/include/dj_connector.h` declares that: the version, the regions,
+    as well. `include/dj_connector.h` declares that: the version, the regions,
     breakpoints, registers and the trace hook.
 - **The same emulator as the baseline** (`sync = "state"`), to compare builds or options.
   It needs no functions: dj loads the baseline's save state into it after a jump, runs it
@@ -201,7 +201,7 @@ A comparison core runs in dj's own process, in the GUI and under `dj parity`
 itself. Reading through it copies nothing. **A comparison core must only read the
 baseline.**
 
-**The header.** [`connectors/include/dj_compare.h`](../connectors/include/dj_compare.h)
+**The header.** [`include/dj_compare.h`](../include/dj_compare.h)
 declares everything below, and has a helper for the part most cores share
 ([below](#the-helper)). Copy it into your core.
 
@@ -351,8 +351,8 @@ or two would never be checked. `preroll = N` in the core's `[[compare]]` entry
 - **A failure records it:** where its run started (the jump) and how many frames from
   there were pre-roll.
 
-The test core in `player/tests/testcore/` takes events in three ways (at frame ends, at a
-breakpoint inside the frame, and copying at every event), and `player/tests/events.rs`
+The test core in `crates/dj-core/tests/testcore/` takes events in three ways (at frame ends, at a
+breakpoint inside the frame, and copying at every event), and `crates/dj-core/tests/events.rs`
 drives it through each case.
 
 ### The helper
@@ -446,7 +446,7 @@ are the baseline connector's (`"RAM"` for Mesen's internal RAM, `"RDRAM"` on the
 `symbol` is shown beside the address and doesn't replace it; given alone, with no region,
 it can't be traced, since dj doesn't resolve it to an address yet. A core without `dj_parity_diffs` gives none; the RAM compare
 of a `sync = "state"` core lists one difference per run of differing bytes. The test core
-in `player/tests/testcore/` has one, and so do the Tetris decomp (one per differing byte
+in `crates/dj-core/tests/testcore/` has one, and so do the Tetris decomp (one per differing byte
 of RAM) and the No Mercy stub.
 
 **A failure names the event it answered.** dj keeps, with each failure, the `name` of the

@@ -33,19 +33,19 @@ goes back to the game type screen, not to the level grid.
 
 ```sh
 cd examples/tetris
-../../player/target/release/dj check --rom build/tetris_usa.nes --core ../../build/cores/mesen_libretro.dylib
-../../gui/target/release/dj-gui .
+../../target/release/dj check --rom build/tetris_usa.nes --core ../../build/cores/mesen_libretro.dylib
+../../target/release/dj-gui .
 ```
 
 There are no symbols, so coverage reports can't name functions or blocks.
 
 ## Why small input changes change the pieces
 
-Traced with `player/examples/ramtrace.rs`, which plays a segment's chain from power-on and
+Traced with `crates/dj-core/examples/ramtrace.rs`, which plays a segment's chain from power-on and
 prints RAM bytes per frame:
 
 ```sh
-cd player && cargo run --release --example ramtrace -- ../examples/tetris <segment id> 17,18,19,BF 20
+cargo run --release -p dj-core --example ramtrace -- examples/tetris <segment id> 17,18,19,BF 20
 ```
 
 - `$17-$18` is Tetris's random number (a 16-bit shift register). It steps **once every

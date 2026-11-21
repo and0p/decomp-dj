@@ -28,7 +28,7 @@ The core is `build/thwaite_decomp_libretro.dylib` (`.so` on Linux, `.dll` on Win
 From the repository root:
 
 ```bash
-player/target/release/dj parity check examples/thwaite --compare decomp --again
+target/release/dj parity check examples/thwaite --compare decomp --again
 ```
 
 Or open the project in dj-gui and pick **Compare > Comparison core > decomp**.
@@ -38,7 +38,7 @@ job, on Linux and macOS): it builds the decomp after replaying the example, and 
 frame differs. On Linux the decomp's OpenGL context comes from Mesa's software renderer
 through EGL, so the runner needs no GPU.
 
-Three scratch tools in `player/examples/` help:
+Three scratch tools in `examples/thwaite/tools/` (the `thwaite-tools` crate) help:
 
 - `thwaite_pictures` plays a segment with the decomp beside the original, as dj-gui does,
   and saves both pictures side by side at the frames asked for. A last list of frames
@@ -50,12 +50,11 @@ Three scratch tools in `player/examples/` help:
   through, if asked), then writes what it pressed into an empty segment from `dj new`.
 
 ```bash
-cd player
-cargo run --release --example thwaite_pictures -- ../examples/thwaite ../examples/thwaite/build/thwaite.nes ../build/cores/mesen_libretro d0c14220 9,119 /tmp/pics
+cargo run --release -p thwaite-tools --bin thwaite_pictures -- examples/thwaite examples/thwaite/build/thwaite.nes build/cores/mesen_libretro d0c14220 9,119 /tmp/pics
 ```
 
 ```bash
-cargo run --release --example thwaite_bot -- ../examples/thwaite ../examples/thwaite/build/thwaite.nes ../build/cores/mesen_libretro <new segment> click:84,44 click:84,60 press:START defend
+cargo run --release -p thwaite-tools --bin thwaite_bot -- examples/thwaite examples/thwaite/build/thwaite.nes build/cores/mesen_libretro <new segment> click:84,44 click:84,60 press:START defend
 ```
 
 Run `dj clean` afterwards to record the segment's hashes.
@@ -67,8 +66,8 @@ When a frame fails, `dj parity explain` says which instruction of the original w
 that differs: the code to compare with the decomp's. Take the failure's id from `dj parity report`:
 
 ```bash
-player/target/release/dj parity report examples/thwaite --compare decomp
-player/target/release/dj parity explain examples/thwaite <id> --compare decomp
+target/release/dj parity report examples/thwaite --compare decomp
+target/release/dj parity explain examples/thwaite <id> --compare decomp
 ```
 
 To check that parity catches a bug, build one with bugs planted (held keys count as new
@@ -148,7 +147,7 @@ python3 tools/gen_map.py ../build/thwaite-nes ../build/thwaite.dbg
 
 ## The API
 
-The API is dj's own headers, included from the repository's `connectors/include`:
+The API is dj's own headers, included from the repository's `include`:
 `dj_connector.h` (the API version, coverage regions, the build id, the trace hook) and
 `dj_compare.h` (events, breakpoints, writes, diffs). `src/dj_api.h` just includes both.
 The decomp's trace is, after each step, a write event for every byte of the original's RAM

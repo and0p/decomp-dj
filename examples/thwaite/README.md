@@ -8,6 +8,9 @@ include one poked segment. Beside the original there is a decomp: Thwaite
 rewritten in C and drawn with OpenGL (`.decomp/`), which `dj parity` checks
 against the original on every frame.
 
+This folder (the segments, the decomp and the tools) is GPL-3.0-or-later, as Thwaite is:
+[LICENSE.txt](LICENSE.txt). The rest of decomp-dj is MIT.
+
 ```
 Boot, skip the legal screen
   1 Player: start a game
@@ -31,8 +34,8 @@ Boot, skip the legal screen
 ```sh
 ./build-rom.sh                                   # ROM + symbols into build/
 ../../connectors/mesen/build.sh                  # core with the coverage connector
-cd ../../player && cargo build --release && cd -
-E=../../player/target/release/dj
+cargo build --release -p dj-cli
+E=../../target/release/dj
 $E check . --rom build/thwaite.nes --core ../../build/cores/mesen_libretro.so   # .so/.dylib/.dll
 $E summary . --segments
 $E gaps . --csv gaps.csv

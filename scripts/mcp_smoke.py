@@ -2,7 +2,7 @@
 """End-to-end check of `dj mcp` on a copy of examples/thwaite.
 
 Needs the example hydrated with the current core (`dj -C examples/thwaite clean`) and
-dj built (cd player && cargo build --release). Usage: scripts/mcp_smoke.py
+dj built (cargo build --release -p dj-cli). Usage: scripts/mcp_smoke.py
 """
 import json, os, shutil, subprocess, sys, tempfile, time
 

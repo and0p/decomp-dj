@@ -43,32 +43,19 @@ jobs:
           components: clippy
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            player
-            gui
-            decoders/dj-decoder
-            decoders/reference
 
       - name: Build
-        run: |
-          (cd player && cargo build --release --locked)
-          (cd gui && cargo build --release --locked)
-          (cd decoders/reference && cargo build --release --locked)
+        run: cargo build --release --locked
 
       - name: Test
         # The tests that compile C test cores and plugins skip themselves where there's no
         # `cc` (Windows).
-        run: |
-          (cd player && cargo test --release --locked)
-          (cd decoders/dj-decoder && cargo test --locked)
+        run: cargo test --release --locked
 
       - name: Clippy
         # Reported, not yet failing the build: the code has never been through it.
         continue-on-error: true
-        run: |
-          (cd player && cargo clippy --release --locked -- -D warnings)
-          (cd gui && cargo clippy --release --locked -- -D warnings)
+        run: cargo clippy --release --locked -- -D warnings
 
       - name: Package
         run: bash scripts/package.sh
@@ -94,11 +81,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: player
 
       - name: Build dj
-        run: cd player && cargo build --release --locked
+        run: cargo build --release --locked -p dj-cli
 
       # The Mesen core and the Thwaite ROM are built from pinned sources, so they're cached
       # by the scripts and patch that pin them.
@@ -133,7 +118,7 @@ jobs:
         # Checks every recorded hash; fails if any segment plays differently here.
         run: |
           core=build/cores/mesen_libretro
-          player/target/release/dj -C examples/thwaite check --from-power-on --strict --rom examples/thwaite/build/thwaite.nes --core "$core"
+          target/release/dj -C examples/thwaite check --from-power-on --strict --rom examples/thwaite/build/thwaite.nes --core "$core"
 
       - name: OpenGL without a display
         # The decomp draws with OpenGL. dj gives it a context with no window: EGL on Linux,
@@ -150,5 +135,5 @@ jobs:
         # Every frame of every segment; fails if one differs. Results are kept per build of
         # the decomp, and each run builds it anew, so every segment is checked.
         run: |
-          player/target/release/dj -C examples/thwaite parity check --compare decomp \
+          target/release/dj -C examples/thwaite parity check --compare decomp \
             --rom examples/thwaite/build/thwaite.nes --core build/cores/mesen_libretro

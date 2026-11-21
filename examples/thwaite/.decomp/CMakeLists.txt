@@ -51,7 +51,7 @@ add_library(thwaite_decomp_libretro SHARED
 )
 set_target_properties(thwaite_decomp_libretro PROPERTIES PREFIX "")
 # dj's comparison-core header (dj_compare.h), from this repository.
-target_include_directories(thwaite_decomp_libretro PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../connectors/include)
+target_include_directories(thwaite_decomp_libretro PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../include)
 target_compile_definitions(thwaite_decomp_libretro PRIVATE THW_BUILD_ID="thwaite-decomp@${THW_COMMIT}")
 # A build with a bug planted on purpose, to check that parity catches it (README).
 option(THW_BREAK_ON_PURPOSE "Plant a known bug" OFF)

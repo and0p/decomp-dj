@@ -1,0 +1,21 @@
+[package]
+name = "dj-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Desktop viewer and editor for decomp-dj projects"
+
+[[bin]]
+name = "dj-gui"
+path = "src/main.rs"
+
+[dependencies]
+dj-core.workspace = true
+anyhow.workspace = true
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "clipboard", "wayland", "x11"] }
+egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
+rfd = "0.17"
+serde_json.workspace = true
+
+[build-dependencies]
+embed-resource.workspace = true

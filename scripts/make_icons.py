@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Makes the application icons from assets/icon_gui.png and assets/icon_cli.png: a Windows
 .ico for each (embedded in dj-gui.exe and dj.exe by their build scripts) and, on macOS, an
-.icns for the GUI's app bundle (gui/macos/bundle.sh). The outputs are committed, so builds
+.icns for the GUI's app bundle (crates/dj-crates/dj-gui/macos/bundle.sh). The outputs are committed, so builds
 don't need this; run it again after changing a PNG.
 
 The icons are pixel art. Every size is made nearest-neighbour (from the art's own grid when

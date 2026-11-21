@@ -34,8 +34,8 @@ jobs:
       - name: Check the tag matches the version
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          version="$(sed -n 's/^version = "\(.*\)"/\1/p' player/Cargo.toml | head -1)"
-          [ "v$version" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} but player/Cargo.toml says $version"; exit 1; }
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          [ "v$version" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} but Cargo.toml says $version"; exit 1; }
 
       - name: Build and package
         run: bash scripts/package.sh --build

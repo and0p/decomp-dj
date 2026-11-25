@@ -36,6 +36,13 @@ pub(crate) fn init(dir: Option<&Path>, name: Option<&str>, rom: &Path, core_path
             }
         }
     }
+    match plan.console {
+        Some(c) => println!("console: {c} (its defaults for the {} core: docs/config.md#console-defaults)", plan.config.core.name),
+        None => println!("console: no defaults for the {} core, so one joypad on port 1 with every control the core names, and RAM to hash (docs/config.md)", plan.config.core.name),
+    }
+    for n in &plan.notes {
+        println!("  {n}");
+    }
     let path = plan.write()?;
     println!("created {}", path.display());
     Ok(())

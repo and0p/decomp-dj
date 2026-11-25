@@ -54,7 +54,7 @@ runs are the same on every machine.
   32 KB of EWRAM (the core reports the Game Boy's size). Hash the GBA's RAM through the
   memory maps instead, which mGBA publishes:
   `regions = ["BUS:0x03000000-0x03007FFF", "BUS:0x02000000-0x0203FFFF", "SRAM"]`.
-  `dj init` doesn't pick these yet.
+  `dj init` picks these for a GBA game ([config.md](../../docs/config.md#console-defaults)).
 - **Symbols:** an ELF from the game's build (`format = "elf"`, `region = "ROM"`,
   `rom_header = 0x08000000`, the address of the ROM file's first byte). Thumb functions are
   read from the symbols' bit 0, and data inside code (literal pools, jump tables) from the

@@ -16,6 +16,7 @@ pub mod hydrate;
 pub mod isolate;
 pub mod libretro;
 pub mod parity;
+pub mod platform;
 pub mod player;
 pub mod query;
 pub mod scaffold;

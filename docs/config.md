@@ -9,6 +9,19 @@ A project has two settings files:
 
 `dj init` writes both. Edit them by hand afterwards; the tools read them each time they open the project.
 
+## Console defaults
+
+`dj init` loads the core to see which one it is, and for the cores below starts the project with what suits the console. It prints the console it found and anything it chose that changes hashes. All of it is ordinary `config.toml` content, yours to edit.
+
+| Core | Console | `[hash] regions` | `[cache] preset` | `[[ports]]` | `[core.options]` |
+| --- | --- | --- | --- | --- | --- |
+| Mesen | NES | `RAM`, and `SRAM` when the game has it | `nes-sparse` | `hide`: the buttons a NES pad doesn't have | as the core has them |
+| mGBA, a GBA game | GBA | IWRAM and EWRAM through the memory maps (`BUS:0x03000000-0x03007FFF`, `BUS:0x02000000-0x0203FFFF`), and `SRAM`: mGBA's `RAM` is only the first 32 KB of EWRAM | none (so `nes-sparse`) | `hide`: the buttons a GBA doesn't have | as the core has them |
+| Mupen64Plus-Next | N64 | `RAM`, and `SRAM` | `n64-sparse` | `hide` and `labels`: the N64's names for the buttons, the stick and the C buttons | as the core has them |
+
+- **The N64 keeps the core's own options**, the ones most games work with. With them the GPU copies its picture into the RAM dj hashes (`mupen64plus-EnableCopyColorToRDRAM`, `mupen64plus-EnableCopyDepthToRDRAM`), and that copy isn't the same after a jump as from power-on. If a segment's hash differs after a jump, leave the game's framebuffers out with [`[hash] exclude`](#hash) and [`[cache] exclude`](#cache-exclude); where they are depends on the game. Turning both options `Off` (`--option`, or `[core.options]`) also does it, for a game that doesn't read its framebuffers back. `dj init` prints this.
+- **Any other core** (and a Game Boy game on mGBA) gets one joypad on port 1 with every control the core names, `RAM` and `SRAM` to hash, and no `[cache]` table.
+
 ## Layering
 
 Either file may hold any setting described on this page, and `local.toml` wins. The two are merged key by key: tables merge table by table (so `local.toml` can set one `[core.options]` key and keep the rest), arrays of tables whose entries all have a `name` merge entry by entry on that name, and any other value in `local.toml` replaces the one in `config.toml`.
@@ -171,7 +184,7 @@ What a state hash covers ([playback.md](playback.md#state-hashes)).
 
 | `exclude` | Optional. Parts of the regions above to leave out, as `REGION:0xSTART-0xEND` (offsets into the region, both ends included) or `REGION:0xOFFSET` for one byte. For memory that isn't game state, such as a framebuffer an emulator's GPU writes into RAM. |
 
-`dj init` picks `RAM`, plus `SRAM` when the game has it. Changing `regions` or `exclude` changes every hash, so all segments turn dirty until you accept new hashes.
+`dj init` picks `RAM`, plus `SRAM` when the game has it, or the console's memory through the bus where `RAM` isn't all of it ([Console defaults](#console-defaults)). Changing `regions` or `exclude` changes every hash, so all segments turn dirty until you accept new hashes.
 
 ```toml
 [hash]

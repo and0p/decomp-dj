@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::analysis::RegionFacts;
 use crate::collection::{sha256_file, Collection, Config, CoreConfig, HashConfig, LocalConfig, PortConfig, RomConfig, SymbolsConfig, DJ_VERSION, PROJECT_FORMAT};
 use crate::libretro;
+use crate::platform::ConsoleProfile;
 
 /// What the user gave. Everything but the ROM and the core has a default.
 #[derive(Clone, Debug, Default)]
@@ -57,6 +58,11 @@ pub struct InitPlan {
     pub connector: bool,
     /// The connector's regions (none without a connector).
     pub regions: Vec<RegionNote>,
+    /// The console dj has defaults for with this core (`platform::for_core`), if any.
+    /// Without one the project gets a bare joypad on port 1 and nothing console-specific.
+    pub console: Option<&'static str>,
+    /// What the console's defaults chose that someone making the project should know.
+    pub notes: Vec<String>,
 }
 
 fn has_project(dir: &Path) -> bool {
@@ -72,6 +78,14 @@ fn stem(path: &Path) -> Option<String> {
 /// make. The core runs in a folder of its own under the system's temporary folder, so
 /// nothing is written into the project's.
 pub fn propose(req: &InitRequest) -> Result<InitPlan> {
+    propose_with(req, crate::platform::for_core)
+}
+
+/// Looks up a core's console defaults from its name and the ROM's bytes.
+pub type ProfileLookup = fn(&str, Option<&[u8]>) -> Option<&'static ConsoleProfile>;
+
+/// `propose` with another table of console defaults (tests give the test core one).
+pub fn propose_with(req: &InitRequest, profiles: ProfileLookup) -> Result<InitPlan> {
     if !req.rom.is_file() {
         bail!("the ROM {} doesn't exist", req.rom.display());
     }
@@ -102,10 +116,44 @@ pub fn propose(req: &InitRequest) -> Result<InitPlan> {
         syms.push(SymbolsConfig { file: format!("symbols/{}", fname.to_string_lossy()), format: format.into(), rom_header: None, region: None, cpu_base: None });
     }
 
-    let work = std::env::temp_dir().join(format!("dj-init-{}-{}", std::process::id(), uuid::Uuid::new_v4().simple()));
-    let probed = probe(&core_path, &req.rom, &work, &req.options);
-    let _ = std::fs::remove_dir_all(&work);
-    let p = probed?;
+    let run = |options: &BTreeMap<String, String>| {
+        let work = std::env::temp_dir().join(format!("dj-init-{}-{}", std::process::id(), uuid::Uuid::new_v4().simple()));
+        let probed = probe(&core_path, &req.rom, &work, options, profiles);
+        let _ = std::fs::remove_dir_all(&work);
+        probed
+    };
+    let mut p = run(&req.options)?;
+    let mut notes = vec![];
+    if let Some(profile) = p.profile {
+        // The console's option defaults, where the core has the option, it isn't already
+        // at that value and the request doesn't set it. The core is only known once it
+        // has been loaded, so they take a second load.
+        let wanted: Vec<(&str, &str)> = profile.options.iter().copied().filter(|(k, v)| !req.options.contains_key(*k) && p.options.get(*k).is_some_and(|have| have != v)).collect();
+        if !wanted.is_empty() {
+            let mut options = req.options.clone();
+            options.extend(wanted.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+            p = run(&options)?;
+            // A core can refuse a value (or force another): say only what took.
+            let took: Vec<String> = wanted.iter().filter(|(k, v)| p.options.get(*k).is_some_and(|have| have == v)).map(|(k, v)| format!("{k} = \"{v}\"")).collect();
+            if !took.is_empty() {
+                notes.push(format!("{}: {}", took.join(", "), profile.options_note));
+            }
+        }
+        if p.bus_hashed {
+            notes.push(profile.hash_note.to_string());
+        }
+        if !profile.advice.is_empty() {
+            notes.push(profile.advice.to_string());
+        }
+    }
+    let profile = p.profile;
+    let port = PortConfig {
+        port: 1,
+        device: "JOYPAD".into(),
+        labels: profile.map(|c| c.labels.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()).unwrap_or_default(),
+        hide: profile.map(|c| c.hide.iter().map(|h| h.to_string()).collect()).unwrap_or_default(),
+    };
+    let cache = profile.and_then(|c| c.cache_preset).map(|name| crate::cache::CacheConfig { preset: Some(name.to_string()), ..Default::default() });
 
     let config = Config {
         decoders: vec![],
@@ -114,14 +162,14 @@ pub fn propose(req: &InitRequest) -> Result<InitPlan> {
         name,
         rom: RomConfig { sha256: sha256_file(&req.rom)?, file: req.rom.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default(), shareable: None },
         core: CoreConfig { name: p.library_name.to_lowercase(), build: req.core_build.clone().unwrap_or(p.build_id), sha256: String::new(), options: p.options },
-        ports: vec![PortConfig { port: 1, device: "JOYPAD".into(), labels: Default::default(), hide: vec![] }],
+        ports: vec![port],
         hash: HashConfig { algorithm: "blake3".into(), regions: p.hash_regions, exclude: vec![] },
         tick: None,
         symbols: syms,
-        cache: None,
+        cache,
         compare: vec![],
     };
-    Ok(InitPlan { dir, rom: req.rom.clone(), core: core_path, symbols: req.symbols.clone(), config, connector: p.connector, regions: p.regions })
+    Ok(InitPlan { dir, rom: req.rom.clone(), core: core_path, symbols: req.symbols.clone(), config, connector: p.connector, regions: p.regions, console: profile.map(|c| c.console), notes })
 }
 
 struct Probed {
@@ -131,9 +179,12 @@ struct Probed {
     hash_regions: Vec<String>,
     connector: bool,
     regions: Vec<RegionNote>,
+    profile: Option<&'static ConsoleProfile>,
+    /// The profile's bus ranges are what `hash_regions` has in place of `RAM`.
+    bus_hashed: bool,
 }
 
-fn probe(core_path: &Path, rom: &Path, work: &Path, options: &BTreeMap<String, String>) -> Result<Probed> {
+fn probe(core_path: &Path, rom: &Path, work: &Path, options: &BTreeMap<String, String>, profiles: ProfileLookup) -> Result<Probed> {
     let mut core = libretro::Core::load(core_path, work, options)?;
     core.load_game(rom)?;
     // Some cores set up their memory on the first frame (Mupen64Plus-Next): run one so
@@ -145,10 +196,19 @@ fn probe(core_path: &Path, rom: &Path, work: &Path, options: &BTreeMap<String, S
             hash_regions.push(r.to_string());
         }
     }
+    let file = std::fs::read(rom).with_context(|| format!("reading {}", rom.display()))?;
+    let profile = profiles(&core.library_name.to_lowercase(), Some(&file));
+    // The console's memory through the bus, where the core's RAM region isn't all of it
+    // and the core maps both ends of every range.
+    let bus: &[(u64, u64)] = profile.map_or(&[], |c| c.hash_bus);
+    let bus_hashed = !bus.is_empty() && bus.iter().all(|&(a, b)| core.bus_byte(a as usize).is_some() && core.bus_byte(b as usize).is_some());
+    if bus_hashed {
+        hash_regions.retain(|r| r != "RAM");
+        hash_regions.splice(0..0, bus.iter().map(|(a, b)| format!("BUS:0x{a:08X}-0x{b:08X}")));
+    }
     let connector = core.has_connector();
     let mut regions = vec![];
     if connector {
-        let file = std::fs::read(rom).with_context(|| format!("reading {}", rom.display()))?;
         let facts = core.region_facts();
         let code = crate::analysis::code_region(&facts);
         for (i, f) in facts.into_iter().enumerate() {
@@ -159,7 +219,7 @@ fn probe(core_path: &Path, rom: &Path, work: &Path, options: &BTreeMap<String, S
             regions.push(RegionNote { decoder: f.cpu.as_deref().is_some_and(crate::analysis::has_decoder), rolls_up: f.name == code, differs_from_rom, facts: f });
         }
     }
-    Ok(Probed { library_name: core.library_name.clone(), build_id: core.build_id(), options: core.effective_options(), hash_regions, connector, regions })
+    Ok(Probed { library_name: core.library_name.clone(), build_id: core.build_id(), options: core.effective_options(), hash_regions, connector, regions, profile, bus_hashed })
 }
 
 impl InitPlan {

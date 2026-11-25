@@ -15,6 +15,9 @@ pub struct ConsoleProfile {
     pub hash_bus: &'static [(u64, u64)],
     /// Why `hash_bus` is used, for the person making the project.
     pub hash_note: &'static str,
+    /// Bus ranges hashed as well as the core's `RAM`, after it, as `(start, end)`
+    /// addresses: memory the core keeps apart from its RAM. Used only if the core maps them.
+    pub hash_also: &'static [(u64, u64)],
     /// The `[cache]` preset, when one suits the console's snapshot size.
     pub cache_preset: Option<&'static str>,
     /// Controls the core names that the console's controller doesn't have.
@@ -30,7 +33,7 @@ pub struct ConsoleProfile {
 }
 
 /// A profile that sets nothing, to build others from.
-pub const NONE: ConsoleProfile = ConsoleProfile { console: "", hash_bus: &[], hash_note: "", cache_preset: None, hide: &[], labels: &[], options: &[], options_note: "", advice: "" };
+pub const NONE: ConsoleProfile = ConsoleProfile { console: "", hash_bus: &[], hash_note: "", hash_also: &[], cache_preset: None, hide: &[], labels: &[], options: &[], options_note: "", advice: "" };
 
 /// Mesen also names turbo buttons and Famicom Disk System and VS System controls.
 const MESEN_NES: ConsoleProfile = ConsoleProfile { console: "NES", cache_preset: Some("nes-sparse"), hide: &["Y", "X", "L", "R", "L2", "R2", "L3"], ..NONE };
@@ -42,6 +45,16 @@ const MGBA_GBA: ConsoleProfile = ConsoleProfile {
     hash_bus: &[(0x0300_0000, 0x0300_7FFF), (0x0200_0000, 0x0203_FFFF)],
     hash_note: "IWRAM and EWRAM are hashed through the core's memory maps: mGBA's RAM region is only the first 32 KB of EWRAM",
     hide: &["Y", "X", "L2", "R2", "L3", "R3"],
+    ..NONE
+};
+
+/// SameBoy names only the Game Boy's buttons. Its RAM region is WRAM, all eight banks on a
+/// Game Boy Color; HRAM, where games keep their busiest variables, is hashed through the
+/// memory maps beside it.
+const SAMEBOY_GB: ConsoleProfile = ConsoleProfile {
+    console: "GB",
+    hash_also: &[(0xFF80, 0xFFFE)],
+    advice: "SameBoy's real-time clock follows emulated time while dj drives it, and power-on RAM is the same every time, so runs repeat; a game that reads the clock sees it start from the cartridge's saved time, not today's",
     ..NONE
 };
 
@@ -89,6 +102,7 @@ pub fn for_core(core: &str, rom: Option<&[u8]>) -> Option<&'static ConsoleProfil
         "mesen" => &MESEN_NES,
         "mgba" => &MGBA_GBA,
         "mesen-s" => &MESENS_SNES,
+        "sameboy" => &SAMEBOY_GB,
         c if c.starts_with("mupen64plus") => &MUPEN_N64,
         _ => return None,
     };
@@ -112,6 +126,11 @@ pub fn detect(head: &[u8], path: &Path) -> Option<&'static str> {
     if at(4, &[0x24, 0xFF, 0xAE, 0x51]) && at(0xB2, &[0x96]) {
         return Some("GBA");
     }
+    // The Game Boy (Color) header: the start of the Nintendo logo at 0x104. Before the SNES's,
+    // which is a guess from a checksum where this is a signature.
+    if at(0x104, &[0xCE, 0xED, 0x66, 0x66]) {
+        return Some("GB");
+    }
     // The SNES header (at $7FC0 for LoROM, $FFC0 for HiROM, 512 bytes on with a copier
     // header): a map mode byte of $2x or $3x, and a checksum and its complement that add up
     // to $FFFF.
@@ -124,6 +143,7 @@ pub fn detect(head: &[u8], path: &Path) -> Option<&'static str> {
         "sfc" | "smc" => Some("SNES"),
         "z64" | "v64" | "n64" => Some("N64"),
         "gba" => Some("GBA"),
+        "gb" | "gbc" | "cgb" | "sgb" => Some("GB"),
         _ => None,
     }
 }
@@ -146,6 +166,7 @@ pub fn core_for(console: &str) -> Option<CoreChoice> {
         "GBA" => CoreChoice { title: "mGBA", library: "mgba_libretro", build: "connectors/mgba/build.sh" },
         "N64" => CoreChoice { title: "Mupen64Plus-Next", library: "mupen64plus_next_libretro", build: "connectors/mupen64plus/build.sh" },
         "SNES" => CoreChoice { title: "Mesen-S", library: "mesen-s_libretro", build: "connectors/mesen-s/build.sh" },
+        "GB" => CoreChoice { title: "SameBoy", library: "sameboy_libretro", build: "connectors/sameboy/build.sh" },
         _ => return None,
     })
 }
@@ -198,7 +219,7 @@ pub fn cores_in(dirs: &[PathBuf]) -> Vec<PathBuf> {
 /// the file's name without `_libretro` and its suffix.
 pub fn core_title(path: &Path) -> String {
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    for console in ["NES", "GBA", "N64", "SNES"] {
+    for console in ["NES", "GBA", "N64", "SNES", "GB"] {
         if let Some(c) = core_for(console).filter(|c| c.library == stem) {
             return c.title.to_string();
         }
@@ -232,6 +253,10 @@ mod tests {
         assert_eq!(detect(b"rom", &p("game.NES")), Some("NES"));
         assert_eq!(detect(b"rom", &p("game.v64")), Some("N64"));
         assert_eq!(detect(b"rom", &p("game.gba")), Some("GBA"));
+        let mut gb = vec![0u8; 0x150];
+        gb[0x104..0x108].copy_from_slice(&[0xCE, 0xED, 0x66, 0x66]);
+        assert_eq!(detect(&gb, &p("game.bin")), Some("GB"));
+        assert_eq!(detect(b"rom", &p("game.gbc")), Some("GB"));
         assert_eq!(detect(b"rom", &p("game.bin")), None);
         // SNES: a LoROM header, and by extension.
         let mut sfc = vec![0u8; 0x8000];
@@ -243,7 +268,7 @@ mod tests {
         assert_eq!(for_core("mesen-s", None).map(|p| p.console), Some("SNES"));
         assert_eq!(detect(b"", &p("game")), None);
         // Every console detected has a core, and that core's profile is for the console.
-        for c in ["NES", "GBA", "N64", "SNES"] {
+        for c in ["NES", "GBA", "N64", "SNES", "GB"] {
             assert!(core_for(c).is_some(), "{c}");
         }
         assert_eq!(core_for("Saturn"), None);
@@ -275,6 +300,7 @@ mod tests {
         let mut gb = vec![0u8; 0x200];
         gb[0x104..0x108].copy_from_slice(&[0xCE, 0xED, 0x66, 0x66]);
         assert_eq!(for_core("mgba", Some(&gb)), None);
+        assert_eq!(for_core("sameboy", Some(&gb)).map(|p| p.console), Some("GB"));
         // A core dj knows the console of, but has no defaults for; and one it doesn't know.
         assert_eq!(for_core("fceumm", None), None);
         assert_eq!(for_core("testcore", None), None);
@@ -282,7 +308,7 @@ mod tests {
 
     #[test]
     fn presets_and_controls_exist() {
-        for p in [&MESEN_NES, &MGBA_GBA, &MUPEN_N64] {
+        for p in [&MESEN_NES, &MGBA_GBA, &MUPEN_N64, &SAMEBOY_GB] {
             if let Some(name) = p.cache_preset {
                 assert!(crate::cache::PRESETS.contains(&name), "{name}");
             }

@@ -1,0 +1,13 @@
+dj-segment 1
+id: aef784e8-7914-4ad4-aff0-24a9ef82a812
+parent: 0fe9d25c-c051-46c0-8091-866369804ec2
+title: Press Right, then Left
+frames: 60
+start-frame: 300
+start-hash: 0e3a6e9b562b99d6786938884f146b78
+end-hash: a729008f6c61ff8519151985cbd0c891
+---
+10 P1 JOYPAD RIGHT 1
+14 P1 JOYPAD RIGHT 0
+30 P1 JOYPAD LEFT 1
+33 P1 JOYPAD LEFT 0

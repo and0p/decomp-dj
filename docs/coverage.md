@@ -76,7 +76,7 @@ A project can list several symbol maps. Where two describe the same bytes, the f
 listed wins, so a linker map can come first and a hand-edited `symbol_addrs.txt` can fill
 in what isn't matched yet. `dj init --symbols FILE` picks the format from the file's
 name. Functions are rolled up in the connector's code region (`PRG` on the NES, `RDRAM` on
-the N64), by the decoder for its instruction set: 6502, MIPS (`mips3`), ARMv4T (`armv4t`) and 65816 so far.
+the N64), by the decoder for its instruction set: 6502, MIPS (`mips3`), ARMv4T (`armv4t`), 65816 and SM83 (`sm83`, the Game Boy) so far. For the SM83 a block ends at `JR`, `JP`, `RET` and `RETI` (conditional ones fall through); `CALL` and `RST` are calls.
 
 The player splits each function into instructions and basic blocks by a linear sweep
 from its start, the same for every instruction set: a block ends after a branch, jump,

@@ -262,10 +262,13 @@ pub fn disasm_mips(pc: u32, w: u32, name: &dyn Fn(u32) -> Option<String>) -> Str
 }
 
 /// The instruction of an execute event, as text, for the instruction set `cpu` (a
-/// connector region's: "mips3", "65816", else the 6502).
+/// connector region's: "mips3", "65816", "sm83", else the 6502).
 pub fn disasm(cpu: &str, e: &TraceEvent, name: &dyn Fn(u32) -> Option<String>) -> String {
     if cpu == "65816" {
         return disasm_65816(e.address(), e.value, &e.operands[..e.operand_count as usize], name);
+    }
+    if cpu == "sm83" {
+        return dj_core::decode::sm83::disasm_sm83(e.addr, e.value, &e.operands[..e.operand_count as usize], &|a| name(a as u32));
     }
     if cpu == "mips3" {
         let w = u32::from_be_bytes([e.value, e.operands[0], e.operands[1], e.operands[2]]);
@@ -311,7 +314,10 @@ pub fn group(events: &[TraceEvent]) -> Vec<Step<'_>> {
 /// them): `$80005BD0 jr ra  r$8009EDA4=00`.
 pub fn line(s: &Step, cpu: &str, name: &dyn Fn(u32) -> Option<String>) -> String {
     let e = s.exec;
-    let mut t = if cpu == "mips3" {
+    let mut t = if cpu == "sm83" {
+        // The SameBoy connector traces A and F; the other registers are 0.
+        format!("{} {:<20} A:{:02X} F:{:02X}", addr_text(cpu, e.address()), disasm(cpu, e, name), e.a, e.p)
+    } else if cpu == "mips3" {
         format!("{} {:<26}", addr_text(cpu, e.address()), disasm(cpu, e, name))
     } else {
         format!("{} {:<18} A:{:02X} X:{:02X} Y:{:02X} S:{:02X} P:{:02X}", addr_text(cpu, e.address()), disasm(cpu, e, name), e.a, e.x, e.y, e.sp, e.p)
@@ -335,6 +341,9 @@ mod tests {
     fn disassembles() {
         let none = |_: u16| None;
         assert_eq!(disasm_6502(0xC000, 0xA9, &[0x05], &none), "LDA #$05");
+        let gb = TraceEvent { cycle: 0, offset: 0, addr: 0x0150, kind: TRACE_EXEC, region: 0, value: 0xCD, a: 0x11, x: 0, y: 0, sp: 0, p: 0x80, operand_count: 2, operands: [0x00, 0x40, 0], addr_high: 0, reserved: [0; 2] };
+        assert_eq!(disasm("sm83", &gb, &|a| (a == 0x4000).then(|| "on_a".into())), "call on_a");
+        assert_eq!(line(&Step { exec: &gb, accesses: vec![] }, "sm83", &|_| None), "$0150 call $4000           A:11 F:80");
         assert_eq!(disasm_6502(0xC000, 0xBD, &[0x00, 0x02], &none), "LDA $0200,X");
         assert_eq!(disasm_6502(0xC000, 0xD0, &[0xFE], &none), "BNE $C000");
         assert_eq!(disasm_6502(0xC000, 0x20, &[0x34, 0x12], &|a| (a == 0x1234).then(|| "f".into())), "JSR f");

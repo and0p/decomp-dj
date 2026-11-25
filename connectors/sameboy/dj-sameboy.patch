@@ -1,0 +1,54 @@
+diff --git a/libretro/Makefile.common b/libretro/Makefile.common
+index 4ce85ec1..a8f2b917 100644
+--- a/libretro/Makefile.common
++++ b/libretro/Makefile.common
+@@ -23,7 +23,8 @@ SOURCES_C   := $(CORE_DIR)/Core/gb.c \
+                $(CORE_DIR)/libretro/dmg_boot.c \
+                $(CORE_DIR)/libretro/sgb_boot.c \
+                $(CORE_DIR)/libretro/sgb2_boot.c \
+-               $(CORE_DIR)/libretro/libretro.c
++               $(CORE_DIR)/libretro/libretro.c \
++               $(CORE_DIR)/libretro/dj_connector.c
+ 
+ CFLAGS += -DGB_DISABLE_TIMEKEEPING -DGB_DISABLE_REWIND -DGB_DISABLE_DEBUGGER -DGB_DISABLE_CHEATS
+ 
+diff --git a/libretro/libretro.c b/libretro/libretro.c
+index 2cb699e0..34c2e726 100644
+--- a/libretro/libretro.c
++++ b/libretro/libretro.c
+@@ -20,6 +20,7 @@
+ #include "libretro.h"
+ #include "libretro_core_options.inc"
+ #include "iretro_extensions.h"
++#include "dj_connector.h"
+ 
+ #ifdef _WIN32
+ static const char slash = '\\';
+@@ -1391,6 +1392,11 @@ void retro_set_environment(retro_environment_t cb)
+     bool categories_supported;
+ 
+     environ_cb = cb;
++    {
++        /* decomp-dj: the connector's functions (dj_connector.c) */
++        static const struct retro_get_proc_address_interface dj_interface = { (retro_get_proc_address_t) dj_get_proc_address };
++        environ_cb(RETRO_ENVIRONMENT_SET_PROC_ADDRESS_CALLBACK, (void *) &dj_interface);
++    }
+ 
+     libretro_set_core_options(environ_cb, &categories_supported);
+ 
+@@ -1614,11 +1620,15 @@ bool retro_load_game(const struct retro_game_info *info)
+ 
+     retro_set_memory_maps();
+ 
++    /* decomp-dj: the connector reports the first Game Boy's code */
++    dj_attach(&gameboy[0], content_size);
++
+     return true;
+ }
+ 
+ void retro_unload_game(void)
+ {
++    dj_attach(NULL, 0);
+     for (int i = 0; i < emulated_devices; i++) {
+         log_cb(RETRO_LOG_INFO, "Unloading GB: %d\n", emulated_devices);
+         GB_free(&gameboy[i]);

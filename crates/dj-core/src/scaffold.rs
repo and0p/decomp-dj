@@ -291,7 +291,7 @@ pub struct CoreSuggestion {
 impl CoreSuggestion {
     /// "an NES", "a GBA": the console with its article.
     pub fn a_console(&self) -> Option<String> {
-        self.console.map(|c| format!("{} {c}", if c == "GBA" { "a" } else { "an" }))
+        self.console.map(|c| format!("{} {c}", if c.starts_with('G') { "a" } else { "an" }))
     }
 
     /// The folders looked in, a line each.
@@ -336,7 +336,7 @@ fn find_core(req: &InitRequest) -> Result<(PathBuf, Option<&'static str>)> {
     }
     let s = suggest_core(&req.rom)?;
     let (Some(console), Some(choice)) = (s.console, s.choice) else {
-        bail!("can't tell which console {} is for (dj knows NES, SNES, GBA and N64 ROMs by their header or extension), so it can't pick a core: name one with --core", req.rom.display());
+        bail!("can't tell which console {} is for (dj knows NES, SNES, Game Boy, GBA and N64 ROMs by their header or extension), so it can't pick a core: name one with --core", req.rom.display());
     };
     match &s.found {
         Some(found) => Ok((found.clone(), Some(console))),
@@ -426,6 +426,12 @@ fn probe(core_path: &Path, rom: &Path, work: &Path, options: &BTreeMap<String, S
     if bus_hashed {
         hash_regions.retain(|r| r != "RAM");
         hash_regions.splice(0..0, bus.iter().map(|(a, b)| format!("BUS:0x{a:08X}-0x{b:08X}")));
+    }
+    // Memory the core keeps apart from its RAM (the Game Boy's HRAM), hashed after it.
+    let also: &[(u64, u64)] = profile.map_or(&[], |c| c.hash_also);
+    if !also.is_empty() && also.iter().all(|&(a, b)| core.bus_byte(a as usize).is_some() && core.bus_byte(b as usize).is_some()) {
+        let at = hash_regions.iter().position(|r| r == "RAM").map_or(0, |i| i + 1);
+        hash_regions.splice(at..at, also.iter().map(|(a, b)| format!("BUS:0x{a:08X}-0x{b:08X}")));
     }
     let connector = core.has_connector();
     let mut regions = vec![];

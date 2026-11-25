@@ -16,6 +16,8 @@ use anyhow::{anyhow, bail, Context, Result};
 
 use crate::analysis::{AnalyzedFunction, Block, CallSite, Function, Instruction};
 pub use dj_decoder::isa::{op_len_6502, Mips3, Mos6502};
+/// The Game Boy's SM83: its decoder and the disassembler traces use.
+pub use dj_decoder::isa::sm83;
 pub use dj_decoder::{Decoded, Decoder, Kind};
 
 /// The built-in decoder for an instruction set, by the name connectors report.
@@ -23,7 +25,7 @@ pub fn decoder_for(cpu: &str) -> Option<&'static dyn Decoder> {
     BUILT_IN.iter().copied().find(|d| d.cpu() == cpu)
 }
 
-static BUILT_IN: [&dyn Decoder; 4] = [&Mos6502, &Mips3, &crate::arm::Armv4t, &dj_decoder::isa::W65816];
+static BUILT_IN: [&dyn Decoder; 5] = [&Mos6502, &Mips3, &crate::arm::Armv4t, &dj_decoder::isa::W65816, &sm83::Sm83];
 
 // ---- plugins ------------------------------------------------------------------------
 

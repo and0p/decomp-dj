@@ -157,6 +157,7 @@ static TOY: ConsoleProfile = ConsoleProfile {
     console: "TOY",
     hash_bus: &[(0x0, 0x3F)],
     hash_note: "hashed through the bus",
+    hash_also: &[],
     cache_preset: Some("n64-sparse"),
     hide: &["X", "Y"],
     labels: &[("B", "Fire")],

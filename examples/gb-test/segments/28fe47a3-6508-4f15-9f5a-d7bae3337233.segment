@@ -1,0 +1,13 @@
+dj-segment 1
+id: 28fe47a3-6508-4f15-9f5a-d7bae3337233
+parent: 0fe9d25c-c051-46c0-8091-866369804ec2
+title: Tap B twice
+frames: 60
+start-frame: 300
+start-hash: 0e3a6e9b562b99d6786938884f146b78
+end-hash: fc237a2097a357d418ba38b5e4b37cb3
+---
+5 P1 JOYPAD B 1
+8 P1 JOYPAD B 0
+20 P1 JOYPAD B 1
+23 P1 JOYPAD B 0

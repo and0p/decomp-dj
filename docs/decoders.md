@@ -16,6 +16,7 @@ Built in:
 | `mips3` | MIPS III, big-endian | N64 |
 | `armv4t` | ARMv4T, ARM and Thumb, little-endian | GBA |
 | `65816` | WDC 65816, with 8- and 16-bit registers (modes from `REP`, `SEP` and the connector's mode bits) | SNES |
+| `sm83` | SM83 (the "GBZ80") | Game Boy, Game Boy Color |
 
 Any other instruction set can be added as a **decoder plugin**: a shared library (`.so`,
 `.dylib`, `.dll`) that exports one function, `dj_decoders`. Plugins can be written in C or

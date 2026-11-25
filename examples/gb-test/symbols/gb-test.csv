@@ -1,0 +1,16 @@
+name,region,offset,size,cpu_addr
+start,ROM,150,53,150
+wait_vblank,ROM,1A3,D,1A3
+read_joypad,ROM,1B0,23,1B0
+press_a,ROM,1D3,9,1D3
+press_b,ROM,1DC,9,1DC
+press_start,ROM,1E5,9,1E5
+on_direction,ROM,1EE,10,1EE
+dir_none,ROM,206,1,206
+dir_right,ROM,207,5,207
+dir_left,ROM,20C,5,20C
+dir_both,ROM,211,5,211
+on_a,ROM,4000,D,4000
+a_every_fourth,ROM,400D,7,400D
+on_b,ROM,8000,11,4000
+on_start,ROM,C000,6,4000

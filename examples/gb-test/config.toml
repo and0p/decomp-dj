@@ -1,0 +1,65 @@
+format = 1
+dj = "0.1.0"
+name = "Game Boy test ROM"
+
+[rom]
+sha256 = "d5c94842796ee8bed137573b66c3fddf10b7289448837e00c26ed78b8a6a7d39"
+file = "gb-test.gbc"
+
+[core]
+name = "sameboy"
+build = "sameboy@90e28995+dj.d16b71e2"
+sha256 = ""
+
+[core.options]
+sameboy_audio_interference = "0"
+sameboy_audio_interference_1 = "0"
+sameboy_audio_interference_2 = "0"
+sameboy_audio_output = "Game Boy #1"
+sameboy_auto_sgb_model = "Super Game Boy"
+sameboy_auto_sgb_model_1 = "Super Game Boy"
+sameboy_auto_sgb_model_2 = "Super Game Boy"
+sameboy_border = "Super Game Boy only"
+sameboy_color_correction_mode = "emulate hardware"
+sameboy_color_correction_mode_1 = "emulate hardware"
+sameboy_color_correction_mode_2 = "emulate hardware"
+sameboy_high_pass_filter_mode = "accurate"
+sameboy_high_pass_filter_mode_1 = "accurate"
+sameboy_high_pass_filter_mode_2 = "accurate"
+sameboy_light_temperature = "0"
+sameboy_light_temperature_1 = "0"
+sameboy_light_temperature_2 = "0"
+sameboy_link = "enabled"
+sameboy_model = "Auto"
+sameboy_model_1 = "Auto"
+sameboy_model_2 = "Auto"
+sameboy_mono_palette = "greyscale"
+sameboy_mono_palette_1 = "greyscale"
+sameboy_mono_palette_2 = "greyscale"
+sameboy_rtc = "accurate"
+sameboy_rumble = "rumble-enabled games"
+sameboy_rumble_1 = "rumble-enabled games"
+sameboy_rumble_2 = "rumble-enabled games"
+sameboy_screen_layout = "top-down"
+
+[[ports]]
+port = 1
+device = "JOYPAD"
+
+[hash]
+# WRAM (every bank), HRAM through the memory maps, and the battery RAM
+algorithm = "blake3"
+regions = [
+    "RAM",
+    "BUS:0x0000FF80-0x0000FFFE",
+    "SRAM",
+]
+
+# main_loop: once a frame
+[tick]
+exec = "ROM:0x178"
+
+[[symbols]]
+file = "symbols/gb-test.csv"
+format = "csv"
+region = "ROM"

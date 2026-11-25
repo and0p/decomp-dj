@@ -8,7 +8,7 @@
 //! instruction set.
 //!
 //! - [`Decoder`], [`Decoded`] and [`Kind`]: the interface, as the player uses it.
-//! - [`isa`]: the decoders built into the player (6502, MIPS III, ARMv4T, SM83).
+//! - [`isa`]: the decoders built into the player (6502, MIPS III, ARMv4T, 65816, SM83, 68000).
 //! - [`ffi`]: the C interface plugins export (`include/dj_decoder.h`), and
 //!   [`export_decoders!`], which exports Rust decoders through it.
 

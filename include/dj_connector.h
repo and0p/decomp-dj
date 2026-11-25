@@ -49,7 +49,7 @@ struct dj_region {
     const char *name;    /* "PRG", "RAM", "RDRAM": a contract per system (docs/connectors.md) */
     uint8_t *flags;      /* one byte of DJ_FLAG_* per byte of the region, owned by the core */
     size_t size;
-    const char *cpu;     /* the instruction set that runs here ("6502", "mips3", "armv4t"), or NULL */
+    const char *cpu;     /* the instruction set that runs here ("6502", "mips3", "armv4t", "m68k"), or NULL */
     const uint8_t *data; /* the region's bytes in the CPU's byte order, or NULL */
     int64_t file_offset; /* where offset 0 lies in the ROM file, or -1 */
 };

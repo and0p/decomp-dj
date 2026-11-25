@@ -243,6 +243,9 @@ pub fn propose_with(req: &InitRequest, profiles: ProfileLookup) -> Result<InitPl
         Some(_) => p.inputs.iter().map(|(k, _)| k.port + 1).collect::<std::collections::BTreeSet<u32>>().into_iter().collect(),
         None => vec![],
     };
+    if let Some(n) = profile.map(|c| c.ports).filter(|n| *n > 0) {
+        numbers.retain(|p| *p <= n);
+    }
     if !numbers.contains(&1) {
         numbers.insert(0, 1);
     }
@@ -291,7 +294,7 @@ pub struct CoreSuggestion {
 impl CoreSuggestion {
     /// "an NES", "a GBA": the console with its article.
     pub fn a_console(&self) -> Option<String> {
-        self.console.map(|c| format!("{} {c}", if c.starts_with('G') { "a" } else { "an" }))
+        self.console.map(crate::platform::with_article)
     }
 
     /// The folders looked in, a line each.
@@ -336,7 +339,7 @@ fn find_core(req: &InitRequest) -> Result<(PathBuf, Option<&'static str>)> {
     }
     let s = suggest_core(&req.rom)?;
     let (Some(console), Some(choice)) = (s.console, s.choice) else {
-        bail!("can't tell which console {} is for (dj knows NES, SNES, Game Boy, GBA and N64 ROMs by their header or extension), so it can't pick a core: name one with --core", req.rom.display());
+        bail!("can't tell which console {} is for (dj knows NES, SNES, Game Boy, GBA, N64 and Genesis ROMs by their header or extension), so it can't pick a core: name one with --core", req.rom.display());
     };
     match &s.found {
         Some(found) => Ok((found.clone(), Some(console))),

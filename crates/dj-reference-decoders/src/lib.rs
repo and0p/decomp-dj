@@ -7,6 +7,6 @@
 //!
 //! The player's tests load it and check that it decodes exactly as the built-in decoders do.
 
-use dj_decoder::isa::{Armv4t, Mips3, Mos6502, Sm83, W65816};
+use dj_decoder::isa::{Armv4t, M68k, Mips3, Mos6502, Sm83, W65816};
 
-dj_decoder::export_decoders!(Mos6502, Mips3, Armv4t, W65816, Sm83);
+dj_decoder::export_decoders!(Mos6502, Mips3, Armv4t, W65816, Sm83, M68k);

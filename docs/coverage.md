@@ -76,7 +76,7 @@ A project can list several symbol maps. Where two describe the same bytes, the f
 listed wins, so a linker map can come first and a hand-edited `symbol_addrs.txt` can fill
 in what isn't matched yet. `dj init --symbols FILE` picks the format from the file's
 name. Functions are rolled up in the connector's code region (`PRG` on the NES, `RDRAM` on
-the N64), by the decoder for its instruction set: 6502, MIPS (`mips3`), ARMv4T (`armv4t`), 65816 and SM83 (`sm83`, the Game Boy) so far. For the SM83 a block ends at `JR`, `JP`, `RET` and `RETI` (conditional ones fall through); `CALL` and `RST` are calls.
+the N64), by the decoder for its instruction set: 6502, MIPS (`mips3`), ARMv4T (`armv4t`), 65816, SM83 (`sm83`, the Game Boy) and the 68000 (`m68k`) so far. For the SM83 a block ends at `JR`, `JP`, `RET` and `RETI` (conditional ones fall through); `CALL` and `RST` are calls.
 
 The player splits each function into instructions and basic blocks by a linear sweep
 from its start, the same for every instruction set: a block ends after a branch, jump,
@@ -200,5 +200,5 @@ that segment runs.
 ## Limits
 
 - Two cores have connectors: Mesen (NES) and Mupen64Plus-Next (N64, first version).
-- Block and function rollup decodes the 6502, MIPS (`mips3`), ARMv4T (`armv4t`) and the 65816, in the connector's code region (`PRG`, `RDRAM`, the GBA's and the SNES's `ROM`); code that runs from the GBA's IWRAM or EWRAM isn't rolled up. Other CPUs get raw opcode-byte counts until their decoder is added.
+- Block and function rollup decodes the 6502, MIPS (`mips3`), ARMv4T (`armv4t`), the 65816, the SM83 and the 68000 (`m68k`), in the connector's code region (`PRG`, `RDRAM`, and `ROM` on the GBA, the SNES, the Game Boy and the Mega Drive); code that runs from the GBA's IWRAM or EWRAM isn't rolled up. Other CPUs get raw opcode-byte counts until their decoder is added.
 - N64: code that ran at an overlay's addresses is credited to whatever the symbol map names there, whichever overlay was loaded.

@@ -2,6 +2,9 @@
 
 use dj_core::libretro::{TraceEvent, TRACE_EXEC, TRACE_READ, TRACE_WRITE};
 
+mod m68k;
+pub use m68k::disasm_m68k;
+
 #[derive(Clone, Copy)]
 enum Mode {
     Imp,
@@ -262,13 +265,18 @@ pub fn disasm_mips(pc: u32, w: u32, name: &dyn Fn(u32) -> Option<String>) -> Str
 }
 
 /// The instruction of an execute event, as text, for the instruction set `cpu` (a
-/// connector region's: "mips3", "65816", "sm83", else the 6502).
+/// connector region's: "mips3", "65816", "sm83", "m68k", else the 6502).
 pub fn disasm(cpu: &str, e: &TraceEvent, name: &dyn Fn(u32) -> Option<String>) -> String {
     if cpu == "65816" {
         return disasm_65816(e.address(), e.value, &e.operands[..e.operand_count as usize], name);
     }
     if cpu == "sm83" {
         return dj_core::decode::sm83::disasm_sm83(e.addr, e.value, &e.operands[..e.operand_count as usize], &|a| name(a as u32));
+    }
+    if cpu == "m68k" {
+        let n = (1 + e.operand_count as usize).min(4);
+        let bytes = [e.value, e.operands[0], e.operands[1], e.operands[2]];
+        return disasm_m68k(e.address(), &bytes[..n], name);
     }
     if cpu == "mips3" {
         let w = u32::from_be_bytes([e.value, e.operands[0], e.operands[1], e.operands[2]]);
@@ -278,10 +286,10 @@ pub fn disasm(cpu: &str, e: &TraceEvent, name: &dyn Fn(u32) -> Option<String>) -
     }
 }
 
-/// A CPU address as text: `$C123` on the 6502, `$7E2000` on the 65816, `$80114514` with
-/// 32-bit addresses.
+/// A CPU address as text: `$C123` on the 6502, `$7E2000` on the 65816, `$FF0004` on the
+/// 68000, `$80114514` with 32-bit addresses.
 pub fn addr_text(cpu: &str, a: u32) -> String {
-    if cpu == "65816" {
+    if cpu == "65816" || cpu == "m68k" {
         return format!("${a:06X}");
     }
     if cpu == "mips3" {
@@ -317,7 +325,7 @@ pub fn line(s: &Step, cpu: &str, name: &dyn Fn(u32) -> Option<String>) -> String
     let mut t = if cpu == "sm83" {
         // The SameBoy connector traces A and F; the other registers are 0.
         format!("{} {:<20} A:{:02X} F:{:02X}", addr_text(cpu, e.address()), disasm(cpu, e, name), e.a, e.p)
-    } else if cpu == "mips3" {
+    } else if cpu == "mips3" || cpu == "m68k" {
         format!("{} {:<26}", addr_text(cpu, e.address()), disasm(cpu, e, name))
     } else {
         format!("{} {:<18} A:{:02X} X:{:02X} Y:{:02X} S:{:02X} P:{:02X}", addr_text(cpu, e.address()), disasm(cpu, e, name), e.a, e.x, e.y, e.sp, e.p)

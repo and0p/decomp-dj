@@ -30,10 +30,13 @@ pub struct ConsoleProfile {
     pub options_note: &'static str,
     /// Something about the console that a project's author should know from the start.
     pub advice: &'static str,
+    /// How many controllers to set up, when the core names inputs on more ports than the
+    /// console has without an adapter (a multitap's); 0: one on every port it names.
+    pub ports: u32,
 }
 
 /// A profile that sets nothing, to build others from.
-pub const NONE: ConsoleProfile = ConsoleProfile { console: "", hash_bus: &[], hash_note: "", hash_also: &[], cache_preset: None, hide: &[], labels: &[], options: &[], options_note: "", advice: "" };
+pub const NONE: ConsoleProfile = ConsoleProfile { console: "", hash_bus: &[], hash_note: "", hash_also: &[], cache_preset: None, hide: &[], labels: &[], options: &[], options_note: "", advice: "", ports: 0 };
 
 /// Mesen also names turbo buttons and Famicom Disk System and VS System controls.
 const MESEN_NES: ConsoleProfile = ConsoleProfile { console: "NES", cache_preset: Some("nes-sparse"), hide: &["Y", "X", "L", "R", "L2", "R2", "L3"], ..NONE };
@@ -94,6 +97,18 @@ const MESENS_SNES: ConsoleProfile = ConsoleProfile {
     ..NONE
 };
 
+/// Genesis Plus GX names the pad's buttons by the RetroPad's: Y, B and A are the pad's A,
+/// B and C; L, X and R a 6-button pad's X, Y and Z; Select its Mode.
+const GPGX_GENESIS: ConsoleProfile = ConsoleProfile {
+    console: "Genesis",
+    hide: &["L2", "R2", "L3", "R3"],
+    labels: &[("Y", "A"), ("B", "B"), ("A", "C"), ("L", "X"), ("X", "Y"), ("R", "Z"), ("SELECT", "Mode")],
+    // The core names eight, for the 4-Way Play and Team Player adapters.
+    ports: 2,
+    advice: "the core keeps the 68000's RAM (the RAM dj hashes) in 16-bit words of the host's byte order, so on this machine each pair of bytes is swapped: a RAM address in [WRITE] lines and [hash] exclude is the 68000's address minus 0xFF0000, with bit 0 flipped",
+    ..NONE
+};
+
 /// The profile for a core (a project's `[core] name`) playing this ROM, if dj has one.
 /// The ROM tells a Game Boy game from a GBA one on mGBA.
 pub fn for_core(core: &str, rom: Option<&[u8]>) -> Option<&'static ConsoleProfile> {
@@ -104,6 +119,7 @@ pub fn for_core(core: &str, rom: Option<&[u8]>) -> Option<&'static ConsoleProfil
         "mesen-s" => &MESENS_SNES,
         "sameboy" => &SAMEBOY_GB,
         c if c.starts_with("mupen64plus") => &MUPEN_N64,
+        "genesis plus gx" => &GPGX_GENESIS,
         _ => return None,
     };
     (p.console == console).then_some(p)
@@ -126,10 +142,15 @@ pub fn detect(head: &[u8], path: &Path) -> Option<&'static str> {
     if at(4, &[0x24, 0xFF, 0xAE, 0x51]) && at(0xB2, &[0x96]) {
         return Some("GBA");
     }
-    // The Game Boy (Color) header: the start of the Nintendo logo at 0x104. Before the SNES's,
-    // which is a guess from a checksum where this is a signature.
+    // The Game Boy (Color) header: the start of the Nintendo logo at 0x104. It and the Mega
+    // Drive's come before the SNES's, which is a guess from a checksum where these are signatures.
     if at(0x104, &[0xCE, 0xED, 0x66, 0x66]) {
         return Some("GB");
+    }
+    // The Mega Drive header's system name ("SEGA MEGA DRIVE", "SEGA GENESIS", ...). A 32X
+    // game says "SEGA 32X" there, which Genesis Plus GX doesn't play.
+    if at(0x100, b"SEGA") && !at(0x104, b" 32X") {
+        return Some("Genesis");
     }
     // The SNES header (at $7FC0 for LoROM, $FFC0 for HiROM, 512 bytes on with a copier
     // header): a map mode byte of $2x or $3x, and a checksum and its complement that add up
@@ -144,8 +165,15 @@ pub fn detect(head: &[u8], path: &Path) -> Option<&'static str> {
         "z64" | "v64" | "n64" => Some("N64"),
         "gba" => Some("GBA"),
         "gb" | "gbc" | "cgb" | "sgb" => Some("GB"),
+        "md" | "gen" => Some("Genesis"),
         _ => None,
     }
+}
+
+/// The console's name after "a" or "an", as it is read out: "an NES", "a GBA".
+pub fn with_article(console: &str) -> String {
+    let an = matches!(console, "NES" | "N64" | "SNES");
+    format!("{} {console}", if an { "an" } else { "a" })
 }
 
 /// The core dj makes a console's projects with.
@@ -167,6 +195,7 @@ pub fn core_for(console: &str) -> Option<CoreChoice> {
         "N64" => CoreChoice { title: "Mupen64Plus-Next", library: "mupen64plus_next_libretro", build: "connectors/mupen64plus/build.sh" },
         "SNES" => CoreChoice { title: "Mesen-S", library: "mesen-s_libretro", build: "connectors/mesen-s/build.sh" },
         "GB" => CoreChoice { title: "SameBoy", library: "sameboy_libretro", build: "connectors/sameboy/build.sh" },
+        "Genesis" => CoreChoice { title: "Genesis Plus GX", library: "genesis_plus_gx_libretro", build: "connectors/genesis-plus-gx/build.sh" },
         _ => return None,
     })
 }
@@ -219,7 +248,7 @@ pub fn cores_in(dirs: &[PathBuf]) -> Vec<PathBuf> {
 /// the file's name without `_libretro` and its suffix.
 pub fn core_title(path: &Path) -> String {
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    for console in ["NES", "GBA", "N64", "SNES", "GB"] {
+    for console in ["NES", "GBA", "N64", "SNES", "GB", "Genesis"] {
         if let Some(c) = core_for(console).filter(|c| c.library == stem) {
             return c.title.to_string();
         }
@@ -267,8 +296,14 @@ mod tests {
         assert_eq!(core_for("SNES").map(|c| c.library), Some("mesen-s_libretro"));
         assert_eq!(for_core("mesen-s", None).map(|p| p.console), Some("SNES"));
         assert_eq!(detect(b"", &p("game")), None);
+        let mut md = vec![0u8; 0x200];
+        md[0x100..0x110].copy_from_slice(b"SEGA MEGA DRIVE ");
+        assert_eq!(detect(&md, &p("game.bin")), Some("Genesis"));
+        md[0x100..0x110].copy_from_slice(b"SEGA 32X        ");
+        assert_eq!(detect(&md, &p("game.bin")), None);
+        assert_eq!(detect(b"rom", &p("game.md")), Some("Genesis"));
         // Every console detected has a core, and that core's profile is for the console.
-        for c in ["NES", "GBA", "N64", "SNES", "GB"] {
+        for c in ["NES", "GBA", "N64", "SNES", "GB", "Genesis"] {
             assert!(core_for(c).is_some(), "{c}");
         }
         assert_eq!(core_for("Saturn"), None);
@@ -296,6 +331,7 @@ mod tests {
         assert_eq!(for_core("mesen", None).map(|p| p.console), Some("NES"));
         assert_eq!(for_core("mupen64plus-next", None).map(|p| p.console), Some("N64"));
         assert_eq!(for_core("mgba", None).map(|p| p.console), Some("GBA"));
+        assert_eq!(for_core("genesis plus gx", None).map(|p| p.console), Some("Genesis"));
         // A Game Boy game on mGBA isn't a GBA project: its RAM region is the right one.
         let mut gb = vec![0u8; 0x200];
         gb[0x104..0x108].copy_from_slice(&[0xCE, 0xED, 0x66, 0x66]);
@@ -308,7 +344,7 @@ mod tests {
 
     #[test]
     fn presets_and_controls_exist() {
-        for p in [&MESEN_NES, &MGBA_GBA, &MUPEN_N64, &SAMEBOY_GB] {
+        for p in [&MESEN_NES, &MGBA_GBA, &MUPEN_N64, &SAMEBOY_GB, &GPGX_GENESIS] {
             if let Some(name) = p.cache_preset {
                 assert!(crate::cache::PRESETS.contains(&name), "{name}");
             }

@@ -1,0 +1,17 @@
+dj-segment 1
+id: 5e8a1fce-f7e3-43d2-8c31-e9cba93f6043
+parent: 11c4f045-ac62-42c5-950e-8f58a768e343
+title: Press A four times
+frames: 60
+start-hash: f8af41516c253e1329b3cdc606d0643b
+end-hash: 8c7110ca2292676b110066fc3dd0ab33
+start-frame: 60
+---
+5 P1 JOYPAD Y 1
+7 P1 JOYPAD Y 0
+15 P1 JOYPAD Y 1
+17 P1 JOYPAD Y 0
+25 P1 JOYPAD Y 1
+27 P1 JOYPAD Y 0
+35 P1 JOYPAD Y 1
+37 P1 JOYPAD Y 0

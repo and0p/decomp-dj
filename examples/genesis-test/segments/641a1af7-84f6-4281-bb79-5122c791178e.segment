@@ -1,0 +1,13 @@
+dj-segment 1
+id: 641a1af7-84f6-4281-bb79-5122c791178e
+parent: 11c4f045-ac62-42c5-950e-8f58a768e343
+title: Left, then Right
+frames: 60
+start-hash: f8af41516c253e1329b3cdc606d0643b
+end-hash: 989bbafbd64bb4eecef77e720c762ebb
+start-frame: 60
+---
+5 P1 JOYPAD LEFT 1
+9 P1 JOYPAD LEFT 0
+20 P1 JOYPAD RIGHT 1
+24 P1 JOYPAD RIGHT 0

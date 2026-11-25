@@ -1,0 +1,11 @@
+dj-segment 1
+id: 0b902138-c069-4704-9eca-d4fa1b97b67b
+parent: 11c4f045-ac62-42c5-950e-8f58a768e343
+title: Press C
+frames: 60
+start-hash: f8af41516c253e1329b3cdc606d0643b
+end-hash: 1a34fcabc03391cacecfab2dfda855ec
+start-frame: 60
+---
+10 P1 JOYPAD A 1
+13 P1 JOYPAD A 0

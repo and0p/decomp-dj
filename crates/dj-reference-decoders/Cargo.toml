@@ -3,7 +3,7 @@ name = "dj-reference-decoders"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "decomp-dj's built-in decoders (6502, MIPS III, ARMv4T) as a decoder plugin: the example for writing one in Rust, and the plugin dj's tests load"
+description = "decomp-dj's built-in decoders (6502, MIPS III, ARMv4T, 68000) as a decoder plugin: the example for writing one in Rust, and the plugin dj's tests load"
 publish = false
 
 [lib]

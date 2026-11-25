@@ -1,0 +1,213 @@
+diff --git a/core/m68k/m68k.h b/core/m68k/m68k.h
+index 461daf05..40cdc9f7 100644
+--- a/core/m68k/m68k.h
++++ b/core/m68k/m68k.h
+@@ -406,6 +406,14 @@ extern void s68k_clear_wait(void);
+ extern unsigned int m68k_get_reg(m68k_register_t reg);
+ extern unsigned int s68k_get_reg(m68k_register_t reg);
+ 
++/* decomp-dj: hooks on the main 68000, NULL unless dj is driving the core (dj_connector.c).
++ * exec: an instruction at pc is about to be fetched and run. fetch: the CPU read len bytes of
++ * the instruction stream at pc (its opcode word, then its extension words). access: a data
++ * read (kind 2) or write (kind 3) of width bytes. */
++extern void (*dj_m68k_exec)(unsigned int pc);
++extern void (*dj_m68k_fetch)(unsigned int pc, unsigned int len);
++extern void (*dj_m68k_access)(int kind, int width, unsigned int address, unsigned int value);
++
+ /* Poke values into the internals of the currently running CPU context */
+ extern void m68k_set_reg(m68k_register_t reg, unsigned int value);
+ extern void s68k_set_reg(m68k_register_t reg, unsigned int value);
+diff --git a/core/m68k/m68kcpu.c b/core/m68k/m68kcpu.c
+index 07d25143..2da87b1a 100644
+--- a/core/m68k/m68kcpu.c
++++ b/core/m68k/m68kcpu.c
+@@ -6,6 +6,7 @@ extern int vdp_68k_irq_ack(int int_level);
+ 
+ #define m68ki_cpu m68k
+ #define MUL (7)
++#define DJ_MAIN_68K /* decomp-dj: the connector's hooks are on this CPU (m68kcpu.h) */
+ 
+ /* ======================================================================== */
+ /* ================================ INCLUDES ============================== */
+@@ -23,6 +24,11 @@ extern int vdp_68k_irq_ack(int int_level);
+ /* ================================= DATA ================================= */
+ /* ======================================================================== */
+ 
++/* decomp-dj: the connector's hooks (m68k.h) */
++void (*dj_m68k_exec)(unsigned int pc) = NULL;
++void (*dj_m68k_fetch)(unsigned int pc, unsigned int len) = NULL;
++void (*dj_m68k_access)(int kind, int width, unsigned int address, unsigned int value) = NULL;
++
+ #ifdef BUILD_TABLES
+ static unsigned char m68ki_cycles[0x10000];
+ #endif
+@@ -296,6 +302,10 @@ void m68k_run(unsigned int cycles)
+       cpu_hook(HOOK_M68K_E, 0, REG_PC, 0);
+ #endif
+ 
++    /* decomp-dj: coverage, breakpoints and traces (dj_connector.c) */
++    if (UNLIKELY(dj_m68k_exec != NULL))
++      dj_m68k_exec(REG_PC);
++
+     /* Decode next instruction */
+     REG_IR = m68ki_read_imm_16();
+ 
+diff --git a/core/m68k/m68kcpu.h b/core/m68k/m68kcpu.h
+index 3bf06e83..d0eeabff 100644
+--- a/core/m68k/m68kcpu.h
++++ b/core/m68k/m68kcpu.h
+@@ -776,6 +776,16 @@ INLINE void m68ki_check_interrupts(void);            /* ASG: check for interrupt
+ /* ======================================================================== */
+ 
+ 
++/* decomp-dj: the connector's hooks (m68k.h), for the main 68000 only (m68kcpu.c defines
++ * DJ_MAIN_68K; the Mega CD's sub-CPU, s68kcpu.c, builds this file without it). */
++#ifdef DJ_MAIN_68K
++#define DJ_M68K_FETCH(pc, len) do { if (UNLIKELY(dj_m68k_fetch != NULL)) dj_m68k_fetch((pc), (len)); } while (0)
++#define DJ_M68K_ACCESS(kind, width, address, value) do { if (UNLIKELY(dj_m68k_access != NULL)) dj_m68k_access((kind), (width), (address), (value)); } while (0)
++#else
++#define DJ_M68K_FETCH(pc, len) do { } while (0)
++#define DJ_M68K_ACCESS(kind, width, address, value) do { } while (0)
++#endif
++
+ /* ---------------------------- Read Immediate ---------------------------- */
+ 
+ /* Handles all immediate reads, does address error check, function code setting,
+@@ -795,6 +805,7 @@ INLINE uint m68ki_read_imm_16(void)
+     CPU_PREF_DATA = m68k_read_immediate_16(REG_PC);
+   }
+   temp_val = CPU_PREF_DATA;
++  DJ_M68K_FETCH(REG_PC, 2); /* decomp-dj */
+   REG_PC += 2;
+   CPU_PREF_ADDR = REG_PC;
+   CPU_PREF_DATA = m68k_read_immediate_16(REG_PC);
+@@ -806,6 +817,7 @@ INLINE uint m68ki_read_imm_16(void)
+   m68ki_check_address_error(REG_PC, MODE_READ, FLAG_S | FUNCTION_CODE_USER_PROGRAM) /* auto-disable (see m68kcpu.h) */
+ #endif
+   REG_PC += 2;
++  DJ_M68K_FETCH(pc, 2); /* decomp-dj */
+   return m68k_read_immediate_16(pc);
+ #endif /* M68K_EMULATE_PREFETCH */
+ }
+@@ -824,6 +836,7 @@ INLINE uint m68ki_read_imm_32(void)
+     CPU_PREF_DATA = m68k_read_immediate_16(REG_PC);
+   }
+   temp_val = CPU_PREF_DATA;
++  DJ_M68K_FETCH(REG_PC, 4); /* decomp-dj */
+   REG_PC += 2;
+   temp_val = (temp_val << 16) | m68k_read_immediate_16(REG_PC);
+   REG_PC += 2;
+@@ -837,6 +850,7 @@ INLINE uint m68ki_read_imm_32(void)
+   m68ki_check_address_error(REG_PC, MODE_READ, FLAG_S | FUNCTION_CODE_USER_PROGRAM) /* auto-disable (see m68kcpu.h) */
+ #endif
+   REG_PC += 4;
++  DJ_M68K_FETCH(pc, 4); /* decomp-dj */
+   return m68k_read_immediate_32(pc);
+ #endif /* M68K_EMULATE_PREFETCH */
+ }
+@@ -865,6 +879,7 @@ INLINE uint m68ki_read_8(uint address)
+   if (UNLIKELY(cpu_hook))
+     cpu_hook(HOOK_M68K_R, 1, address, val);
+ #endif
++  DJ_M68K_ACCESS(2, 1, address, val); /* decomp-dj */
+ 
+   return val;
+ }
+@@ -885,6 +900,7 @@ INLINE uint m68ki_read_16(uint address)
+   if (UNLIKELY(cpu_hook))
+     cpu_hook(HOOK_M68K_R, 2, address, val);
+ #endif
++  DJ_M68K_ACCESS(2, 2, address, val); /* decomp-dj */
+ 
+   return val;
+ }
+@@ -909,6 +925,7 @@ INLINE uint m68ki_read_32(uint address)
+   if (UNLIKELY(cpu_hook))
+     cpu_hook(HOOK_M68K_R, 4, address, val);
+ #endif
++  DJ_M68K_ACCESS(2, 4, address, val); /* decomp-dj */
+ 
+   return val;
+ }
+@@ -923,6 +940,7 @@ INLINE void m68ki_write_8(uint address, uint value)
+   if (UNLIKELY(cpu_hook))
+     cpu_hook(HOOK_M68K_W, 1, address, value);
+ #endif
++  DJ_M68K_ACCESS(3, 1, address, value); /* decomp-dj */
+ 
+   temp = &m68ki_cpu.memory_map[((address)>>16)&0xff];
+   if (temp->write8) (*temp->write8)(ADDRESS_68K(address),value);
+@@ -940,6 +958,7 @@ INLINE void m68ki_write_16(uint address, uint value)
+   if (UNLIKELY(cpu_hook))
+     cpu_hook(HOOK_M68K_W, 2, address, value);
+ #endif
++  DJ_M68K_ACCESS(3, 2, address, value); /* decomp-dj */
+ 
+   temp = &m68ki_cpu.memory_map[((address)>>16)&0xff];
+   if (temp->write16) (*temp->write16)(ADDRESS_68K(address),value);
+@@ -957,6 +976,7 @@ INLINE void m68ki_write_32(uint address, uint value)
+   if (UNLIKELY(cpu_hook))
+     cpu_hook(HOOK_M68K_W, 4, address, value);
+ #endif
++  DJ_M68K_ACCESS(3, 4, address, value); /* decomp-dj */
+ 
+   temp = &m68ki_cpu.memory_map[((address)>>16)&0xff];
+   if (temp->write16) (*temp->write16)(ADDRESS_68K(address),value>>16);
+diff --git a/libretro/Makefile.common b/libretro/Makefile.common
+index 96e308b3..a947257c 100644
+--- a/libretro/Makefile.common
++++ b/libretro/Makefile.common
+@@ -102,5 +102,7 @@ ifeq ($(SHARED_LIBVORBIS),)
+ endif
+ 
+ SOURCES_C += $(LIBRETRO_DIR)/libretro.c
++# decomp-dj's connector (connectors/genesis-plus-gx in decomp-dj)
++SOURCES_C += $(LIBRETRO_DIR)/dj_connector.c
+ 
+ INCFLAGS += $(foreach dir,$(GENPLUS_SRC_DIR),-I$(dir)) -I$(LIBRETRO_DIR) -I$(LIBRETRO_COMM_DIR)/include
+diff --git a/libretro/libretro.c b/libretro/libretro.c
+index 91efcf2a..1ac15370 100644
+--- a/libretro/libretro.c
++++ b/libretro/libretro.c
+@@ -81,6 +81,7 @@
+ #include "md_ntsc.h"
+ #include "sms_ntsc.h"
+ #include "osd.h"
++#include "dj_connector.h" /* decomp-dj */
+ 
+ #define STATIC_ASSERT(name, test) typedef struct { int assert_[(test)?1:-1]; } assert_ ## name ## _
+ #define M68K_MAX_CYCLES 1107
+@@ -2898,6 +2899,8 @@ void retro_set_environment(retro_environment_t cb)
+    bool option_categories = false;
+    struct retro_vfs_interface_info vfs_iface_info;
+    struct retro_led_interface led_interface;
++   /* decomp-dj: the connector's functions (dj_connector.c) */
++   static const struct retro_get_proc_address_interface dj_interface = { (retro_get_proc_address_t) dj_get_proc_address };
+ 
+    static const struct retro_controller_description port_1[] = {
+       { "Joypad Auto", RETRO_DEVICE_JOYPAD },
+@@ -3067,6 +3070,7 @@ void retro_set_environment(retro_environment_t cb)
+    };
+ 
+    environ_cb = cb;
++   cb(RETRO_ENVIRONMENT_SET_PROC_ADDRESS_CALLBACK, (void *) &dj_interface); /* decomp-dj */
+ 
+    /* An annoyance: retro_set_environment() can be called
+     * multiple times, and depending upon the current frontend
+@@ -3675,6 +3679,8 @@ bool retro_load_game(const struct retro_game_info *info)
+ 
+    init_frameskip();
+ 
++   dj_attach(info ? info->path : NULL); /* decomp-dj */
++
+    return true;
+ 
+ error:
+@@ -3703,6 +3709,7 @@ void retro_unload_game(void)
+ {
+    /* Clear disk interface */
+    int i;
++   dj_attach(NULL); /* decomp-dj */
+    disk_count = 0;
+    disk_index = 0;
+    for (i=0; i<MAX_DISKS; i++)

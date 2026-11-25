@@ -103,6 +103,12 @@ pub fn is_gb_rom(rom: &[u8]) -> bool {
     rom.len() > 0x150 && rom[0x104..0x108] == [0xCE, 0xED, 0x66, 0x66]
 }
 
+/// A Mega Drive / Genesis ROM: "SEGA" where its header names the system. Genesis Plus GX
+/// also plays Master System, Game Gear and SG-1000 games, which have no such header.
+pub fn is_md_rom(rom: &[u8]) -> bool {
+    rom.get(0x100..0x104) == Some(b"SEGA")
+}
+
 /// The console a project's core plays, if movies are supported for it. `rom` tells a
 /// Game Boy game from a GBA one on mGBA.
 pub fn platform_of(core: &str, rom: Option<&[u8]>) -> Option<&'static str> {
@@ -113,6 +119,7 @@ pub fn platform_of(core: &str, rom: Option<&[u8]>) -> Option<&'static str> {
         "gambatte" | "sameboy" | "gearboy" => "GB",
         c if c.starts_with("snes9x") || c.starts_with("bsnes") || c == "mesen-s" => "SNES",
         c if c.starts_with("mupen64plus") => "N64",
+        "genesis plus gx" if rom.is_none_or(is_md_rom) => "Genesis",
         _ => return None,
     })
 }
@@ -439,6 +446,8 @@ mod tests {
         assert_eq!(platform_of("mesen", None), Some("NES"));
         assert_eq!(platform_of("mgba", None), Some("GBA"));
         assert_eq!(platform_of("mupen64plus-next", None), Some("N64"));
+        assert_eq!(platform_of("genesis plus gx", None), Some("Genesis"));
+        assert_eq!(platform_of("genesis plus gx", Some(&[0u8; 0x200])), None); // a Master System game
         assert!(for_core("mesen", "N64", &BTreeMap::new()).is_err());
         assert_eq!(for_core("gambatte", "GBC", &BTreeMap::new()).unwrap().columns[0], "Up");
     }

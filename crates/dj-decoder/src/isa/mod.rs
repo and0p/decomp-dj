@@ -1,12 +1,15 @@
-//! The decoders built into the player: the 6502, MIPS III, ARMv4T, the 65816 and the SM83.
+//! The decoders built into the player: the 6502, MIPS III, ARMv4T, the 65816, the SM83 and
+//! the 68000.
 
 use crate::{Decoded, Decoder, Kind};
 
 pub mod arm;
+pub mod m68k;
 pub mod sm83;
 pub mod w65816;
 
 pub use arm::Armv4t;
+pub use m68k::M68k;
 pub use sm83::Sm83;
 pub use w65816::W65816;
 

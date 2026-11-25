@@ -164,6 +164,7 @@ static TOY: ConsoleProfile = ConsoleProfile {
     options: &[("testcore_sync", "fail"), ("testcore_missing", "1")],
     options_note: "why",
     advice: "mind the gap",
+    ports: 0,
 };
 
 fn toy(core: &str, _rom: Option<&[u8]>) -> Option<&'static ConsoleProfile> {

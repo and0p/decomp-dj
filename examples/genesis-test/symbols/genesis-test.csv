@@ -1,0 +1,16 @@
+name,region,offset,size,cpu_addr
+start,ROM,200,6e,200
+exception,ROM,27a,2,27a
+vblank,ROM,27c,8,27c
+main,ROM,284,80,284
+wait_vblank,ROM,304,10,304
+read_pad,ROM,314,78,314
+set_colour,ROM,38c,16,38c
+on_a,ROM,3a2,50,3a2
+on_b,ROM,3f2,1a,3f2
+on_c,ROM,41c,20,41c
+shade,ROM,43c,14,43c
+on_start,ROM,450,e,450
+on_x,ROM,45e,1c,45e
+on_direction,ROM,47a,1a,47a
+ram_mix,ROM,494,10,494

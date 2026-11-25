@@ -1,0 +1,3 @@
+# The patch keeps the core's CRLF line endings byte for byte (its m68k files and libretro.c
+# use them): no line-ending conversion, or it no longer applies.
+dj-genesis-plus-gx.patch -text

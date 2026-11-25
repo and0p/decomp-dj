@@ -180,7 +180,7 @@ fn questions<R: BufRead, W: Write>(io: &mut Asker<R, W>, args: &InitArgs) -> Res
                     None
                 }
                 (None, None, _) => {
-                    io.say("  dj can't tell which console this ROM is for (it knows NES, SNES, Game Boy, GBA and N64 ROMs), so it has no core to suggest. Any libretro core plays; one without a connector records no coverage.")?;
+                    io.say("  dj can't tell which console this ROM is for (it knows NES, SNES, Game Boy, GBA, N64 and Genesis ROMs), so it has no core to suggest. Any libretro core plays; one without a connector records no coverage.")?;
                     None
                 }
             };
@@ -256,7 +256,7 @@ pub(crate) fn init(args: InitArgs) -> Result<i32> {
         segment: a.segment.then(|| FirstSegment { title: "Power-on".into(), frames: 60 }),
     })?;
     if let Some(console) = plan.core_chosen_for {
-        println!("core: {} (found for {} {console} ROM)", plan.core.display(), if console.starts_with('G') { "a" } else { "an" });
+        println!("core: {} (found for {} ROM)", plan.core.display(), dj_core::platform::with_article(console));
     }
     if !plan.connector {
         eprintln!("note: this core has no coverage connector; segments will play but record no coverage");

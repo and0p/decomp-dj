@@ -1,0 +1,11 @@
+dj-segment 1
+id: 106dce5e-9924-4528-9308-ff830368060a
+parent: 11c4f045-ac62-42c5-950e-8f58a768e343
+title: Press X (6-button)
+frames: 60
+start-hash: f8af41516c253e1329b3cdc606d0643b
+end-hash: 09715b080decaf2067f692763789f7bf
+start-frame: 60
+---
+10 P1 JOYPAD L 1
+13 P1 JOYPAD L 0

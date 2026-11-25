@@ -48,3 +48,4 @@ void     dj_set_breakpoints(const struct dj_break *list, size_t n, dj_break_fn f
 | [mgba](mgba/) | Game Boy Advance | libretro/mgba | API 3: ROM, IWRAM, EWRAM and BIOS, ARM/Thumb mode bits, breakpoints; no trace hook |
 | [mesen-s](mesen-s/) | Super Nintendo | libretro/Mesen-S | API 3: the main 65816's ROM (LoROM, HiROM and the rest), WRAM and SRAM, register-width mode bits, breakpoints, traces; no coprocessors |
 | [sameboy](sameboy/) | Game Boy, Game Boy Color | LIJI32/SameBoy | API 3: ROM through every mapper's banks, WRAM, HRAM, boot ROM and cartridge RAM, breakpoints, trace hook |
+| [genesis-plus-gx](genesis-plus-gx/) | Mega Drive / Genesis | libretro/Genesis-Plus-GX | API 3: ROM and RAM of the 68000, breakpoints, trace hook; not the Z80, Mega CD or 32X. Non-commercial licence |

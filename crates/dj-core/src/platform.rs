@@ -3,6 +3,8 @@
 //! which core options a project should start with. One entry per core with a connector.
 //! The console itself comes from `tas::profile::platform_of`.
 
+use std::path::{Path, PathBuf};
+
 /// A core's defaults for a new project.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ConsoleProfile {
@@ -81,9 +83,108 @@ pub fn for_core(core: &str, rom: Option<&[u8]>) -> Option<&'static ConsoleProfil
     (p.console == console).then_some(p)
 }
 
+/// The console a ROM file is for, by its header, else by its file name's extension. Only
+/// the consoles `core_for` has a core for. `head` is the file's first bytes (0x200 is
+/// plenty).
+pub fn detect(head: &[u8], path: &Path) -> Option<&'static str> {
+    let at = |o: usize, bytes: &[u8]| head.get(o..o + bytes.len()) == Some(bytes);
+    // iNES and NES 2.0.
+    if at(0, b"NES\x1A") {
+        return Some("NES");
+    }
+    // The N64 header's first word, in the three byte orders dumps come in (.z64, .v64, .n64).
+    if at(0, &[0x80, 0x37, 0x12, 0x40]) || at(0, &[0x37, 0x80, 0x40, 0x12]) || at(0, &[0x40, 0x12, 0x37, 0x80]) {
+        return Some("N64");
+    }
+    // The GBA header: the start of the Nintendo logo, and the fixed byte after the title.
+    if at(4, &[0x24, 0xFF, 0xAE, 0x51]) && at(0xB2, &[0x96]) {
+        return Some("GBA");
+    }
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "nes" => Some("NES"),
+        "z64" | "v64" | "n64" => Some("N64"),
+        "gba" => Some("GBA"),
+        _ => None,
+    }
+}
+
+/// The core dj makes a console's projects with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CoreChoice {
+    /// The library's file name without its suffix (`mesen_libretro`).
+    pub library: &'static str,
+    /// The script that builds it with its connector, from the top of dj's folder.
+    pub build: &'static str,
+}
+
+/// The core for a console `detect` names.
+pub fn core_for(console: &str) -> Option<CoreChoice> {
+    Some(match console {
+        "NES" => CoreChoice { library: "mesen_libretro", build: "connectors/mesen/build.sh" },
+        "GBA" => CoreChoice { library: "mgba_libretro", build: "connectors/mgba/build.sh" },
+        "N64" => CoreChoice { library: "mupen64plus_next_libretro", build: "connectors/mupen64plus/build.sh" },
+        _ => return None,
+    })
+}
+
+/// A folder of cores, for a machine that keeps them somewhere of its own.
+pub const CORES_ENV: &str = "DJ_CORES";
+
+/// Where a core named without a folder is looked for, in order: `$DJ_CORES`; `cores/` next
+/// to the running program (a release's folder); `build/cores/` two folders above it (a
+/// source checkout, where the program is in `target/release/` and the connectors' scripts
+/// build there); and `build/cores/` in the current folder.
+pub fn core_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![];
+    if let Some(d) = std::env::var_os(CORES_ENV).filter(|d| !d.is_empty()) {
+        dirs.push(PathBuf::from(d));
+    }
+    if let Some(exe) = std::env::current_exe().ok().and_then(|e| std::fs::canonicalize(e).ok()) {
+        if let Some(dir) = exe.parent() {
+            dirs.push(dir.join("cores"));
+            if let Some(top) = dir.parent().and_then(Path::parent) {
+                dirs.push(top.join("build").join("cores"));
+            }
+        }
+    }
+    dirs.push(PathBuf::from("build").join("cores"));
+    dirs
+}
+
+/// The file of the core called `library` (with or without its suffix) in the first of
+/// `dirs` that has it.
+pub fn find_core(library: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+    dirs.iter().map(|d| crate::libretro::library_path(&d.join(library))).find(|p| p.is_file())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn consoles_from_rom_files() {
+        let p = |name: &str| PathBuf::from(name);
+        let mut gba = vec![0u8; 0xC0];
+        gba[4..8].copy_from_slice(&[0x24, 0xFF, 0xAE, 0x51]);
+        gba[0xB2] = 0x96;
+        // By header, whatever the file is called.
+        assert_eq!(detect(b"NES\x1A\x02\x01", &p("game.bin")), Some("NES"));
+        assert_eq!(detect(&[0x80, 0x37, 0x12, 0x40, 0, 0], &p("game.rom")), Some("N64"));
+        assert_eq!(detect(&[0x37, 0x80, 0x40, 0x12, 0, 0], &p("game")), Some("N64"));
+        assert_eq!(detect(&[0x40, 0x12, 0x37, 0x80, 0, 0], &p("game")), Some("N64"));
+        assert_eq!(detect(&gba, &p("game.bin")), Some("GBA"));
+        // By extension, when the header says nothing (a short or headerless file).
+        assert_eq!(detect(b"rom", &p("game.NES")), Some("NES"));
+        assert_eq!(detect(b"rom", &p("game.v64")), Some("N64"));
+        assert_eq!(detect(b"rom", &p("game.gba")), Some("GBA"));
+        assert_eq!(detect(b"rom", &p("game.bin")), None);
+        assert_eq!(detect(b"", &p("game")), None);
+        // Every console detected has a core, and that core's profile is for the console.
+        for c in ["NES", "GBA", "N64"] {
+            assert!(core_for(c).is_some(), "{c}");
+        }
+        assert_eq!(core_for("SNES"), None);
+    }
 
     #[test]
     fn profiles_by_core_and_rom() {

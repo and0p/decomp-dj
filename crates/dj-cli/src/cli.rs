@@ -105,8 +105,11 @@ pub(crate) enum Cmd {
         name: Option<String>,
         #[arg(long)]
         rom: PathBuf,
+        /// libretro core library, or the name of one in a cores folder (`mesen_libretro`).
+        /// Default: $DJ_CORE, else the core for the ROM's console (NES, GBA, N64), looked
+        /// for in $DJ_CORES, cores/ next to dj, and build/cores/
         #[arg(long)]
-        core: PathBuf,
+        core: Option<PathBuf>,
         /// Free-form id of the exact core build (default: the core's own name and version)
         #[arg(long)]
         core_build: Option<String>,
@@ -116,6 +119,13 @@ pub(crate) enum Cmd {
         /// Symbol map to copy into symbols/ (cc65 .dbg, splat symbol_addrs.txt, Mesen .mlb, GNU ld .map, ELF or CSV)
         #[arg(long)]
         symbols: Option<PathBuf>,
+        /// Don't make a first root segment (60 frames from power-on, titled "Power-on")
+        #[arg(long)]
+        no_segment: bool,
+        /// Make the project without asking first. On a terminal dj shows what it would
+        /// make and asks once; when its input or output isn't a terminal it never asks
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
     /// Create an empty segment: below --parent, or a root segment, which starts from
     /// power-on unless --snapshot, --sram or --from says otherwise (those need the core, to

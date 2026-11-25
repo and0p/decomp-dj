@@ -68,11 +68,11 @@ fn real_main() -> Result<()> {
         std::process::exit(2);
     }
     let cli = Cli::parse();
-    if let Cmd::Init { dir, name, rom, core, core_build, options, symbols } = &cli.cmd {
+    if let Cmd::Init { dir, name, rom, core, core_build, options, symbols, no_segment, yes } = &cli.cmd {
         if cli.project.is_some() {
             bail!("dj init takes the folder to create as its argument, not -C");
         }
-        return init(dir.as_deref(), name.as_deref(), rom, core, core_build.clone(), options, symbols.as_deref());
+        return exit_with(init(dir.as_deref(), name.as_deref(), rom, core.as_deref(), core_build.clone(), options, symbols.as_deref(), !no_segment, *yes)?);
     }
     let dir = project_dir(cli.project.as_deref())?;
     // Batch commands play in a child dj, so a core that crashes or hangs costs a segment,

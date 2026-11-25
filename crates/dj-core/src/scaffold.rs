@@ -17,18 +17,40 @@ pub struct InitRequest {
     /// The folder to make the project in (default: one named after the ROM file, without
     /// its extension, in the current folder).
     pub dir: Option<PathBuf>,
-    /// The project's name (default: the folder's name when `dir` is given and has one,
-    /// else the ROM file's name without its extension).
+    /// The project's name (default: the folder's name when `dir` is given, `.` being the
+    /// folder it is; else the ROM file's name without its extension).
     pub name: Option<String>,
     pub rom: PathBuf,
-    /// The core library, with or without its suffix (`libretro::library_path`).
-    pub core: PathBuf,
+    /// The core library, with or without its suffix (`libretro::library_path`). A bare
+    /// name (`mesen_libretro`) that isn't a file here is looked for in `platform::core_dirs`.
+    /// None: `$DJ_CORE`, else the core for the ROM's console (`platform::detect`), looked
+    /// for in the same folders.
+    pub core: Option<PathBuf>,
     /// The id of the core's build to record (default: what the core reports).
     pub core_build: Option<String>,
     /// Core options to set before the core's own values are recorded.
     pub options: BTreeMap<String, String>,
     /// A symbol map to copy into `symbols/`.
     pub symbols: Option<PathBuf>,
+    /// A first root segment, from power-on.
+    pub segment: Option<FirstSegment>,
+}
+
+/// The root segment a new project starts with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FirstSegment {
+    pub title: String,
+    pub frames: u64,
+}
+
+/// What `InitPlan::write` made.
+#[derive(Clone, Debug)]
+pub struct Written {
+    pub config: PathBuf,
+    /// The first segment's id and file.
+    pub segment: Option<(String, PathBuf)>,
+    /// The lines added to the project's `.gitignore`.
+    pub ignored: Vec<String>,
 }
 
 /// One of the connector's regions, as `dj init` reports it.
@@ -50,6 +72,10 @@ pub struct InitPlan {
     pub rom: PathBuf,
     /// The core library's file.
     pub core: PathBuf,
+    /// The ROM's console, when the core was chosen for it (no core was asked for).
+    pub core_chosen_for: Option<&'static str>,
+    /// The first root segment to make.
+    pub segment: Option<FirstSegment>,
     /// The symbol map to copy, which `config.symbols` already names.
     pub symbols: Option<PathBuf>,
     pub config: Config,
@@ -89,10 +115,7 @@ pub fn propose_with(req: &InitRequest, profiles: ProfileLookup) -> Result<InitPl
     if !req.rom.is_file() {
         bail!("the ROM {} doesn't exist", req.rom.display());
     }
-    let core_path = libretro::library_path(&req.core);
-    if !core_path.is_file() {
-        bail!("the core library {} doesn't exist", core_path.display());
-    }
+    let (core_path, core_chosen_for) = find_core(req)?;
     let rom_stem = stem(&req.rom);
     let dir = match &req.dir {
         Some(d) => d.clone(),
@@ -103,8 +126,8 @@ pub fn propose_with(req: &InitRequest, profiles: ProfileLookup) -> Result<InitPl
     }
     let name = match &req.name {
         Some(n) => n.clone(),
-        // `.` and `..` have no name of their own.
-        None => req.dir.as_deref().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned()).or(rom_stem).ok_or_else(|| anyhow!("can't name the project after {}: pass a name", req.rom.display()))?,
+        // `.` and `..` have no name of their own: the folder they are, if it's there.
+        None => req.dir.as_deref().and_then(|d| d.file_name().map(|n| n.to_os_string()).or_else(|| std::fs::canonicalize(d).ok()?.file_name().map(|n| n.to_os_string()))).map(|n| n.to_string_lossy().into_owned()).or(rom_stem).ok_or_else(|| anyhow!("can't name the project after {}: pass a name", req.rom.display()))?,
     };
     let mut syms = vec![];
     if let Some(s) = &req.symbols {
@@ -169,7 +192,86 @@ pub fn propose_with(req: &InitRequest, profiles: ProfileLookup) -> Result<InitPl
         cache,
         compare: vec![],
     };
-    Ok(InitPlan { dir, rom: req.rom.clone(), core: core_path, symbols: req.symbols.clone(), config, connector: p.connector, regions: p.regions, console: profile.map(|c| c.console), notes })
+    Ok(InitPlan { dir, rom: req.rom.clone(), core: core_path, core_chosen_for, segment: req.segment.clone(), symbols: req.symbols.clone(), config, connector: p.connector, regions: p.regions, console: profile.map(|c| c.console), notes })
+}
+
+/// The core's file: the one asked for, or the one for the ROM's console.
+fn find_core(req: &InitRequest) -> Result<(PathBuf, Option<&'static str>)> {
+    let dirs = crate::platform::core_dirs();
+    let looked = || dirs.iter().map(|d| format!("  {}", d.display())).collect::<Vec<_>>().join("\n");
+    let asked = req.core.clone().or_else(|| std::env::var_os(crate::collection::CORE_ENV).filter(|c| !c.is_empty()).map(PathBuf::from));
+    if let Some(core) = asked {
+        let path = libretro::library_path(&core);
+        if path.is_file() {
+            return Ok((path, None));
+        }
+        // A name with no folder: one of the cores folders may have it.
+        let bare = core.components().count() == 1;
+        if let Some(found) = core.to_str().filter(|_| bare).and_then(|name| crate::platform::find_core(name, &dirs)) {
+            return Ok((found, None));
+        }
+        if bare {
+            bail!("the core library {} doesn't exist here, nor in any of the folders dj looks for cores in:\n{}", path.display(), looked());
+        }
+        bail!("the core library {} doesn't exist", path.display());
+    }
+    let mut head = vec![];
+    std::io::Read::read_to_end(&mut std::io::Read::take(std::fs::File::open(&req.rom).with_context(|| format!("reading {}", req.rom.display()))?, 0x200), &mut head)?;
+    let Some(console) = crate::platform::detect(&head, &req.rom) else {
+        bail!("can't tell which console {} is for (dj knows NES, GBA and N64 ROMs by their header or extension), so it can't pick a core: name one with --core", req.rom.display());
+    };
+    let choice = crate::platform::core_for(console).ok_or_else(|| anyhow!("dj has no core for {console}: name one with --core"))?;
+    match crate::platform::find_core(choice.library, &dirs) {
+        Some(found) => Ok((found, Some(console))),
+        None => bail!(
+            "{} is {} {console} ROM, which dj plays with the core {}, and that isn't in any of the folders dj looks for cores in:\n{}\nBuild it with {} (docs/install.md), or name a core's file with --core",
+            req.rom.display(),
+            if console == "GBA" { "a" } else { "an" },
+            libretro::library_path(Path::new(choice.library)).display(),
+            looked(),
+            choice.build
+        ),
+    }
+}
+
+/// A path as a `.gitignore` line that matches only it, from the folder the file is in.
+fn gitignore_line(rel: &Path) -> String {
+    let mut line = String::from("/");
+    for c in rel.to_string_lossy().replace('\\', "/").chars() {
+        if matches!(c, '*' | '?' | '[' | '\\') {
+            line.push('\\');
+        }
+        line.push(c);
+    }
+    // A space at the end of a line is dropped unless it's escaped.
+    if line.ends_with(' ') {
+        line.insert(line.len() - 1, '\\');
+    }
+    line
+}
+
+/// Adds the lines `.gitignore` in `dir` doesn't have yet, keeping what is there, and
+/// returns the ones it added.
+fn add_to_gitignore(dir: &Path, lines: &[String]) -> Result<Vec<String>> {
+    let path = dir.join(".gitignore");
+    let mut text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    let added: Vec<String> = lines.iter().filter(|l| !text.lines().any(|have| have.trim_end() == l.as_str())).cloned().collect();
+    if added.is_empty() {
+        return Ok(added);
+    }
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    for l in &added {
+        text.push_str(l);
+        text.push('\n');
+    }
+    std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
+    Ok(added)
 }
 
 struct Probed {
@@ -223,10 +325,11 @@ fn probe(core_path: &Path, rom: &Path, work: &Path, options: &BTreeMap<String, S
 }
 
 impl InitPlan {
-    /// Makes the project: its folders, `config.toml`, the symbol map's copy, and
-    /// `.local/local.toml` with where the ROM and the core are on this machine. Returns
-    /// the path of `config.toml`.
-    pub fn write(&self) -> Result<PathBuf> {
+    /// Makes the project: its folders, `config.toml`, the symbol map's copy,
+    /// `.local/local.toml` with where the ROM and the core are on this machine, a
+    /// `.gitignore` that leaves out `.local/` and the ROM if it is in the project's folder
+    /// (lines are added to one that is there, never taken away), and the first segment.
+    pub fn write(&self) -> Result<Written> {
         let dir = &self.dir;
         if has_project(dir) {
             bail!("{} already has a project", dir.display());
@@ -240,8 +343,25 @@ impl InitPlan {
         }
         let path = dir.join("config.toml");
         std::fs::write(&path, toml::to_string_pretty(&self.config)?)?;
-        let col = Collection::open(dir)?;
-        col.save_local(&LocalConfig { rom: Some(std::fs::canonicalize(&self.rom)?), core: Some(std::fs::canonicalize(&self.core)?), ..Default::default() })?;
-        Ok(path)
+        let mut col = Collection::open(dir)?;
+        let rom = std::fs::canonicalize(&self.rom)?;
+        let mut ignore = vec![".local/".to_string()];
+        if let Ok(rel) = rom.strip_prefix(std::fs::canonicalize(dir)?) {
+            ignore.push(gitignore_line(rel));
+        }
+        let ignored = add_to_gitignore(dir, &ignore)?;
+        col.save_local(&LocalConfig { rom: Some(rom), core: Some(std::fs::canonicalize(&self.core)?), ..Default::default() })?;
+        let segment = match &self.segment {
+            Some(first) => {
+                let id = uuid::Uuid::new_v4().to_string();
+                col.segments.insert(id.clone(), crate::format::Segment::new(&id, None, &first.title, first.frames));
+                col.save_segment(&id)?;
+                // As the folder was given, not as the project resolved it.
+                let file = col.paths[&id].file_name().map(|n| dir.join("segments").join(n)).unwrap_or_else(|| col.paths[&id].clone());
+                Some((id, file))
+            }
+            None => None,
+        };
+        Ok(Written { config: path, segment, ignored })
     }
 }

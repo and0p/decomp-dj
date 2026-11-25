@@ -6,7 +6,7 @@ hashes, fills the local database and reports coverage. Building it is in
 
 | Command | What it does | More |
 | --- | --- | --- |
-| `dj init [dir] --rom ROM --core CORE [--name NAME] [--option KEY=VALUE]... [--symbols FILE]` | Creates a project and pins the setup in `config.toml`. Without `dir`, the folder is named after the ROM file; without `--name`, the project is named after the folder | [install.md](install.md#a-first-project), [config.md](config.md) |
+| `dj init [dir] --rom ROM [--core CORE] [--name NAME] [--option KEY=VALUE]... [--symbols FILE] [--no-segment] [--yes]` | Creates a project and pins the setup in `config.toml`, with a first root segment. On a terminal it shows the project and asks once before making it (`--yes` doesn't ask; a script is never asked). Without `dir`, the folder is named after the ROM file; without `--name`, the project is named after the folder; without `--core`, dj finds the core for the ROM's console | [install.md](install.md#a-first-project), [config.md](config.md) |
 | `dj new [--parent ID] [--title TEXT] [--frames N]` | Adds a segment and prints its path | [editing.md](editing.md) |
 | `dj new --snapshot FILE [--sram FILE] [--start-frame N] [--blob-name NAME]` | Adds a root segment that starts from a save state, a save file or both, after checking that the core loads them | [editing.md](editing.md#a-root-from-a-snapshot) |
 | `dj new --from SEGMENT --at FRAME` | Adds a root segment that starts where SEGMENT is at that frame | [editing.md](editing.md#a-root-from-a-snapshot) |

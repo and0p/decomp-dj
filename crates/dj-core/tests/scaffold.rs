@@ -3,7 +3,7 @@
 
 use dj_core::collection::Collection;
 use dj_core::platform::ConsoleProfile;
-use dj_core::scaffold::{propose, propose_with, InitRequest};
+use dj_core::scaffold::{propose, propose_with, FirstSegment, InitRequest};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -35,6 +35,8 @@ fn init() {
     names_and_what_is_refused();
     a_core_without_a_connector_and_with_save_ram();
     console_defaults();
+    the_core_for_the_roms_console();
+    the_first_segment_and_gitignore();
 }
 
 fn a_project_from_a_rom_and_a_core() {
@@ -47,7 +49,7 @@ fn a_project_from_a_rom_and_a_core() {
         dir: Some(dir.clone()),
         name: Some("A Game".into()),
         rom: rom.clone(),
-        core: lib.clone(),
+        core: Some(lib.clone()),
         options: [("testcore_sync".to_string(), "fail".to_string())].into(),
         symbols: Some(map),
         ..Default::default()
@@ -81,8 +83,10 @@ fn a_project_from_a_rom_and_a_core() {
     let prg = plan.regions.iter().find(|r| r.facts.name == "PRG").expect("the connector's PRG region");
     assert!(prg.decoder && prg.rolls_up && !prg.differs_from_rom);
 
-    let path = plan.write().unwrap();
-    assert_eq!(path, dir.join("config.toml"));
+    let made = plan.write().unwrap();
+    assert_eq!(made.config, dir.join("config.toml"));
+    assert!(made.segment.is_none());
+    assert_eq!(made.ignored, [".local/"]);
     assert!(dir.join("segments").is_dir() && dir.join("blobs").is_dir() && dir.join("symbols/game.mlb").is_file());
     assert_eq!(std::fs::read_to_string(dir.join(".gitignore")).unwrap(), ".local/\n");
 
@@ -107,7 +111,7 @@ fn a_project_from_a_rom_and_a_core() {
 fn names_and_what_is_refused() {
     let Some((tmp, lib)) = setup("names", &["-DCONNECTOR"]) else { return };
     let rom = tmp.join("My Game.bin");
-    let req = InitRequest { rom: rom.clone(), core: lib.clone(), ..Default::default() };
+    let req = InitRequest { rom: rom.clone(), core: Some(lib.clone()), ..Default::default() };
 
     // No folder and no name: both from the ROM file's name.
     let plan = propose(&req).unwrap();
@@ -117,24 +121,27 @@ fn names_and_what_is_refused() {
     // A folder and no name: the folder's name, or the ROM's when the folder has none.
     let plan = propose(&InitRequest { dir: Some(tmp.join("port")), ..req.clone() }).unwrap();
     assert_eq!(plan.config.name, "port");
-    let plan = propose(&InitRequest { dir: Some(tmp.join("..")), ..req.clone() }).unwrap();
+    let plan = propose(&InitRequest { dir: Some(tmp.join("nowhere/..")), ..req.clone() }).unwrap();
     assert_eq!(plan.config.name, "My Game");
+    // `.` in a folder that's there is that folder.
+    let plan = propose(&InitRequest { dir: Some(tmp.join(".")), ..req.clone() }).unwrap();
+    assert_eq!(plan.config.name, tmp.file_name().unwrap().to_string_lossy());
 
     // The core's suffix is added when it's left off.
     let alt = tmp.join("alt").with_extension(std::env::consts::DLL_EXTENSION);
     std::fs::copy(&lib, &alt).unwrap();
-    let plan = propose(&InitRequest { dir: Some(tmp.join("port")), core: tmp.join("alt"), ..req.clone() }).unwrap();
+    let plan = propose(&InitRequest { dir: Some(tmp.join("port")), core: Some(tmp.join("alt")), ..req.clone() }).unwrap();
     assert_eq!(plan.core, alt);
 
     let err = |r: InitRequest| propose(&r).unwrap_err().to_string();
     assert!(err(InitRequest { rom: tmp.join("none.bin"), ..req.clone() }).contains("the ROM"));
-    assert!(err(InitRequest { core: tmp.join("none_libretro"), ..req.clone() }).contains("the core library"));
+    assert!(err(InitRequest { core: Some(tmp.join("none_libretro")), ..req.clone() }).contains("the core library"));
     assert!(err(InitRequest { symbols: Some(tmp.join("none.mlb")), ..req.clone() }).contains("the symbol map"));
 }
 
 fn a_core_without_a_connector_and_with_save_ram() {
     let Some((tmp, lib)) = setup("plain", &["-DSAVE_RAM"]) else { return };
-    let plan = propose(&InitRequest { dir: Some(tmp.join("proj")), rom: tmp.join("My Game.bin"), core: lib, ..Default::default() }).unwrap();
+    let plan = propose(&InitRequest { dir: Some(tmp.join("proj")), rom: tmp.join("My Game.bin"), core: Some(lib), ..Default::default() }).unwrap();
     assert!(!plan.connector);
     assert!(plan.regions.is_empty());
     assert_eq!(plan.config.hash.regions, ["RAM", "SRAM"]);
@@ -162,7 +169,7 @@ fn toy(core: &str, _rom: Option<&[u8]>) -> Option<&'static ConsoleProfile> {
 
 fn console_defaults() {
     let Some((tmp, lib)) = setup("console", &["-DCONNECTOR"]) else { return };
-    let req = InitRequest { dir: Some(tmp.join("proj")), rom: tmp.join("My Game.bin"), core: lib, ..Default::default() };
+    let req = InitRequest { dir: Some(tmp.join("proj")), rom: tmp.join("My Game.bin"), core: Some(lib), ..Default::default() };
 
     let plan = propose_with(&req, toy).unwrap();
     let c = &plan.config;
@@ -187,4 +194,80 @@ fn console_defaults() {
     let col = Collection::open(&tmp.join("proj")).unwrap();
     assert_eq!(col.config.ports[0].hide, ["X", "Y"]);
     assert_eq!(col.config.cache.as_ref().and_then(|c| c.preset.as_deref()), Some("n64-sparse"));
+}
+
+fn the_core_for_the_roms_console() {
+    let Some((tmp, lib)) = setup("find", &["-DCONNECTOR"]) else { return };
+    // A cores folder with the test core in it, under the name of the NES core.
+    let cores = tmp.join("my cores");
+    std::fs::create_dir_all(&cores).unwrap();
+    let mesen = cores.join("mesen_libretro").with_extension(std::env::consts::DLL_EXTENSION);
+    std::fs::copy(&lib, &mesen).unwrap();
+    std::env::set_var(dj_core::platform::CORES_ENV, &cores);
+    std::env::remove_var(dj_core::collection::CORE_ENV);
+    let nes = tmp.join("game.bin");
+    std::fs::write(&nes, b"NES\x1A\x02\x01 and so on").unwrap();
+    let req = InitRequest { dir: Some(tmp.join("proj")), rom: nes.clone(), ..Default::default() };
+
+    // No core asked for: the ROM's header says NES, and the NES core is in the folder.
+    let plan = propose(&req).unwrap();
+    assert_eq!(plan.core, mesen);
+    assert_eq!(plan.core_chosen_for, Some("NES"));
+
+    // A core asked for by name alone is looked for there too, and wasn't chosen by console.
+    let plan = propose(&InitRequest { core: Some("mesen_libretro".into()), ..req.clone() }).unwrap();
+    assert_eq!(plan.core, mesen);
+    assert_eq!(plan.core_chosen_for, None);
+
+    // $DJ_CORE is a core asked for.
+    std::env::set_var(dj_core::collection::CORE_ENV, &lib);
+    assert_eq!(propose(&req).unwrap().core, lib);
+    std::env::remove_var(dj_core::collection::CORE_ENV);
+
+    // A console whose core isn't there: the error names the core, the folders and the script.
+    let n64 = tmp.join("game.z64");
+    std::fs::write(&n64, [0x80, 0x37, 0x12, 0x40, 0, 0, 0, 0]).unwrap();
+    let e = propose(&InitRequest { rom: n64, ..req.clone() }).unwrap_err().to_string();
+    assert!(e.contains("an N64 ROM") && e.contains("mupen64plus_next_libretro") && e.contains("my cores") && e.contains("connectors/mupen64plus/build.sh"), "{e}");
+    let e = propose(&InitRequest { core: Some("nothing_libretro".into()), ..req.clone() }).unwrap_err().to_string();
+    assert!(e.contains("nothing_libretro") && e.contains("my cores"), "{e}");
+
+    // A ROM that says nothing about its console.
+    let e = propose(&InitRequest { rom: tmp.join("My Game.bin"), ..req.clone() }).unwrap_err().to_string();
+    assert!(e.contains("can't tell which console") && e.contains("--core"), "{e}");
+    std::env::remove_var(dj_core::platform::CORES_ENV);
+}
+
+fn the_first_segment_and_gitignore() {
+    let Some((tmp, lib)) = setup("first", &["-DCONNECTOR"]) else { return };
+    // The ROM is in the project's folder, which has a .gitignore with no newline at its end.
+    let dir = tmp.join("proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    let rom = dir.join("My [Game].bin");
+    std::fs::write(&rom, b"rom").unwrap();
+    std::fs::write(dir.join(".gitignore"), "build/").unwrap();
+    let first = FirstSegment { title: "Power-on".into(), frames: 60 };
+    let plan = propose(&InitRequest { dir: Some(dir.clone()), rom, core: Some(lib.clone()), segment: Some(first), ..Default::default() }).unwrap();
+    // Proposing left the folder as it was.
+    assert_eq!(entries(&dir), [".gitignore", "My [Game].bin"]);
+
+    let made = plan.write().unwrap();
+    // What was there is kept; .local/ and the ROM (matched as itself, not as a pattern) are added.
+    assert_eq!(made.ignored, [".local/", "/My \\[Game].bin"]);
+    assert_eq!(std::fs::read_to_string(dir.join(".gitignore")).unwrap(), "build/\n.local/\n/My \\[Game].bin\n");
+
+    let (id, file) = made.segment.unwrap();
+    assert!(file.is_file() && file.starts_with(dir.join("segments")));
+    let col = Collection::open(&dir).unwrap();
+    assert_eq!(col.segments.len(), 1);
+    let seg = &col.segments[&id];
+    assert_eq!((seg.title(), seg.frames().unwrap(), seg.parent()), ("Power-on", 60, None));
+
+    // A ROM outside the folder isn't named, and a .gitignore that has the line gets nothing.
+    let dir2 = tmp.join("other");
+    std::fs::create_dir_all(&dir2).unwrap();
+    std::fs::write(dir2.join(".gitignore"), ".local/\n").unwrap();
+    let made = propose(&InitRequest { dir: Some(dir2.clone()), rom: tmp.join("My Game.bin"), core: Some(lib), ..Default::default() }).unwrap().write().unwrap();
+    assert!(made.ignored.is_empty() && made.segment.is_none());
+    assert_eq!(std::fs::read_to_string(dir2.join(".gitignore")).unwrap(), ".local/\n");
 }

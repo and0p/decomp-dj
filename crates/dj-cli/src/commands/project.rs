@@ -2,67 +2,42 @@
 
 use crate::*;
 
-pub(crate) fn init(dir: &Path, name: &str, rom: &Path, core_path: &Path, core_build: Option<String>, options: &[String], symbols: Option<&Path>) -> Result<()> {
-    if dir.join("config.toml").exists() || dir.join("collection.toml").exists() {
-        bail!("{} already has a project", dir.display());
-    }
-    let core_path = &libretro::library_path(core_path);
-    if !core_path.is_file() {
-        bail!("the core library {} doesn't exist", core_path.display());
-    }
+pub(crate) fn init(dir: Option<&Path>, name: Option<&str>, rom: &Path, core_path: &Path, core_build: Option<String>, options: &[String], symbols: Option<&Path>) -> Result<()> {
     let mut overrides = BTreeMap::new();
     for o in options {
         let (k, v) = o.split_once('=').ok_or_else(|| anyhow!("--option takes KEY=VALUE"))?;
         overrides.insert(k.to_string(), v.to_string());
     }
-    std::fs::create_dir_all(dir.join("segments"))?;
-    std::fs::create_dir_all(dir.join("blobs"))?;
-    let work = dir.join(".local");
-    let (lib_name, build_id, effective, regions) = {
-        let mut core = libretro::Core::load(core_path, &work, &overrides)?;
-        core.load_game(rom)?;
-        // Some cores set up their memory on the first frame (Mupen64Plus-Next): run one so
-        // the RAM regions to hash exist when they're probed.
-        core.run_frame(false);
-        let mut regions = vec![];
-        for r in ["RAM", "SRAM"] {
-            if core.memory_view(libretro::region_memory_id(r).unwrap()).is_some() {
-                regions.push(r.to_string());
+    let plan = dj_core::scaffold::propose(&dj_core::scaffold::InitRequest {
+        dir: dir.map(Path::to_path_buf),
+        name: name.map(String::from),
+        rom: rom.to_path_buf(),
+        core: core_path.to_path_buf(),
+        core_build,
+        options: overrides,
+        symbols: symbols.map(Path::to_path_buf),
+    })?;
+    if !plan.connector {
+        eprintln!("note: this core has no coverage connector; segments will play but record no coverage");
+    } else {
+        println!("connector regions:");
+        for r in &plan.regions {
+            let f = &r.facts;
+            let place = f.file_offset.map(|o| format!("ROM file from byte {o}")).unwrap_or_else(|| "not from the ROM file".into());
+            let decoder = match f.cpu.as_deref() {
+                Some(c) if r.decoder => c.to_string(),
+                Some(c) => format!("{c} (no built-in decoder: a plugin or the core can add one, docs/decoders.md)"),
+                None => "no instruction set".into(),
+            };
+            let mark = if r.rolls_up { "  <- coverage rolls up here" } else { "" };
+            println!("  {:<6} {:>8} bytes  {decoder}, {place}{mark}", f.name, f.size);
+            if r.differs_from_rom {
+                eprintln!("warning: the connector's {} bytes don't match {} from byte {}", f.name, rom.display(), f.file_offset.unwrap_or(0));
             }
         }
-        if !core.has_connector() {
-            eprintln!("note: this core has no coverage connector; segments will play but record no coverage");
-        } else {
-            print_connector_regions(&mut core, rom)?;
-        }
-        (core.library_name.clone(), core.build_id(), core.effective_options(), regions)
-    };
-    let mut syms = vec![];
-    if let Some(s) = symbols {
-        std::fs::create_dir_all(dir.join("symbols"))?;
-        let fname = s.file_name().ok_or_else(|| anyhow!("bad symbols path"))?;
-        std::fs::copy(s, dir.join("symbols").join(fname))?;
-        let format = dj_core::analysis::guess_format(s);
-        syms.push(SymbolsConfig { file: format!("symbols/{}", fname.to_string_lossy()), format: format.into(), rom_header: None, region: None, cpu_base: None });
     }
-    let config = Config {
-        decoders: vec![],
-        dj: Some(dj_core::collection::DJ_VERSION.to_string()),
-        format: dj_core::collection::PROJECT_FORMAT,
-        name: name.to_string(),
-        rom: RomConfig { sha256: sha256_file(rom)?, file: rom.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default() },
-        core: CoreConfig { name: lib_name.to_lowercase(), build: core_build.unwrap_or(build_id), sha256: String::new(), options: effective },
-        ports: vec![PortConfig { port: 1, device: "JOYPAD".into() }],
-        hash: HashConfig { algorithm: "blake3".into(), regions, exclude: vec![] },
-        tick: None,
-        symbols: syms,
-        cache: None,
-        compare: vec![],
-    };
-    std::fs::write(dir.join("config.toml"), toml::to_string_pretty(&config)?)?;
-    let col = Collection::open(dir)?;
-    col.save_local(&LocalConfig { rom: Some(std::fs::canonicalize(rom)?), core: Some(std::fs::canonicalize(core_path)?), ..Default::default() })?;
-    println!("created {}", dir.join("config.toml").display());
+    let path = plan.write()?;
+    println!("created {}", path.display());
     Ok(())
 }
 
@@ -76,6 +51,49 @@ pub(crate) fn new_segment(dir: &Path, parent: Option<String>, title: &str, frame
     let r = Segment::new(&id, parent.as_deref(), title, frames);
     col.segments.insert(id.clone(), r);
     col.save_segment(&id)?;
+    println!("{}", col.paths[&id].display());
+    Ok(())
+}
+
+/// `dj new --snapshot`, `--sram` and `--from`: a root segment that starts from a save
+/// state, a save file, or a frame of another segment.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn new_root(dir: &Path, title: &str, frames: u64, snapshot: Option<&Path>, sram: Option<&Path>, start_frame: u64, from: Option<(&str, u64)>, blob_name: Option<&str>, local: &Local) -> Result<()> {
+    let mut col = Collection::open(dir)?;
+    let mut s = open_session(&col, local)?;
+    let read = |p: Option<&Path>| p.map(|p| std::fs::read(p).with_context(|| format!("reading {}", p.display()))).transpose();
+    let mut new = dj_core::player::NewRoot { title: title.to_string(), frames, snapshot: read(snapshot)?, sram: read(sram)?, start_frame, lines: vec![], blob_name: String::new() };
+    // The blob's name: the one asked for, else the file's own, else (--from) where it was cut.
+    let stem = snapshot.or(sram).and_then(|p| p.file_stem()).map(|n| dj_core::collection::blob_name(&n.to_string_lossy()));
+    new.blob_name = blob_name.map(String::from).or(stem).unwrap_or_default();
+    if let Some((segment, frame)) = from {
+        let src = col.resolve(segment)?.to_string();
+        let (state, at) = s.state_at(&col, &src, frame)?;
+        new.snapshot = Some(state);
+        new.start_frame = at;
+        new.lines = dj_core::edit::carried_lines(&col, &src, frame)?;
+        if title.is_empty() {
+            new.title = format!("{} from frame {frame}", col.segments[&src].title());
+        }
+        if blob_name.is_none() {
+            new.blob_name = dj_core::collection::blob_name(&format!("{} frame {frame}", col.segments[&src].title()));
+        }
+    }
+    let id = s.add_root(&mut col, &new)?;
+    if new.snapshot.is_some() && col.warns_about_snapshots() {
+        eprintln!("note: this copies a snapshot into the project's blobs folder. {}", dj_core::collection::SNAPSHOT_WARNING);
+    }
+    let r = &col.segments[&id];
+    if let Some(b) = r.get("snapshot") {
+        eprintln!("snapshot {} ({} bytes), {} frames after power-on{}", blob_file(&col, b, "snapshot"), new.snapshot.as_ref().map_or(0, |d| d.len()), new.start_frame, match new.lines.len() {
+            0 => String::new(),
+            1 => ", 1 line carried onto frame 0".to_string(),
+            n => format!(", {n} lines carried onto frame 0"),
+        });
+    }
+    if let Some(b) = r.get("sram") {
+        eprintln!("save file {} ({} bytes)", blob_file(&col, b, "sram"), new.sram.as_ref().map_or(0, |d| d.len()));
+    }
     println!("{}", col.paths[&id].display());
     Ok(())
 }
@@ -212,27 +230,61 @@ pub(crate) fn upgrade(dir: &Path) -> Result<()> {
 pub(crate) fn snapshot_cmd(dir: &Path, segment: &str, frame: u64, out: &Path, local: &Local) -> Result<()> {
     let col = Collection::open(dir)?;
     let id = col.resolve(segment)?.to_string();
-    let frames = col.segments[&id].frames()?;
-    if frame > frames {
-        bail!("{} has {frames} frames", &id[..8.min(id.len())]);
-    }
     let mut s = open_session(&col, local)?;
-    s.enter_segment(&col, &id)?;
-    let start = s.state_hash(&col)?;
-    let mut at = 0;
-    if let Some((f, state)) = s.nearest_stored(&col, &id, &start, frame)? {
-        if f > 0 {
-            s.load_state(&state)?;
-            at = f;
-        }
-    }
-    s.restore_inputs(&col, &id, at)?;
-    for f in at..frame {
-        s.step(&col, &id, f, false)?;
-    }
-    let state = s.snapshot()?;
+    let (state, at) = s.state_at(&col, &id, frame)?;
     std::fs::write(out, &state)?;
-    println!("wrote {} ({} bytes; frame {frame} of {}, played {} frames from {})", out.display(), state.len(), &id[..8.min(id.len())], frame - at, if at == 0 { "the segment's start".to_string() } else { format!("the snapshot at frame {at}") });
+    println!("wrote {} ({} bytes; frame {frame} of {}, {at} frames after power-on)", out.display(), state.len(), &id[..8.min(id.len())]);
+    Ok(())
+}
+
+pub(crate) fn sram_cmd(dir: &Path, segment: &str, frame: u64, out: &Path, local: &Local) -> Result<()> {
+    let col = Collection::open(dir)?;
+    let id = col.resolve(segment)?.to_string();
+    let mut s = open_session(&col, local)?;
+    let data = s.sram_at(&col, &id, frame)?;
+    std::fs::write(out, &data)?;
+    println!("wrote {} ({} bytes; the save RAM at frame {frame} of {})", out.display(), data.len(), &id[..8.min(id.len())]);
+    Ok(())
+}
+
+/// A blob's file name in blobs/, for a message.
+fn blob_file(col: &Collection, blob: &str, field: &str) -> String {
+    col.blob_path(blob, field).and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| blob.to_string())
+}
+
+pub(crate) fn blob_list(dir: &Path) -> Result<()> {
+    let col = Collection::open(dir)?;
+    let blobs = col.blobs();
+    if blobs.is_empty() {
+        println!("no snapshots or save files in {}", col.root.join("blobs").display());
+    }
+    for b in blobs {
+        let users: Vec<String> = b.users.iter().map(|id| format!("{} {}", &id[..8.min(id.len())], col.segments[id].title())).collect();
+        let kind = if b.field == "sram" { "save file" } else { "snapshot" };
+        println!("{}  {kind}, {} bytes, hash {}, {}", b.stem, b.size, b.hash, if users.is_empty() { "not used".to_string() } else { format!("used by {}", users.join("; ")) });
+    }
+    Ok(())
+}
+
+pub(crate) fn blob_rename(dir: &Path, blob: &str, name: &str) -> Result<()> {
+    let col = Collection::open(dir)?;
+    // The file's name (with or without its extension), or the start of exactly one name or hash.
+    let all = col.blobs();
+    let want = blob.strip_suffix(".srm").or(blob.strip_suffix(".state")).unwrap_or(blob);
+    let hits: Vec<&dj_core::collection::BlobFile> = match all.iter().filter(|b| b.stem == want || b.hash == want).collect::<Vec<_>>() {
+        exact if !exact.is_empty() => exact,
+        _ => all.iter().filter(|b| b.stem.starts_with(want) || b.hash.starts_with(want)).collect(),
+    };
+    let b = match hits[..] {
+        [one] => one,
+        [] => anyhow::bail!("no blob called {blob} in blobs/ (`dj blob list` shows them)"),
+        _ => anyhow::bail!("{blob} could be more than one blob: {}", hits.iter().map(|b| format!("{}.{}", b.stem, dj_core::collection::blob_ext(b.field))).collect::<Vec<_>>().join(", ")),
+    };
+    let new = col.rename_blob(&b.hash, b.field, name)?;
+    println!("{} is now {new} ({} it; none needed changing)", b.stem, match b.users.len() {
+        1 => "1 segment starts from".to_string(),
+        n => format!("{n} segments start from"),
+    });
     Ok(())
 }
 
@@ -265,6 +317,48 @@ pub(crate) fn sql(dir: &Path, query: &str) -> Result<()> {
             });
         }
         println!("{}", cells.join("\t"));
+    }
+    Ok(())
+}
+
+/// `dj controls`: what each port's inputs are called.
+pub(crate) fn controls(dir: &Path, local: &Local) -> Result<()> {
+    use dj_core::controls::{control_from_name, control_name, Controls};
+    use dj_core::format::JOYPAD;
+    let col = Collection::open(dir)?;
+    let s = open_session(&col, local)?;
+    let names = s.core.input_names();
+    let c = Controls::new(&names, &col.config.ports);
+    if names.is_empty() {
+        println!("The core doesn't name its inputs: the GUI shows the usual joypad buttons, and any [[ports]] labels.");
+    }
+    let mut ports: std::collections::BTreeSet<u32> = names.iter().map(|(k, _)| k.port).collect();
+    ports.extend(col.config.ports.iter().filter(|p| p.port > 0).map(|p| p.port - 1));
+    let sticks = ["LEFT X", "LEFT X-", "LEFT X+", "LEFT Y", "LEFT Y-", "LEFT Y+", "RIGHT X", "RIGHT X-", "RIGHT X+", "RIGHT Y", "RIGHT Y-", "RIGHT Y+"];
+    let all: Vec<&str> = JOYPAD.iter().copied().chain(sticks).collect();
+    for port in ports {
+        println!("P{}", port + 1);
+        println!("  {:<9} {:<28} {:<20} {}", "control", "core's name", "label", "shown");
+        for name in &all {
+            let key = control_from_name(port, name).expect("a control's name");
+            let core = names.iter().find(|(k, _)| *k == key).map(|(_, n)| n.as_str());
+            let label = c.label(key).filter(|l| Some(*l) != core);
+            if core.is_none() && label.is_none() && !c.hidden(key) {
+                continue;
+            }
+            let shown = if c.hidden(key) {
+                "no (hide)"
+            } else if c.directions(key) {
+                "as buttons"
+            } else {
+                "yes"
+            };
+            println!("  {:<9} {:<28} {:<20} {shown}", name, core.unwrap_or("-"), label.unwrap_or("-"));
+        }
+        // Inputs the core names that [[ports]] can't: listed so nothing it says is lost.
+        for (k, n) in names.iter().filter(|(k, _)| k.port == port && control_name(*k).is_none()) {
+            println!("  {:<9} {n}", format!("{} {} {}", k.device, k.index, k.id));
+        }
     }
     Ok(())
 }

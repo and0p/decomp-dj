@@ -498,6 +498,38 @@ impl Server {
                 let v = self.util()?.call("snapshot", json!({"segment": seg, "frame": frame, "out": out}))?;
                 Reply::Json(v)
             }
+            "save_ram" => {
+                let p = self.project()?;
+                let seg = p.col.resolve(&a.str("segment")?)?.to_string();
+                let frame = a.opt_u64("frame")?.unwrap_or(0);
+                let out = self.root().join(".local").join("snapshots").join(format!("{}-{frame}.srm", &seg[..8]));
+                Reply::Json(self.util()?.call("sram", json!({"segment": seg, "frame": frame, "out": out}))?)
+            }
+            "new_root" => {
+                let p = self.project()?;
+                let seg = p.col.resolve(&a.str("from")?).map_err(|_| anyhow!("new_root starts from a saved segment; save the draft first"))?.to_string();
+                if p.col.drafts.contains(&seg) {
+                    bail!("new_root starts from a saved segment; save the draft first");
+                }
+                let frame = match a.opt_u64("frame")? {
+                    Some(f) => f,
+                    None => p.col.segments[&seg].frames()?,
+                };
+                let start = a.opt_str("start")?.unwrap_or_else(|| "snapshot".to_string());
+                if start != "snapshot" && start != "save" {
+                    bail!("start is \"snapshot\" or \"save\"");
+                }
+                let warn = start == "snapshot" && p.col.warns_about_snapshots();
+                let mut v = self.util()?.call("new_root", json!({"segment": seg, "frame": frame, "start": start, "title": a.opt_str("title")?, "frames": a.opt_u64("frames")?.unwrap_or(600), "name": a.opt_str("name")?}))?;
+                self.project = None;
+                if let Some(o) = v.as_object_mut() {
+                    if warn {
+                        o.insert("note".into(), json!(dj_core::collection::SNAPSHOT_WARNING));
+                    }
+                    o.insert("hint".into(), json!("a normal segment file and a file in blobs/ now: review with git status, undo by deleting both"));
+                }
+                Reply::Json(v)
+            }
             _ => return Ok(None),
         }))
     }

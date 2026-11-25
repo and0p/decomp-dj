@@ -128,6 +128,17 @@ pub(super) struct GetProcAddressInterface {
     pub(super) get_proc_address: Option<unsafe extern "C" fn(*const c_char) -> ProcAddress>,
 }
 
+/// `struct retro_input_descriptor`: what the core calls one input. A list ends at a null
+/// description.
+#[repr(C)]
+pub(super) struct InputDescriptor {
+    pub(super) port: u32,
+    pub(super) device: u32,
+    pub(super) index: u32,
+    pub(super) id: u32,
+    pub(super) description: *const c_char,
+}
+
 #[repr(C)]
 pub(super) struct MemoryDescriptor {
     pub(super) flags: u64,

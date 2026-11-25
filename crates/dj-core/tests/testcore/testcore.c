@@ -9,6 +9,10 @@
  * region whose "instructions" a frame runs in a fixed pattern (see retro_run), with
  * coverage flags, breakpoints and registers.
  *
+ * -DSAVE_RAM gives it 8 bytes of battery save: byte 0 adds up the buttons held, and RAM
+ * byte 4 follows it, so what a game starts with shows in the hashes. It is part of the
+ * save state.
+ *
  * As a comparison core it takes events. -DNO_WRITE_HANDLER leaves dj_handle_write out.
  * The core option `testcore_judge` picks how it judges: "frame" (at
  * each frame end), "tick" (at its breakpoint where the baseline's tick ends) or "copy"
@@ -25,6 +29,7 @@
 #define RETRO_ENVIRONMENT_SET_VARIABLES 16
 #define RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME 18
 #define RETRO_DEVICE_JOYPAD 1
+#define RETRO_MEMORY_SAVE_RAM 0
 #define RETRO_MEMORY_SYSTEM_RAM 2
 
 struct retro_variable { const char *key; const char *value; };
@@ -49,6 +54,9 @@ static video_t video;
 static poll_t poll_cb;
 static state_t input;
 static uint8_t ram[64];
+#ifdef SAVE_RAM
+static uint8_t sram[8];
+#endif
 static uint16_t pixels[4 * 4];
 
 void retro_set_environment(env_t cb) {
@@ -86,7 +94,11 @@ void retro_reset(void) { memset(ram, 0, sizeof ram); }
 
 /* One frame's logic, in two halves. With a connector, the baseline runs the "tick end"
  * instruction between them, so a breakpoint there sees RAM part-way through the frame. */
+#ifdef SAVE_RAM
+static void phase_a(uint8_t held) { ram[0]++; ram[1] = held; sram[0] = (uint8_t)(sram[0] + held); ram[4] = sram[0]; }
+#else
 static void phase_a(uint8_t held) { ram[0]++; ram[1] = held; }
+#endif
 static void phase_b(void) { ram[2] = (uint8_t)(ram[2] * 31 + ram[1] + 1); }
 
 #ifdef CONNECTOR
@@ -120,15 +132,26 @@ void retro_run(void) {
     for (int i = 0; i < 16; i++) pixels[i] = (uint16_t)((ram[0] * 2654435761u + ram[2] * 40503u + i * 9973u) & 0x7fff);
     if (video) video(pixels, 4, 4, 8);
 }
-size_t retro_serialize_size(void) { return sizeof ram; }
+#ifdef SAVE_RAM
+#define STATE_SIZE (sizeof ram + sizeof sram)
+#else
+#define STATE_SIZE (sizeof ram)
+#endif
+size_t retro_serialize_size(void) { return STATE_SIZE; }
 bool retro_serialize(void *data, size_t size) {
-    if (size < sizeof ram) return false;
+    if (size < STATE_SIZE) return false;
     memcpy(data, ram, sizeof ram);
+#ifdef SAVE_RAM
+    memcpy((uint8_t *)data + sizeof ram, sram, sizeof sram);
+#endif
     return true;
 }
 bool retro_unserialize(const void *data, size_t size) {
-    if (size < sizeof ram) return false;
+    if (size < STATE_SIZE) return false;
     memcpy(ram, data, sizeof ram);
+#ifdef SAVE_RAM
+    memcpy(sram, (const uint8_t *)data + sizeof ram, sizeof sram);
+#endif
     return true;
 }
 void retro_cheat_reset(void) {}
@@ -137,8 +160,13 @@ bool retro_load_game(const struct retro_game_info *game) { (void)game; return tr
 bool retro_load_game_special(unsigned t, const struct retro_game_info *g, size_t n) { (void)t; (void)g; (void)n; return false; }
 void retro_unload_game(void) {}
 unsigned retro_get_region(void) { return 0; }
+#ifdef SAVE_RAM
+void *retro_get_memory_data(unsigned id) { return id == RETRO_MEMORY_SYSTEM_RAM ? ram : id == RETRO_MEMORY_SAVE_RAM ? sram : NULL; }
+size_t retro_get_memory_size(unsigned id) { return id == RETRO_MEMORY_SYSTEM_RAM ? sizeof ram : id == RETRO_MEMORY_SAVE_RAM ? sizeof sram : 0; }
+#else
 void *retro_get_memory_data(unsigned id) { return id == RETRO_MEMORY_SYSTEM_RAM ? ram : NULL; }
 size_t retro_get_memory_size(unsigned id) { return id == RETRO_MEMORY_SYSTEM_RAM ? sizeof ram : 0; }
+#endif
 
 #ifdef CONNECTOR
 /* ---- a dj connector, API 3 (docs/connectors.md) ---- */

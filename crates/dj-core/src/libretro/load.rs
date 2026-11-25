@@ -70,6 +70,7 @@ impl Core {
                 hw_refused: None,
                 memory: None,
                 video_hint: false,
+                input_names: vec![],
             })
         });
 

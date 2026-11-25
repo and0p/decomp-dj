@@ -25,7 +25,7 @@ pub enum Allow {
     Query,
     /// Sessions, drafts and jobs; nothing in segments/ changes.
     Draft,
-    /// Also save_draft, which writes segments/.
+    /// Also save_draft and new_root, which write segments/ (new_root also blobs/).
     Save,
 }
 
@@ -273,6 +273,19 @@ impl Server {
                 serde_json::to_value(self.project()?.frontier(addr.as_deref(), limit, cursor)?)?
             }
             "segments" => self.segments(a)?,
+            "blobs" => {
+                let col = &self.project()?.col;
+                json!(col
+                    .blobs()
+                    .into_iter()
+                    .map(|b| json!({
+                        "file": format!("{}.{}", b.stem, dj_core::collection::blob_ext(b.field)),
+                        "kind": if b.field == "sram" { "save file" } else { "snapshot" },
+                        "hash": b.hash, "bytes": b.size,
+                        "used_by": b.users.iter().map(|id| json!({"id": id, "title": col.segments[id].title()})).collect::<Vec<_>>(),
+                    }))
+                    .collect::<Vec<_>>())
+            }
             "gui_view" => {
                 let p = self.dir.join(".local").join("mcp").join("gui.json");
                 let text = std::fs::read_to_string(&p).map_err(|_| anyhow!("the GUI is not sharing its view (dj-gui: Agent > Share my view with agents)"))?;
@@ -534,6 +547,12 @@ pub fn tool_defs() -> Vec<ToolDef> {
             schema: props(json!({"filter": {"type": "string"}}), &[]),
             allow: Query,
         },
+        ToolDef {
+            name: "blobs",
+            description: "The snapshots and save files in blobs/ that root segments start from: file name, kind, content hash (what a segment's header says), size, and the segments that use each.",
+            schema: props(json!({}), &[]),
+            allow: Query,
+        },
     ];
     v.extend(play_defs());
     v
@@ -625,6 +644,25 @@ fn play_defs() -> Vec<ToolDef> {
             allow: Draft,
         },
         ToolDef { name: "snapshot", description: "Write the core state at a frame of a segment to .local/snapshots/, for another tool or debugger.", schema: props(json!({"segment": {"type": "string"}, "frame": {"type": "integer"}}), &["segment"]), allow: Draft },
+        ToolDef {
+            name: "save_ram",
+            description: "Write the game's save RAM (its battery save) at a frame of a segment to .local/snapshots/ as an .srm file. Fails when the game has no battery save. Wait a few frames after the game finishes saving, or the file is half a save.",
+            schema: props(json!({"segment": {"type": "string"}, "frame": {"type": "integer"}}), &["segment"]),
+            allow: Draft,
+        },
+        ToolDef {
+            name: "new_root",
+            description: "Make a root segment (no parent) that starts where `from` is at the start of `frame`, and save it to segments/ with its blob in blobs/. Needs --allow save. start=\"snapshot\" (the default) starts from the core's state there, with the inputs held and devices plugged in carried onto frame 0; a snapshot is a copy of the console's memory, which can include the game's code and data, so it should not be published without the right to share the game. start=\"save\" powers on with the game's save RAM as it is there, which copies only the save: prefer it when the game has a battery save.",
+            schema: props(
+                json!({
+                    "from": {"type": "string", "description": "Segment id (or unique prefix)"}, "frame": {"type": "integer", "description": "Frame of that segment (default: its end)"},
+                    "start": {"type": "string", "enum": ["snapshot", "save"]}, "title": {"type": "string"}, "frames": {"type": "integer", "description": "Length of the new root (default 600)"},
+                    "name": {"type": "string", "description": "What the file in blobs/ is called, before the hash digits dj adds"},
+                }),
+                &["from"],
+            ),
+            allow: Save,
+        },
     ]
     .into_iter()
     .chain(super::jobs::defs())

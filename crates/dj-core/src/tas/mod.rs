@@ -283,7 +283,8 @@ pub fn import(ctx: &Ctx, file: &Path, title: Option<&str>, strict: bool) -> Resu
     match &movie.start {
         Start::PowerOn => {}
         Start::SaveRam(data) => {
-            let blob = col.write_blob(data, "sram")?;
+            let stem = Path::new(&file_name).file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let blob = col.write_blob(data, "sram", &crate::collection::blob_name(&stem))?;
             segment.set("sram", &blob);
         }
         Start::Savestate(_) => unreachable!("to_segment refuses it"),

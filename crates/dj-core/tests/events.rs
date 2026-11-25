@@ -143,6 +143,30 @@ fn a_core_that_judges_at_frame_ends() {
     let _ = std::fs::remove_dir_all(&c.tmp);
 }
 
+/// A root segment that starts from a snapshot is not a power-on for a comparison core: its
+/// jump at frame 0 says a state was loaded, and the core copies the baseline there.
+#[test]
+fn a_snapshot_root_is_a_state_jump() {
+    let _slots = SLOTS.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(c) = cores("snapshot-root") else { return eprintln!("skipped: no C compiler") };
+    let mut col = project(&c, "", &[]);
+    let mut s = session(&c, &col);
+    let (state, at) = s.state_at(&col, "seg", 10).unwrap();
+    let root = s.add_root(&mut col, &dj_core::player::NewRoot { title: "cut".into(), frames: 30, snapshot: Some(state), start_frame: at, ..Default::default() }).unwrap();
+
+    let (span, left, log) = check(&c, &col, &mut s, "frame", &root);
+    assert!(span.failure.is_none(), "{:?}", span.failure);
+    assert_eq!((span.passed, span.skipped, span.unchecked, left), (30, 0, 0, 0));
+    assert!(log.starts_with("J2 F "), "a state jump, not a power-on: {log}");
+    assert_eq!((count(&log, "J1"), count(&log, "F")), (0, 30), "{log}");
+
+    // The power-on root beside it still says power-on.
+    let (_, _, log) = check(&c, &col, &mut s, "frame", "seg");
+    assert!(log.starts_with("J1 F "), "{log}");
+    drop(s);
+    let _ = std::fs::remove_dir_all(&c.tmp);
+}
+
 /// A core that judges at a breakpoint inside the frame, where the baseline's tick ends. It
 /// can only copy the baseline there, so what ran between the jump and the copy is credited to
 /// nothing; a frame with no tick is unjudged; and the frames after its last verdict are the

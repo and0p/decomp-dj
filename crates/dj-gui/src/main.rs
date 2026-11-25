@@ -36,6 +36,7 @@ mod record;
 mod record_ui;
 mod roll;
 mod save;
+mod stick;
 mod strings;
 mod transport;
 mod tree;
@@ -196,6 +197,9 @@ struct Dialogs {
     move_to: Option<(String, String)>,
     /// Duplicate of a segment with children, waiting on whether to copy them too.
     dup: Option<String>,
+    /// New root segment from here, waiting on the warning about snapshots: whether "Don't
+    /// show this again" is ticked.
+    snapshot_warning: Option<bool>,
     /// Save was asked for while it would leave this many segments dirty: offer to clean first.
     save: Option<SaveAsk>,
     /// Open, Reload or Quit asked for with unsaved edits: waiting on "discard them?".
@@ -219,6 +223,7 @@ impl Default for Dialogs {
             delete: None,
             move_to: None,
             dup: None,
+            snapshot_warning: None,
             save: None,
             discard: None,
             join: None,
@@ -510,6 +515,8 @@ impl Default for CompareState {
 }
 
 struct App {
+    /// View > Stick pad.
+    pad: stick::StickPad,
     col: Option<Collection>,
     session: Option<Session>,
     core_error: Option<String>,
@@ -682,6 +689,50 @@ struct NodeDialog {
     /// The save file (`sram:`) and the snapshot (`snapshot:`) a root segment starts from.
     sram: StartFile,
     snapshot: StartFile,
+    /// The snapshots and save files in the project's blobs/ when the dialog opened, to pick
+    /// from.
+    blobs: Vec<BlobChoice>,
+}
+
+/// A file in blobs/ as the properties dialog offers it.
+struct BlobChoice {
+    /// The content hash a header names it by.
+    hash: String,
+    /// `sram` or `snapshot`.
+    field: &'static str,
+    /// The file's name without the hash digits; the start of the hash when it has none.
+    name: String,
+    size: u64,
+    /// Titles of the segments that start from it.
+    users: Vec<String>,
+}
+
+impl BlobChoice {
+    fn all(col: &Collection) -> Vec<BlobChoice> {
+        col.blobs()
+            .into_iter()
+            .map(|b| BlobChoice {
+                name: match dj_core::collection::blob_name_parts(&b.stem) {
+                    Some((name, _)) => name.to_string(),
+                    None if b.stem == b.hash => String::new(),
+                    None => b.stem.clone(),
+                },
+                users: b.users.iter().map(|id| col.segments[id].title().to_string()).collect(),
+                hash: b.hash,
+                field: b.field,
+                size: b.size,
+            })
+            .collect()
+    }
+
+    /// What the list shows: the name (or the hash's start) and the size.
+    fn label(&self) -> String {
+        let size = if self.size >= 1 << 20 { format!("{:.1} MB", self.size as f64 / (1 << 20) as f64) } else if self.size >= 1024 { format!("{:.1} KB", self.size as f64 / 1024.0) } else { format!("{} bytes", self.size) };
+        match self.name.is_empty() {
+            true => format!("hash {}…  ({size})", &self.hash[..self.hash.len().min(8)]),
+            false => format!("{}  ({size})", self.name),
+        }
+    }
 }
 
 /// A start blob of a root segment, as the properties dialog has it now.
@@ -691,11 +742,25 @@ struct StartFile {
     blob: Option<String>,
     /// A file picked in the dialog, not written to blobs/ until Apply: (path, bytes).
     pick: Option<(PathBuf, Vec<u8>)>,
+    /// What the file is called in blobs/, before the hash digits: editable, for a picked
+    /// file and for the blob there already (a rename on Apply).
+    name: String,
+    /// `name` when the dialog opened.
+    was: String,
+    /// What is typed into the list of the project's blobs, to narrow it.
+    filter: String,
 }
 
 impl StartFile {
-    fn of(r: &dj_core::format::Segment, field: &str) -> StartFile {
-        StartFile { blob: r.get(field).map(String::from), pick: None }
+    fn of(col: &Collection, r: &dj_core::format::Segment, field: &str) -> StartFile {
+        let blob = r.get(field).map(String::from);
+        let name = blob.as_ref().and_then(|b| col.blob_name_of(b, field)).unwrap_or_default();
+        StartFile { blob, pick: None, was: name.clone(), name, filter: String::new() }
+    }
+
+    /// Back to nothing chosen. What is typed into the list stays.
+    fn clear(&mut self) {
+        *self = StartFile { filter: std::mem::take(&mut self.filter), ..Default::default() };
     }
 
     /// The blob id it names after Apply.
@@ -754,6 +819,7 @@ impl Default for App {
             agents: Agents::default(),
             rec: RecState::default(),
             cmp: CompareState::default(),
+            pad: stick::StickPad::default(),
         }
     }
 }
@@ -899,15 +965,19 @@ impl eframe::App for App {
                     next: self.next_neighbour(),
                     dirty: self.dirty_band(id),
                 };
-                action = self.roll.show(ui, col, id, shown, self.playing, &nb);
+                // What the inputs are called: the core's names, and the project's over them.
+                let controls = self.controls();
+                action = self.roll.show(ui, col, &controls, id, shown, self.playing, &nb);
             } else {
                 ui.label(t::SELECT_A_SEGMENT_TO_SEE);
             }
         });
         egui::CentralPanel::default().show(ui, |ui| self.preview(ui));
         self.dialogs(&ctx);
+        self.stick_pad(&ctx);
+        let (controls, port) = (self.controls(), self.rec.cfg.port);
         if let Some(d) = &mut self.dlg.mapping {
-            match d.show(&ctx) {
+            match d.show(&ctx, &controls, port) {
                 Some(record::MappingResult::Save(b)) => {
                     self.rec.bindings = b;
                     self.dlg.mapping = None;
@@ -930,6 +1000,7 @@ impl eframe::App for App {
                 self.seek(f);
             }
             Some(roll::Action::Edit { edits, from }) => self.apply_edit(t::EDIT_NOTES, edits, from),
+            Some(roll::Action::EditAxes { edits, from }) => self.apply_axis_edit(edits, from),
             Some(roll::Action::OpenFrame(f)) => self.open_frame_dialog(f, ""),
             None => {}
         }

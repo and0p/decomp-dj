@@ -8,6 +8,14 @@ use dj_core::player::{root_start_frame, Session};
 use std::path::{Path, PathBuf};
 
 impl App {
+    /// What the project's inputs are called: the core's names, and the project's over them
+    /// (`[[ports]]` labels).
+    pub(crate) fn controls(&self) -> dj_core::controls::Controls {
+        let names = self.session.as_ref().map(|s| s.core.input_names()).unwrap_or_default();
+        let units = self.col.as_ref().and_then(|c| dj_core::tas::profile::StickUnits::for_core(&c.config.core.name, &c.config.core.options));
+        dj_core::controls::Controls::new(&names, self.col.as_ref().map_or(&[], |c| &c.config.ports)).with_units(units)
+    }
+
     pub(crate) fn open_collection(&mut self, dir: &Path) {
         match Collection::open(dir) {
             Ok(mut col) => {

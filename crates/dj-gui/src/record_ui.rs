@@ -78,10 +78,13 @@ impl App {
                 return false;
             }
         }
+        let sticks = self.rec.bindings.stick_axes();
         let changed = match chord {
-            Some(c) => record::write_frame(&mut r, f, c, self.rec.cfg.overwrite),
-            None => record::clear_frame(&mut r, f),
+            Some(c) => record::write_frame(&mut r, f, c, self.rec.cfg.overwrite, &sticks),
+            None => record::clear_frame(&mut r, f, &sticks),
         };
+        // The stick pad's position, when it is being used as a stick.
+        let changed = changed.and_then(|c| Ok(self.pad.record(&mut r, f)? || c));
         match changed {
             Ok(false) if !grow => return true,
             Ok(_) => {}
@@ -241,6 +244,7 @@ impl App {
             return false;
         }
         self.roll.follow_to(f);
+        self.pad.stepped_on();
         true
     }
 

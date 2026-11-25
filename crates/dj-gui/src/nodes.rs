@@ -287,6 +287,129 @@ impl App {
         self.open_node_dialog(&id);
     }
 
+    /// A new root segment that starts where the playhead is: the state after the frame
+    /// shown, as a snapshot blob, with the buttons and sticks held there and the devices
+    /// plugged in on its frame 0 (`dj_core::edit::carried_lines`). The same as
+    /// `dj new --from SEGMENT --at FRAME`.
+    pub(crate) fn new_root_here(&mut self) {
+        // The warning first, unless the project says its game may be shared or this person
+        // asked not to see it again.
+        let warn = self.col.as_ref().is_some_and(|c| c.warns_about_snapshots() && c.load_local().ok().and_then(|l| l.gui).and_then(|g| g.hide_snapshot_warning) != Some(true));
+        if warn && self.pb.is_some() {
+            self.playing = false;
+            self.dlg.snapshot_warning = Some(false);
+        } else {
+            self.make_root_here();
+        }
+    }
+
+    /// `new_root_here` once the warning is answered.
+    pub(crate) fn make_root_here(&mut self) {
+        if let Err(e) = self.try_new_root_here() {
+            self.error(e);
+        }
+    }
+
+    fn try_new_root_here(&mut self) -> Result<()> {
+        let pb = self.pb.as_ref().ok_or_else(|| anyhow!(t::SELECT_A_SEGMENT_FIRST))?;
+        let src = pb.id.clone();
+        // The playhead shows frame f - 1: the new root starts in the state that frame left,
+        // the start of frame f (as a split goes right after the frame shown).
+        let f = pb.shown().map_or(0, |s| s + 1);
+        self.playing = false;
+        if let Some(shown) = f.checked_sub(1) {
+            self.seek(shown);
+        }
+        if self.job.is_some() || self.pb.as_ref().is_none_or(|p| p.ran != f) {
+            return Err(anyhow!(t::STILL_GETTING_TO_THE_FRAME));
+        }
+        let (Some(col), Some(s)) = (&mut self.col, &mut self.session) else { return Ok(()) };
+        let state = s.snapshot()?;
+        let start = s.state_hash(col)?;
+        let chain = col.chain(&src)?;
+        let before: u64 = chain[..chain.len() - 1].iter().map(|c| col.segments[*c].frames().unwrap_or(0)).sum();
+        let at = dj_core::player::root_start_frame(&col.segments[chain[0]]) + before + f;
+        let lines = dj_core::edit::carried_lines(col, &src, f)?;
+        let title = format!("{} from frame {f}", col.segments[&src].title());
+        let id = Self::new_id();
+        // The blob goes into blobs/ now, as Properties does with a chosen file; the segment
+        // is unsaved like any other new one.
+        let name = dj_core::collection::blob_name(&format!("{} frame {f}", col.segments[&src].title()));
+        let blob = col.write_blob(&state, "snapshot", &name).map_err(|e| anyhow!("writing the snapshot into blobs/: {e:#}"))?;
+        let mut r = dj_core::edit::root_from_blobs(&id, &title, 600, Some(&blob), None, at, &lines)?;
+        // The core is in that state now, so its hash is where the root starts.
+        r.set("start-hash", &start);
+        if !self.remember(t::NEW_ROOT_SEGMENT_FROM_HERE, &[&id]) {
+            return Ok(());
+        }
+        let Some(col) = &mut self.col else { return Ok(()) };
+        col.segments.insert(id.clone(), r);
+        self.edited.insert(id.clone());
+        self.side.hoist = None;
+        self.info(format!("Added a root segment that starts {at} frames after power-on, from a snapshot of {} bytes in blobs/ ({name}).", state.len()));
+        self.select(&id);
+        Ok(())
+    }
+
+    /// The game's save RAM as it is after the frame shown, with that frame's number after
+    /// it (the frame a root made from it would start at) and the segment's title.
+    fn save_ram_here(&mut self) -> Result<(Vec<u8>, u64, String)> {
+        let pb = self.pb.as_ref().ok_or_else(|| anyhow!(t::SELECT_A_SEGMENT_FIRST))?;
+        let src = pb.id.clone();
+        let f = pb.shown().map_or(0, |s| s + 1);
+        self.playing = false;
+        if let Some(shown) = f.checked_sub(1) {
+            self.seek(shown);
+        }
+        if self.job.is_some() || self.pb.as_ref().is_none_or(|p| p.ran != f) {
+            return Err(anyhow!(t::STILL_GETTING_TO_THE_FRAME));
+        }
+        let (Some(col), Some(s)) = (&self.col, &self.session) else { return Err(anyhow!(t::SELECT_A_SEGMENT_FIRST)) };
+        Ok((s.save_ram()?, f, col.segments[&src].title().to_string()))
+    }
+
+    /// Emulation > Export save RAM: the save RAM after the frame shown, to a file.
+    pub(crate) fn export_save_ram(&mut self) {
+        let res = (|| -> Result<()> {
+            let (data, f, title) = self.save_ram_here()?;
+            let name = format!("{}.srm", dj_core::collection::blob_name(&format!("{title} frame {f}")));
+            let Some(path) = rfd::FileDialog::new().set_title(t::EXPORT_SAVE_RAM).set_file_name(name).add_filter("Save file", &["srm", "sav"]).save_file() else { return Ok(()) };
+            std::fs::write(&path, &data).map_err(|e| anyhow!("writing {}: {e}", path.display()))?;
+            self.info(format!("Wrote the save RAM after frame {} ({} bytes) to {}.", f.saturating_sub(1), data.len(), path.display()));
+            Ok(())
+        })();
+        if let Err(e) = res {
+            self.error(e);
+        }
+    }
+
+    /// Emulation > New root segment from this save: a root that powers on with the save RAM
+    /// as it is after the frame shown. No snapshot, so nothing of the game's memory but its
+    /// save is copied.
+    pub(crate) fn new_root_from_save(&mut self) {
+        let res = (|| -> Result<()> {
+            let (data, f, title) = self.save_ram_here()?;
+            let Some(col) = &self.col else { return Ok(()) };
+            let name = dj_core::collection::blob_name(&format!("{title} frame {f}"));
+            let blob = col.write_blob(&data, "sram", &name).map_err(|e| anyhow!("writing the save file into blobs/: {e:#}"))?;
+            let id = Self::new_id();
+            let r = dj_core::edit::root_from_blobs(&id, &format!("{title} save at frame {f}"), 600, None, Some(&blob), 0, &[])?;
+            if !self.remember(t::NEW_ROOT_SEGMENT_FROM_THIS_SAVE, &[&id]) {
+                return Ok(());
+            }
+            let Some(col) = &mut self.col else { return Ok(()) };
+            col.segments.insert(id.clone(), r);
+            self.edited.insert(id.clone());
+            self.side.hoist = None;
+            self.info(format!("Added a root segment that powers on with the save RAM after frame {} ({} bytes, {name} in blobs/).", f.saturating_sub(1), data.len()));
+            self.select(&id);
+            Ok(())
+        })();
+        if let Err(e) = res {
+            self.error(e);
+        }
+    }
+
     /// Duplicate: at once for a segment with no children, otherwise ask whether to copy them.
     pub(crate) fn ask_duplicate(&mut self, id: &str) {
         let has_kids = self.col.as_ref().is_some_and(|c| !c.children(Some(id)).is_empty());
@@ -414,8 +537,9 @@ impl App {
             frames: r.frames().unwrap_or(0),
             tags: r.get("tags").unwrap_or_default().to_string(),
             root: r.parent().is_none(),
-            sram: StartFile::of(r, "sram"),
-            snapshot: StartFile::of(r, "snapshot"),
+            sram: StartFile::of(col, r, "sram"),
+            snapshot: StartFile::of(col, r, "snapshot"),
+            blobs: crate::BlobChoice::all(col),
         });
     }
 
@@ -439,7 +563,15 @@ impl App {
         let mut seen = HashSet::new();
         let tags = d.tags.split_whitespace().filter(|t| seen.insert(t.to_lowercase())).collect::<Vec<_>>().join(" ");
         let tags_changed = tags != r.get("tags").unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");
-        if d.title.trim() == r.title() && d.frames == old_frames && !start_changed && !tags_changed {
+        // A new name for a blob that stays: its file is renamed now. No segment changes
+        // (segments name the content's hash), so it is not an edit and has no undo.
+        let renames: Vec<(&str, String, String)> = starts.iter().filter(|(_, sf)| d.root && sf.pick.is_none() && sf.name != sf.was).filter_map(|(f, sf)| Some((*f, sf.blob.clone()?, sf.name.clone()))).collect();
+        let unchanged = d.title.trim() == r.title() && d.frames == old_frames && !start_changed && !tags_changed;
+        for (field, blob, name) in &renames {
+            let stem = col.rename_blob(blob, field, name)?;
+            self.message = Some((format!("Renamed the file in blobs/ to {stem}.{}.", dj_core::collection::blob_ext(field)), false));
+        }
+        if unchanged {
             return Ok(());
         }
         if !self.remember(t::SEGMENT_PROPERTIES_TITLE, &[&d.id]) {
@@ -448,7 +580,7 @@ impl App {
         let Some(col) = &mut self.col else { return Ok(()) };
         for (field, sf, _) in &changed {
             if let Some((path, data)) = &sf.pick {
-                col.write_blob(data, field).map_err(|e| anyhow!("copying {} into blobs/: {e:#}", path.display()))?;
+                col.write_blob(data, field, &sf.name).map_err(|e| anyhow!("copying {} into blobs/: {e:#}", path.display()))?;
             }
         }
         let r = col.segments.get_mut(&d.id).ok_or_else(|| anyhow!(t::SEGMENT_IS_GONE))?;
@@ -469,6 +601,10 @@ impl App {
                 match blob {
                     Some(b) => r.set(field, b),
                     None => r.remove_all(field),
+                }
+                // How long after power-on another snapshot was taken isn't known here.
+                if *field == "snapshot" {
+                    r.remove_all("start-frame");
                 }
             }
             r.remove_all("start-hash");

@@ -34,9 +34,18 @@ These issues require the developer(s) to emulate the games and play them into sp
 
 TODO
 
+## Tips
+
+- **Don't split segments unless you have two different input sequences to test.** Prefer a descriptive marker. It's free to split it later, and splitting on a marker it will keep its descriptive name for the new segment. Markers also create memory snapshots for quicker navigation by default.
+- **Use SRAM, RAM writes, or passwords when possible.** Longer games like RPGs become much more managable with saves that lead right into each part of the game from boot, rather than one continuous playthrough. RAM writes can also modify game flags for easy navigation.
+- **Use an optimal performance profile.** NES snapshots are 407x smaller than N64 snapshots, so you'll want to treat them differently. When setting up a project use the suggested profile for the system, if available. You can override it in your local config if you want to trade off hard drive space for quicker navigation via more frequent snapshots.
+
 ## Missing Features & Roadmap
 
-TODO
+* Input
+  * Lightgun, mouse, and some other input types
+  * Recording input with an actual controller
+* Support more systems out of the box, including input and snapshot profiles 
 
 ## License
 

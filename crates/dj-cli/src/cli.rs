@@ -96,10 +96,13 @@ pub(crate) struct QueryArgs {
 pub(crate) enum Cmd {
     /// Create a project pinned to a ROM and a core, with every core option recorded
     Init {
-        /// The folder to create the project in
-        dir: PathBuf,
+        /// The folder to create the project in (default: one named after the ROM file,
+        /// without its extension, in the current folder)
+        dir: Option<PathBuf>,
+        /// The project's name (default: the folder's name, else the ROM file's without its
+        /// extension)
         #[arg(long)]
-        name: String,
+        name: Option<String>,
         #[arg(long)]
         rom: PathBuf,
         #[arg(long)]
@@ -114,7 +117,9 @@ pub(crate) enum Cmd {
         #[arg(long)]
         symbols: Option<PathBuf>,
     },
-    /// Create an empty segment
+    /// Create an empty segment: below --parent, or a root segment, which starts from
+    /// power-on unless --snapshot, --sram or --from says otherwise (those need the core, to
+    /// check that it loads what they name)
     New {
         #[arg(long)]
         parent: Option<String>,
@@ -122,6 +127,31 @@ pub(crate) enum Cmd {
         title: String,
         #[arg(long, default_value_t = 60)]
         frames: u64,
+        /// A root segment that starts from this save state of the project's core (as `dj
+        /// snapshot` writes one). Copied into blobs/
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["parent", "from"])]
+        snapshot: Option<PathBuf>,
+        /// A root segment that starts with this save file (battery-backed save RAM), with
+        /// or without --snapshot. Copied into blobs/
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["parent", "from"])]
+        sram: Option<PathBuf>,
+        /// With --snapshot: how many frames after power-on the state was taken (default 0).
+        /// It only numbers the frames
+        #[arg(long, value_name = "N", requires = "snapshot")]
+        start_frame: Option<u64>,
+        /// A root segment that starts where SEGMENT is at the start of frame --at: its
+        /// state, the buttons and sticks held there, and the devices plugged in
+        #[arg(long, value_name = "SEGMENT", requires = "at", conflicts_with = "parent")]
+        from: Option<String>,
+        /// With --from: the frame of SEGMENT, counted from its start
+        #[arg(long, value_name = "FRAME", requires = "from")]
+        at: Option<u64>,
+        /// What the copy's file in blobs/ is called, before the 8 hash digits dj adds (default:
+        /// the file's name, or with --from the segment's title and the frame)
+        #[arg(long, value_name = "NAME", conflicts_with = "parent")]
+        blob_name: Option<String>,
+        #[command(flatten)]
+        core: CoreArgs,
     },
     /// Show the segment tree with clean and dirty marks (no emulation)
     Status,
@@ -280,6 +310,12 @@ pub(crate) enum Cmd {
     /// Rewrite every segment file in this dj's format (the first line, older field names) and
     /// record this dj in config.toml. What the segments play doesn't change
     Upgrade,
+    /// List what each controller's inputs are called: the core's names, and the project's
+    /// labels over them ([[ports]] labels and hide in config.toml)
+    Controls {
+        #[command(flatten)]
+        core: CoreArgs,
+    },
     /// Write the core state at a frame of a segment, to start a trace from
     Snapshot {
         segment: String,
@@ -291,6 +327,24 @@ pub(crate) enum Cmd {
         /// Run without the local database (.local/cache.db)
         #[arg(long)]
         no_db: bool,
+    },
+    /// Write the game's save RAM (its battery save) at a frame of a segment: a save file
+    /// `dj new --sram` can start a root segment from
+    Sram {
+        segment: String,
+        frame: u64,
+        #[arg(long)]
+        out: PathBuf,
+        #[command(flatten)]
+        core: CoreArgs,
+        /// Run without the local database (.local/cache.db)
+        #[arg(long)]
+        no_db: bool,
+    },
+    /// The snapshots and save files in blobs/ that root segments start from
+    Blob {
+        #[command(subcommand)]
+        cmd: BlobCmd,
     },
     /// Run an SQL query on the local database
     Sql { query: String },
@@ -464,5 +518,20 @@ pub(crate) enum CacheCmd {
         files: Vec<PathBuf>,
         #[command(flatten)]
         core: CoreArgs,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum BlobCmd {
+    /// List the files in blobs/ with their size and the segments that start from them
+    List,
+    /// Give a blob's file another name. The 8 hash digits at the end stay, and no segment
+    /// changes: segments name a blob by the hash of its content
+    Rename {
+        /// The file's name in blobs/ (`world-3-save-a1b2c3d4`), or the start of its name or hash
+        blob: String,
+        /// The new name, without the hash digits
+        #[arg(value_name = "NAME")]
+        name: String,
     },
 }

@@ -15,6 +15,7 @@ impl App {
         self.discard_window(ctx);
         self.save_window(ctx);
         self.duplicate_window(ctx);
+        self.snapshot_warning_window(ctx);
         self.delete_window(ctx);
         self.move_dialog_ui(ctx);
         self.join_chain_window(ctx);
@@ -131,6 +132,45 @@ impl App {
             } else if !close && open {
                 self.dlg.save = Some(ask);
             }
+        }
+    }
+
+    /// Before New root segment from here writes a snapshot: what one holds. Advice only,
+    /// with a way to stop seeing it (`[gui] hide_snapshot_warning` in .local/local.toml).
+    fn snapshot_warning_window(&mut self, ctx: &egui::Context) {
+        let Some(mut hide) = self.dlg.snapshot_warning else { return };
+        let mut open = true;
+        let (mut create, mut cancel) = (false, false);
+        egui::Window::new(t::NEW_ROOT_SEGMENT_FROM_HERE).open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            ui.label(format!("{} {}", t::THIS_SAVES_A_SNAPSHOT_OF, dj_core::collection::SNAPSHOT_WARNING));
+            ui.add_space(6.0);
+            ui.checkbox(&mut hide, t::DON_T_SHOW_THIS_AGAIN).on_hover_text(t::DON_T_SHOW_THIS_AGAIN_TIP);
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                create = ui.button(t::CREATE).clicked();
+                cancel = ui.button(t::CANCEL).clicked();
+            });
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                cancel = true;
+            }
+        });
+        if create {
+            self.dlg.snapshot_warning = None;
+            if hide {
+                if let Some(col) = &self.col {
+                    let mut local = col.load_local().unwrap_or_default();
+                    local.gui.get_or_insert_with(Default::default).hide_snapshot_warning = Some(true);
+                    if let Err(e) = col.save_local(&local) {
+                        self.error(e);
+                    }
+                }
+            }
+            self.make_root_here();
+        } else if cancel || !open {
+            self.dlg.snapshot_warning = None;
+        } else {
+            self.dlg.snapshot_warning = Some(hide);
         }
     }
 
@@ -324,33 +364,118 @@ impl App {
                     ui.label(RichText::new(format!("{:.1} s at {:.2} fps", d.frames as f64 / self.fps, self.fps)).weak());
                     ui.end_row();
                     if d.root {
-                        let rows = [
-                            (t::SNAPSHOT, t::NONE_POWER_ON, t::A_SAVE_STATE_OF_THIS, t::CHOOSE_A_SNAPSHOT_SAVE_STATE, &mut d.snapshot),
-                            (t::SAVE_FILE, t::NONE_NO_SAVE_DATA, t::BATTERY_BACKED_SAVE_RAM_TO, t::CHOOSE_A_SAVE_FILE_SRAM, &mut d.sram),
-                        ];
-                        for (label, none, tip, pick_title, sf) in rows {
-                            ui.label(label);
-                            ui.horizontal(|ui| {
-                                let shown = match (&sf.pick, &sf.blob) {
-                                    (Some((p, data)), _) => format!("{} ({} bytes, not applied yet)", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), data.len()),
-                                    (None, Some(b)) => format!("blob {}…", &b[..b.len().min(12)]),
-                                    (None, None) => none.into(),
-                                };
-                                ui.label(shown);
-                                if ui.button(t::CHOOSE).on_hover_text(tip).clicked() {
-                                    if let Some(f) = rfd::FileDialog::new().set_title(pick_title).pick_file() {
-                                        match std::fs::read(&f) {
-                                            Ok(data) => sf.pick = Some((f, data)),
-                                            Err(e) => self.message = Some((format!("Reading {}: {e}", f.display()), true)),
+                        // One list for what the root starts from: a snapshot or a save file from
+                        // the project's blobs/, or either from disk. Choosing one clears the other
+                        // (a segment that already names both shows both until one is chosen).
+                        let (snap, sram, blobs) = (&mut d.snapshot, &mut d.sram, &d.blobs);
+                        let kind = |field: &str| if field == "sram" { t::SAVE_FILE } else { t::SNAPSHOT };
+                        let shown: Vec<String> = [("snapshot", &*snap), ("sram", &*sram)]
+                            .into_iter()
+                            .filter_map(|(field, sf)| {
+                                Some(match (&sf.pick, &sf.blob) {
+                                    (Some((p, data)), _) => format!("{}: {} ({} bytes, not applied yet)", kind(field), p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), data.len()),
+                                    (None, Some(b)) => match blobs.iter().find(|c| c.field == field && c.hash == *b) {
+                                        Some(c) => format!("{}: {}", kind(field), c.label()),
+                                        None => format!("{}: hash {}… (not in blobs/)", kind(field), &b[..b.len().min(8)]),
+                                    },
+                                    (None, None) => return None,
+                                })
+                            })
+                            .collect();
+                        let shown = if shown.is_empty() { t::NONE_POWER_ON.to_string() } else { shown.join(" + ") };
+                        // What was chosen in the list: nothing, a blob (by its place in `blobs`),
+                        // or a file of one kind from disk.
+                        enum Choice {
+                            PowerOn,
+                            Blob(usize),
+                            File(&'static str),
+                        }
+                        let mut choice = None;
+                        ui.label(t::START_SAVE);
+                        ui.horizontal(|ui| {
+                            egui::ComboBox::from_id_salt("start_blob").width(300.0).selected_text(shown).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show_ui(ui, |ui| {
+                                if blobs.len() > 5 {
+                                    ui.add(egui::TextEdit::singleline(&mut snap.filter).hint_text(t::TYPE_TO_NARROW).desired_width(280.0));
+                                }
+                                let nothing = [&*snap, &*sram].iter().all(|sf| sf.blob.is_none() && sf.pick.is_none());
+                                if ui.selectable_label(nothing, t::NONE_POWER_ON).clicked() {
+                                    choice = Some(Choice::PowerOn);
+                                }
+                                let want = snap.filter.to_lowercase();
+                                egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                                    for (field, heading, sf) in [("snapshot", t::SNAPSHOTS, &*snap), ("sram", t::SAVE_FILES, &*sram)] {
+                                        let mine: Vec<(usize, &crate::BlobChoice)> = blobs.iter().enumerate().filter(|(_, c)| c.field == field && (want.is_empty() || c.name.to_lowercase().contains(&want) || c.hash.starts_with(&want))).collect();
+                                        if mine.is_empty() {
+                                            continue;
+                                        }
+                                        ui.label(RichText::new(heading).weak().small());
+                                        for (i, c) in mine {
+                                            let used = match c.users.len() {
+                                                0 => t::NO_SEGMENT_STARTS_FROM_IT.to_string(),
+                                                _ => format!("Used by: {}", c.users.join(", ")),
+                                            };
+                                            if ui.selectable_label(sf.pick.is_none() && sf.blob.as_deref() == Some(c.hash.as_str()), c.label()).on_hover_text(format!("{}\n{used}\nhash {}", kind(field), c.hash)).clicked() {
+                                                choice = Some(Choice::Blob(i));
+                                            }
                                         }
                                     }
+                                });
+                                ui.separator();
+                                if ui.selectable_label(false, t::A_SNAPSHOT_FROM_DISK).on_hover_text(t::A_SAVE_STATE_OF_THIS).clicked() {
+                                    choice = Some(Choice::File("snapshot"));
                                 }
-                                if ui.add_enabled(sf.blob.is_some() || sf.pick.is_some(), egui::Button::new(t::CLEAR)).clicked() {
-                                    sf.blob = None;
-                                    sf.pick = None;
+                                if ui.selectable_label(false, t::A_SAVE_FILE_FROM_DISK).on_hover_text(t::BATTERY_BACKED_SAVE_RAM_TO).clicked() {
+                                    choice = Some(Choice::File("sram"));
+                                }
+                                if choice.is_some() {
+                                    ui.close();
                                 }
                             });
-                            ui.end_row();
+                            if ui.add_enabled([&*snap, &*sram].iter().any(|sf| sf.blob.is_some() || sf.pick.is_some()), egui::Button::new(t::CLEAR)).clicked() {
+                                choice = Some(Choice::PowerOn);
+                            }
+                        });
+                        ui.end_row();
+                        match choice {
+                            None => {}
+                            Some(Choice::PowerOn) => {
+                                snap.clear();
+                                sram.clear();
+                            }
+                            Some(Choice::Blob(i)) => {
+                                let c = &blobs[i];
+                                let (to, other) = if c.field == "sram" { (&mut *sram, &mut *snap) } else { (&mut *snap, &mut *sram) };
+                                other.clear();
+                                to.clear();
+                                to.blob = Some(c.hash.clone());
+                                to.name = c.name.clone();
+                                to.was = c.name.clone();
+                            }
+                            Some(Choice::File(field)) => {
+                                let title = if field == "sram" { t::CHOOSE_A_SAVE_FILE_SRAM } else { t::CHOOSE_A_SNAPSHOT_SAVE_STATE };
+                                if let Some(f) = rfd::FileDialog::new().set_title(title).pick_file() {
+                                    match std::fs::read(&f) {
+                                        Ok(data) => {
+                                            let (to, other) = if field == "sram" { (&mut *sram, &mut *snap) } else { (&mut *snap, &mut *sram) };
+                                            other.clear();
+                                            to.clear();
+                                            to.name = dj_core::collection::blob_name(&f.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+                                            to.pick = Some((f, data));
+                                        }
+                                        Err(e) => self.message = Some((format!("Reading {}: {e}", f.display()), true)),
+                                    }
+                                }
+                            }
+                        }
+                        for sf in [snap, sram] {
+                            if sf.pick.is_some() || sf.blob.is_some() {
+                                ui.label("");
+                                ui.horizontal(|ui| {
+                                    ui.label(t::NAME_IN_BLOBS);
+                                    ui.add(egui::TextEdit::singleline(&mut sf.name).desired_width(200.0)).on_hover_text(t::NAME_IN_BLOBS_TIP);
+                                });
+                                ui.end_row();
+                            }
                         }
                     }
                 });

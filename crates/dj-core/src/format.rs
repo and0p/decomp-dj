@@ -341,8 +341,32 @@ impl Segment {
         self.set_binary_spans_many(&[(key, spans.to_vec())])
     }
 
-    /// `set_binary_spans` for several inputs at once, re-parsing the file only once.
+    /// `set_binary_spans` for several inputs at once. A stick's direction (`direction`) is
+    /// written as its axis: all the way while held, 0 otherwise.
     pub fn set_binary_spans_many(&mut self, edits: &[(InputKey, Vec<(u64, u64)>)]) -> Result<()> {
+        let mut axes: Vec<InputKey> = edits.iter().filter_map(|(k, _)| direction_of(*k).map(|(a, _)| a)).collect();
+        axes.sort();
+        axes.dedup();
+        for axis in axes {
+            // Both directions of the axis: as given, or as they are.
+            let spans = |positive: bool| {
+                let key = direction(axis, positive);
+                edits.iter().find(|(k, _)| *k == key).map(|(_, s)| s.clone()).unwrap_or_else(|| self.binary_spans(key))
+            };
+            let (neg, pos) = (spans(false), spans(true));
+            let mut at: Vec<u64> = neg.iter().chain(&pos).flat_map(|(a, b)| [*a, *b]).collect();
+            at.sort();
+            at.dedup();
+            let held = |s: &[(u64, u64)], f: u64| s.iter().any(|(a, b)| *a <= f && f < *b);
+            // Where both are held the positive one wins: a stick can't be pushed both ways.
+            let values: Vec<(u64, i16)> = at.into_iter().map(|f| (f, if held(&pos, f) { STICK_FULL } else if held(&neg, f) { -STICK_FULL } else { 0 })).collect();
+            self.set_values(axis, &values)?;
+        }
+        let plain: Vec<(InputKey, Vec<(u64, u64)>)> = edits.iter().filter(|(k, _)| direction_of(*k).is_none()).cloned().collect();
+        self.set_plain_spans_many(&plain)
+    }
+
+    fn set_plain_spans_many(&mut self, edits: &[(InputKey, Vec<(u64, u64)>)]) -> Result<()> {
         if edits.is_empty() {
             return Ok(());
         }
@@ -395,9 +419,103 @@ impl Segment {
         Ok(())
     }
 
+    /// The values of an input that isn't on/off (a stick's axis), as the frames where it
+    /// changes: `(frame, value)`, in order, with no value repeated. It is 0 before the first.
+    pub fn values(&self, key: InputKey) -> Vec<(u64, i16)> {
+        let mut out: Vec<(u64, i16)> = vec![];
+        let mut now = 0;
+        for l in &self.lines {
+            if let Command::Input { key: k, value, .. } = l.command {
+                if k != key || value == now {
+                    continue;
+                }
+                now = value;
+                match out.last_mut() {
+                    // Two lines on one frame: the later one counts.
+                    Some(last) if last.0 == l.frame => last.1 = value,
+                    _ => out.push((l.frame, value)),
+                }
+            }
+        }
+        out
+    }
+
+    /// The value of an input that isn't on/off on frame `f` (`values`).
+    pub fn value_at(&self, key: InputKey, f: u64) -> i16 {
+        self.values(key).iter().take_while(|(a, _)| *a <= f).last().map_or(0, |v| v.1)
+    }
+
+    /// Sets an input that isn't on/off to `v` on frames `[a, b)`; what came after `b` stays
+    /// as it was.
+    pub fn set_value_range(&mut self, key: InputKey, a: u64, b: u64, v: i16) -> Result<()> {
+        let after = self.value_at(key, b);
+        let mut values: Vec<(u64, i16)> = self.values(key).into_iter().filter(|(f, _)| *f < a || *f > b).collect();
+        values.push((a, v));
+        if b < self.frames()? {
+            values.push((b, after));
+        }
+        self.set_values(key, &values)
+    }
+
+    /// Replaces every input line for `key` with these values (`values`' form), keeping all
+    /// other lines. Used by editors.
+    pub fn set_values(&mut self, key: InputKey, values: &[(u64, i16)]) -> Result<()> {
+        let frames = self.frames()?;
+        let mut kept: Vec<(u64, String)> = vec![];
+        let mut comments: Vec<String> = vec![];
+        for b in &self.body_text {
+            let t = b.trim();
+            if t.is_empty() {
+                continue;
+            }
+            if t.starts_with('#') {
+                comments.push(b.clone());
+                continue;
+            }
+            let (f, cmd) = parse_body_line(t)?;
+            if matches!(cmd, Command::Input { key: k, .. } if k == key) {
+                continue;
+            }
+            kept.push((f, b.clone()));
+        }
+        let mut sorted: Vec<(u64, i16)> = values.iter().copied().filter(|(f, _)| *f < frames).collect();
+        sorted.sort_by_key(|(f, _)| *f);
+        let mut now = 0;
+        for (i, (f, v)) in sorted.iter().enumerate() {
+            // The last value given for a frame counts, and a value that changes nothing is left out.
+            if sorted.get(i + 1).is_some_and(|n| n.0 == *f) || *v == now {
+                continue;
+            }
+            now = *v;
+            kept.push((*f, format!("{f} {}", input_text(key, *v))));
+        }
+        kept.sort_by_key(|(f, _)| *f);
+        let mut body = comments;
+        body.extend(kept.into_iter().map(|(_, t)| t));
+        self.body_text = body;
+        // Re-parse the whole file so line numbers and parsed commands stay in step.
+        *self = Segment::parse(&self.to_text())?;
+        Ok(())
+    }
+
     /// Held spans (`start..end`) of a binary input, worked out from the lines.
     pub fn binary_spans(&self, key: InputKey) -> Vec<(u64, u64)> {
         let frames = self.frames().unwrap_or(0);
+        if let Some((axis, positive)) = direction_of(key) {
+            // A stick's direction: held while the axis is far enough that way.
+            let values = self.values(axis);
+            let mut out: Vec<(u64, u64)> = vec![];
+            for (i, (f, v)) in values.iter().enumerate() {
+                let end = values.get(i + 1).map_or(frames, |n| n.0);
+                if (if positive { *v > STICK_HELD } else { *v < -STICK_HELD }) && end > *f {
+                    match out.last_mut() {
+                        Some(last) if last.1 == *f => last.1 = end,
+                        _ => out.push((*f, end)),
+                    }
+                }
+            }
+            return out;
+        }
         let mut out = vec![];
         let mut open: Option<u64> = None;
         for l in &self.lines {
@@ -752,10 +870,49 @@ pub fn device_from_name(s: &str) -> Result<u32> {
     })
 }
 
+/// A device as a `[DEVICE]` line and `[[ports]]` name it: the inverse of `device_from_name`.
+pub fn device_name(device: u32) -> String {
+    match device {
+        DEVICE_NONE => "NONE".into(),
+        DEVICE_JOYPAD => "JOYPAD".into(),
+        DEVICE_MOUSE => "MOUSE".into(),
+        DEVICE_KEYBOARD => "KEYBOARD".into(),
+        DEVICE_LIGHTGUN => "LIGHTGUN".into(),
+        DEVICE_ANALOG => "ANALOG".into(),
+        DEVICE_POINTER => "POINTER".into(),
+        other => other.to_string(),
+    }
+}
+
 pub const JOYPAD: [&str; 16] = ["B", "Y", "SELECT", "START", "UP", "DOWN", "LEFT", "RIGHT", "A", "X", "L", "R", "L2", "R2", "L3", "R3"];
+
+/// A stick pushed all the way.
+pub const STICK_FULL: i16 = 32767;
+/// Past this, a stick counts as held in a direction (the threshold cores use for a stick
+/// that stands for buttons, such as the N64's C buttons on Mupen64Plus-Next).
+pub const STICK_HELD: i16 = 0x4000;
+const DIR_NEG: u32 = 0x100;
+const DIR_POS: u32 = 0x200;
+
+/// One direction of a stick's axis as if it were a button: held while the axis is past
+/// `STICK_HELD` that way, and pressing it pushes the axis all the way. Left and up are the
+/// negative directions. Editors use these keys for consoles whose buttons a core reads from
+/// a stick; they are never written to a file, where the axis's own lines say the same.
+pub fn direction(axis: InputKey, positive: bool) -> InputKey {
+    InputKey { id: (axis.id & 0xff) | if positive { DIR_POS } else { DIR_NEG }, ..axis }
+}
+
+/// The axis and direction of a key made by [`direction`].
+pub fn direction_of(key: InputKey) -> Option<(InputKey, bool)> {
+    let dir = key.id & (DIR_NEG | DIR_POS);
+    (key.device == DEVICE_ANALOG && key.index <= 1 && dir != 0).then(|| (InputKey { id: key.id & 0xff, ..key }, dir == DIR_POS))
+}
 
 /// Formats an input line (without the frame number), the inverse of the parser.
 pub fn input_text(key: InputKey, value: i16) -> String {
+    if let Some((axis, positive)) = direction_of(key) {
+        return input_text(axis, if value == 0 { 0 } else if positive { STICK_FULL } else { -STICK_FULL });
+    }
     let p = key.port + 1;
     match key.device {
         DEVICE_JOYPAD if (key.id as usize) < JOYPAD.len() && key.index == 0 => format!("P{p} JOYPAD {} {value}", JOYPAD[key.id as usize]),
@@ -763,6 +920,8 @@ pub fn input_text(key: InputKey, value: i16) -> String {
             Some(n) => format!("P{p} MOUSE {n} {value}"),
             None => format!("P{p} RAW {} {} {} {value}", key.device, key.index, key.id),
         },
+        DEVICE_ANALOG if key.index <= 1 && key.id <= 1 => format!("P{p} ANALOG {} {} {value}", ["LEFT", "RIGHT"][key.index as usize], ["X", "Y"][key.id as usize]),
+        DEVICE_ANALOG if key.index == 2 && (key.id as usize) < JOYPAD.len() => format!("P{p} ANALOG BUTTON {} {value}", JOYPAD[key.id as usize]),
         _ => format!("P{p} RAW {} {} {} {value}", key.device, key.index, key.id),
     }
 }
@@ -791,6 +950,7 @@ pub fn is_binary(key: InputKey) -> bool {
         DEVICE_MOUSE => matches!(key.id, 2 | 3 | 6 | 9 | 10),
         DEVICE_KEYBOARD => true,
         DEVICE_LIGHTGUN => matches!(key.id, 2..=12 | 16),
+        DEVICE_ANALOG => direction_of(key).is_some(),
         _ => false,
     }
 }
@@ -1138,4 +1298,60 @@ frames: 100
         assert_eq!(r.get("snapshot"), Some(h.as_str()));
         assert!(r.to_text().contains(&format!("snapshot: {h}\n")));
     }
+
+    #[test]
+    fn axis_values() {
+        let x = InputKey { port: 0, device: DEVICE_ANALOG, index: 0, id: 0 };
+        let mut r = Segment::parse("dj-segment 1\nid: a\nparent: none\nframes: 100\n---\n0 P1 JOYPAD A 1\n10 P1 RAW 5 0 0 1200\n20 P1 ANALOG LEFT X 1200\n30 P1 ANALOG LEFT X -32768\n# note\n40 P1 ANALOG LEFT X 0\n").unwrap();
+        // The old RAW spelling reads as the same input; a repeated value isn't a change.
+        assert_eq!(r.values(x), vec![(10, 1200), (30, -32768), (40, 0)]);
+        // Out of order, two values on one frame (the later counts), a repeat (55) and one past the end.
+        r.set_values(x, &[(50, 0), (5, 77), (5, 99), (55, 0), (70, -5), (200, 1)]).unwrap();
+        assert_eq!(r.values(x), vec![(5, 99), (50, 0), (70, -5)]);
+        let text = r.to_text();
+        assert!(text.contains("5 P1 ANALOG LEFT X 99") && text.contains("70 P1 ANALOG LEFT X -5") && !text.contains("RAW"), "{text}");
+        // Other lines and comments stay.
+        assert!(text.contains("0 P1 JOYPAD A 1") && text.contains("# note"));
+        assert_eq!(input_text(InputKey { port: 1, device: DEVICE_ANALOG, index: 1, id: 1 }, 3), "P2 ANALOG RIGHT Y 3");
+        assert_eq!(input_text(InputKey { port: 0, device: DEVICE_ANALOG, index: 2, id: 12 }, 3), "P1 ANALOG BUTTON L2 3");
+        r.set_values(x, &[]).unwrap();
+        assert!(r.values(x).is_empty() && !r.to_text().contains("ANALOG"));
+        // One frame at a time, as a stick pad sets it: what follows stays.
+        r.set_values(x, &[(10, 500)]).unwrap();
+        r.set_value_range(x, 20, 21, -7).unwrap();
+        assert_eq!(r.values(x), vec![(10, 500), (20, -7), (21, 500)]);
+        assert_eq!((r.value_at(x, 9), r.value_at(x, 20), r.value_at(x, 21)), (0, -7, 500));
+        r.set_value_range(x, 99, 100, 3).unwrap();
+        assert_eq!(r.value_at(x, 99), 3);
+    }
+
+
+    #[test]
+    fn stick_directions_as_buttons() {
+        let x = InputKey { port: 0, device: DEVICE_ANALOG, index: 1, id: 0 };
+        let (left, right) = (direction(x, false), direction(x, true));
+        assert_eq!(direction_of(left), Some((x, false)));
+        assert_eq!(direction_of(right), Some((x, true)));
+        assert_eq!(direction_of(x), None);
+        assert!(is_binary(left) && !is_binary(x));
+        assert_eq!(input_text(left, 1), "P1 ANALOG RIGHT X -32767");
+        assert_eq!(input_text(right, 0), "P1 ANALOG RIGHT X 0");
+        let mut r = Segment::parse("dj-segment 1\nid: a\nparent: none\nframes: 100\n---\n10 P1 ANALOG RIGHT X -32767\n20 P1 ANALOG RIGHT X -20000\n30 P1 ANALOG RIGHT X 9000\n40 P1 ANALOG RIGHT X 32767\n").unwrap();
+        // Held while far enough that way: two values in a row are one press, and a press
+        // that is never let go lasts to the end.
+        assert_eq!(r.binary_spans(left), vec![(10, 30)]);
+        assert_eq!(r.binary_spans(right), vec![(40, 100)]);
+        // Changing one direction keeps the other, and writes the axis all the way or 0.
+        r.set_binary_spans(left, &[(5, 8), (60, 70)]).unwrap();
+        assert_eq!(r.binary_spans(left), vec![(5, 8)]);
+        assert_eq!(r.binary_spans(right), vec![(40, 100)]);
+        assert_eq!(r.values(x), vec![(5, -32767), (8, 0), (40, 32767)]);
+        // Both at once, with a plain button in the same edit.
+        let a = InputKey { port: 0, device: DEVICE_JOYPAD, index: 0, id: 8 };
+        r.set_binary_spans_many(&[(right, vec![(50, 55)]), (left, vec![(52, 60)]), (a, vec![(1, 2)])]).unwrap();
+        assert_eq!(r.values(x), vec![(50, 32767), (55, -32767), (60, 0)]);
+        assert_eq!(r.binary_spans(a), vec![(1, 2)]);
+        assert!(!r.to_text().contains("RAW"));
+    }
+
 }

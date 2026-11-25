@@ -356,6 +356,13 @@ impl Core {
         .flatten()
     }
 
+    /// What the core calls its inputs, as it last described them (`SET_INPUT_DESCRIPTORS`).
+    /// Empty for a core that doesn't say. A core may describe them again when an option or
+    /// a port's device changes.
+    pub fn input_names(&self) -> Vec<(InputKey, String)> {
+        with_host(self.slot, |h| h.input_names.clone()).unwrap_or_default()
+    }
+
     /// Tells the core, through `GET_AUDIO_VIDEO_ENABLE`, whether each picture is wanted.
     pub fn set_video_hint(&mut self, on: bool) {
         with_host(self.slot, |h| h.video_hint = on);

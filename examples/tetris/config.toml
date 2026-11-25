@@ -43,6 +43,8 @@ mesen_swap_duty_cycle = "disabled"
 [[ports]]
 port = 1
 device = "JOYPAD"
+# Mesen also names turbo buttons and Famicom Disk System and VS System controls.
+hide = ["Y", "X", "L", "R", "L2", "R2", "L3"]
 
 [hash]
 algorithm = "blake3"

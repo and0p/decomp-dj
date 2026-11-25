@@ -49,7 +49,7 @@ enum Map {
     N64(N64Opts),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct N64Opts {
     /// `mupen64plus-alt-map`: the C buttons on face buttons instead of the right stick.
     alt: bool,
@@ -142,11 +142,7 @@ pub fn for_core(core: &str, platform: &str, options: &BTreeMap<String, String>) 
         "GB" => direct("GB", players(&[0], &GB_BUTTONS), vec![]),
         "GBA" => direct("GBA", players(&[0], &GBA_BUTTONS), vec![]),
         "N64" => {
-            let opt = |k: &str| options.get(&format!("mupen64plus-{k}")).or_else(|| options.get(&format!("{core}-{k}"))).map(String::as_str);
-            let pct = |k: &str, default: i32| opt(k).and_then(|v| v.trim().parse::<i32>().ok()).unwrap_or(default);
-            // The core works these out as `(int)(atoi(v) * 0.01f * 0x8000)`.
-            let deadzone = (pct("astick-deadzone", 15) as f32 * 0.01f32 * 32768f32) as i32;
-            let opts = N64Opts { alt: opt("alt-map") == Some("True"), deadzone, sensitivity: pct("astick-sensitivity", 100) };
+            let opts = n64_opts(core, options);
             let mut columns = vec![];
             for p in 1..=4 {
                 for b in N64_BUTTONS {
@@ -159,6 +155,46 @@ pub fn for_core(core: &str, platform: &str, options: &BTreeMap<String, String>) 
         }
         _ => unreachable!(),
     })
+}
+
+fn n64_opts(core: &str, options: &BTreeMap<String, String>) -> N64Opts {
+    let opt = |k: &str| options.get(&format!("mupen64plus-{k}")).or_else(|| options.get(&format!("{core}-{k}"))).map(String::as_str);
+    let pct = |k: &str, default: i32| opt(k).and_then(|v| v.trim().parse::<i32>().ok()).unwrap_or(default);
+    // The core works these out as `(int)(atoi(v) * 0.01f * 0x8000)`.
+    let deadzone = (pct("astick-deadzone", 15) as f32 * 0.01f32 * 32768f32) as i32;
+    N64Opts { alt: opt("alt-map") == Some("True"), deadzone, sensitivity: pct("astick-sensitivity", 100) }
+}
+
+/// What the game reads from a controller's main stick, where a core turns libretro's stick
+/// values into the console's own: the N64's control stick on Mupen64Plus-Next (its
+/// deadzone and sensitivity options applied), up positive, as TAS movies write it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StickUnits {
+    o: N64Opts,
+}
+
+impl StickUnits {
+    /// The units for `core` (a project's `[core] name`) with these options. None for a
+    /// core whose stick dj has no conversion for: libretro's values are all there is.
+    pub fn for_core(core: &str, options: &BTreeMap<String, String>) -> Option<StickUnits> {
+        core.starts_with("mupen64plus").then(|| StickUnits { o: n64_opts(core, options) })
+    }
+
+    /// The furthest the stick goes on one axis.
+    pub fn max(&self) -> i32 {
+        (80 * self.o.sensitivity / 100).clamp(1, 127)
+    }
+
+    /// The console's `(x, y)` for libretro's left stick at `(x, y)`.
+    pub fn to_console(&self, x: i16, y: i16) -> (i32, i32) {
+        n64_stick(x, y, &self.o)
+    }
+
+    /// A libretro left stick position the core reads as the console's `(x, y)`, or the
+    /// nearest there is.
+    pub fn from_console(&self, x: i32, y: i32) -> (i16, i16) {
+        n64_stick_input(x, y, &self.o).0
+    }
 }
 
 /// What a frame's movie values become, and anything lost on the way.

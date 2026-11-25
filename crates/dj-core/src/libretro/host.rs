@@ -62,6 +62,8 @@ pub(super) struct Host {
     /// Tell the core whether a picture is wanted (`GET_AUDIO_VIDEO_ENABLE`), so a core with
     /// costly graphics can skip drawing. Off: video is always said to be on.
     pub(super) video_hint: bool,
+    /// What the core calls its inputs (`SET_INPUT_DESCRIPTORS`), as it last said.
+    pub(super) input_names: Vec<(InputKey, String)>,
 }
 
 /// How many cores may be loaded at once.
@@ -282,8 +284,19 @@ pub(super) unsafe extern "C" fn env_cb<const S: usize>(cmd: u32, data: *mut c_vo
         // Every core gets a context of its own anyway.
         ENV_SET_HW_SHARED_CONTEXT => true,
         ENV_GET_HW_RENDER_INTERFACE => false,
-        ENV_SET_INPUT_DESCRIPTORS | ENV_SET_CONTROLLER_INFO | ENV_SET_SUPPORT_NO_GAME | ENV_SET_CORE_OPTIONS_DISPLAY
-        | ENV_SET_SERIALIZATION_QUIRKS => true,
+        ENV_SET_INPUT_DESCRIPTORS => {
+            let mut names = vec![];
+            let mut d = data as *const InputDescriptor;
+            // The list ends at a null description; the cap is for a core that forgets it.
+            while !d.is_null() && !(*d).description.is_null() && names.len() < 4096 {
+                let key = InputKey { port: (*d).port, device: (*d).device & 0xff, index: (*d).index, id: (*d).id };
+                names.push((key, CStr::from_ptr((*d).description).to_string_lossy().into_owned()));
+                d = d.add(1);
+            }
+            with_host(S, |h| h.input_names = names);
+            true
+        }
+        ENV_SET_CONTROLLER_INFO | ENV_SET_SUPPORT_NO_GAME | ENV_SET_CORE_OPTIONS_DISPLAY | ENV_SET_SERIALIZATION_QUIRKS => true,
         _ => false,
     }
 }

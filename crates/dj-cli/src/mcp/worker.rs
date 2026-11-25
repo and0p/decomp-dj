@@ -137,6 +137,8 @@ impl Worker {
                 Ok(json!(null))
             }
             "snapshot" => self.snapshot_at(a),
+            "sram" => self.sram_at(a),
+            "new_root" => self.new_root(a),
             "trace" => self.trace(a),
             "verify" => self.verify(a),
             _ => bail!("unknown worker command {cmd}"),
@@ -555,6 +557,64 @@ impl Worker {
         }
         std::fs::write(&out, &state)?;
         Ok(json!({"path": out, "bytes": state.len()}))
+    }
+
+    fn sram_at(&mut self, a: &Value) -> Result<Value> {
+        let seg = arg_str(a, "segment")?.to_string();
+        let frame = arg_u64(a, "frame").unwrap_or(0);
+        let out = PathBuf::from(arg_str(a, "out")?);
+        self.seek_segment(&seg, frame)?;
+        let data = self.s.as_ref().unwrap().save_ram()?;
+        if let Some(p) = out.parent() {
+            std::fs::create_dir_all(p)?;
+        }
+        std::fs::write(&out, &data)?;
+        Ok(json!({"path": out, "bytes": data.len()}))
+    }
+
+    /// A root segment that starts where a segment is at a frame: from the state there
+    /// (`start` "snapshot") or with the save RAM as it is there ("save"). Saved, with its
+    /// blob, by `Session::add_root`.
+    fn new_root(&mut self, a: &Value) -> Result<Value> {
+        let seg = arg_str(a, "segment")?.to_string();
+        let frame = arg_u64(a, "frame").unwrap_or(0);
+        let save = arg_str(a, "start")? == "save";
+        self.tape = None;
+        // The project as it is saved: the new root must not pick up a draft.
+        self.col = Collection::open(&self.dir)?;
+        self.session()?;
+        let col = &mut self.col;
+        let s = self.s.as_mut().unwrap();
+        let src = col.segments.get(&seg).ok_or_else(|| anyhow!("no segment {seg}"))?.title().to_string();
+        let mut new = dj_core::player::NewRoot { frames: arg_u64(a, "frames").unwrap_or(600), ..Default::default() };
+        if save {
+            new.sram = Some(s.sram_at(col, &seg, frame)?);
+            new.title = format!("{src} save at frame {frame}");
+        } else {
+            let (state, at) = s.state_at(col, &seg, frame)?;
+            new.snapshot = Some(state);
+            new.start_frame = at;
+            new.lines = dj_core::edit::carried_lines(col, &seg, frame)?;
+            new.title = format!("{src} from frame {frame}");
+        }
+        new.blob_name = match a.get("name").and_then(|n| n.as_str()) {
+            Some(n) => n.to_string(),
+            None => dj_core::collection::blob_name(&format!("{src} frame {frame}")),
+        };
+        if let Some(t) = a.get("title").and_then(|t| t.as_str()) {
+            new.title = t.to_string();
+        }
+        let id = s.add_root(col, &new)?;
+        let r = &col.segments[&id];
+        let field = if save { "sram" } else { "snapshot" };
+        let blob = r.get(field).unwrap_or_default();
+        let res = json!({
+            "segment": id, "path": col.paths[&id], "title": r.title(), "frames": new.frames, "start_hash": r.get("start-hash"),
+            "start_frame": new.start_frame, "carried_lines": new.lines,
+            "blob": col.blob_path(blob, field), "blob_bytes": new.snapshot.as_ref().or(new.sram.as_ref()).map_or(0, |d| d.len()),
+        });
+        self.col = load_with_drafts(&self.dir)?;
+        Ok(res)
     }
 
     /// Plays frames `frame - frames_before ..= frame + frames_after` of a segment with the

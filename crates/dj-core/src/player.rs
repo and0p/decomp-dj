@@ -90,6 +90,24 @@ pub fn devices_at_start(col: &Collection, id: &str) -> Result<BTreeMap<u32, u32>
     Ok(devs)
 }
 
+/// What `Session::add_root` makes a root segment from.
+#[derive(Default, Clone)]
+pub struct NewRoot {
+    pub title: String,
+    pub frames: u64,
+    /// A save state of this core (`retro_serialize`), loaded before frame 0.
+    pub snapshot: Option<Vec<u8>>,
+    /// Battery-backed save RAM, applied after the snapshot.
+    pub sram: Option<Vec<u8>>,
+    /// Frames after power-on the snapshot was taken at.
+    pub start_frame: u64,
+    /// Lines for frame 0 (`edit::carried_lines`).
+    pub lines: Vec<String>,
+    /// What the blobs are called in blobs/ (`Collection::write_blob`). Empty: from the
+    /// title.
+    pub blob_name: String,
+}
+
 /// A loaded core plus what it needs to play segments. It does not hold the
 /// collection, so a GUI can keep editing the collection while a session is open;
 /// every method takes the collection it should read.
@@ -299,12 +317,19 @@ impl Session {
                 mem[..n].copy_from_slice(&power_on[..n]);
             }
         }
+        // Which segment and which file, for a message: a rebuilt core that can't load a
+        // snapshot made with another build should say so, not fail on "unserialize".
+        let whose = |field: &str, blob: &str| {
+            let file = col.blob_path(blob, field).and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| blob.to_string());
+            let id = r.get("id").unwrap_or_default();
+            format!("root segment {} \"{}\" starts from blobs/{file}", &id[..8.min(id.len())], r.title())
+        };
         if let Some(snap) = r.get("snapshot") {
-            let data = col.read_blob(snap, "snapshot")?;
-            self.core.unserialize(&data).with_context(|| format!("loading snapshot blob {snap}"))?;
+            let data = col.read_blob(snap, "snapshot").with_context(|| whose("snapshot", snap))?;
+            self.core.unserialize(&data).with_context(|| format!("{}, which this core ({}) can't load. A snapshot only loads in the core build it was made with: use that build, or make the snapshot again", whose("snapshot", snap), self.build))?;
         }
         if let Some(sram) = r.get("sram") {
-            let data = col.read_blob(sram, "sram")?;
+            let data = col.read_blob(sram, "sram").with_context(|| whose("sram", sram))?;
             let mem = self.core.memory(crate::libretro::MEMORY_SAVE_RAM).ok_or_else(|| anyhow!("core exposes no save RAM"))?;
             if data.len() != mem.len() {
                 crate::console::warn("dj", &format!("SRAM blob is {} bytes but the core's save RAM is {}", data.len(), mem.len()));
@@ -317,6 +342,98 @@ impl Session {
 
     pub fn load_state(&mut self, state: &[u8]) -> Result<()> {
         self.core.unserialize(state)
+    }
+
+    /// Adds a root segment that starts from a save state, a save file or both, and saves
+    /// it. The blobs are copied into `blobs/` and loaded into the core first, and the state
+    /// hash the core is then in is recorded as the root's `start-hash`, so a later play that
+    /// starts somewhere else is noticed. When the core won't load them nothing is left
+    /// behind: no segment, and no blob that wasn't there already. Returns the new id.
+    pub fn add_root(&mut self, col: &mut Collection, new: &NewRoot) -> Result<String> {
+        if new.snapshot.is_none() && new.sram.is_none() {
+            bail!("a root from blobs needs a snapshot or a save file");
+        }
+        let id = crate::edit::new_id();
+        let mut written: Vec<PathBuf> = vec![];
+        let res = (|| -> Result<()> {
+            let mut blob = |data: &Option<Vec<u8>>, field: &str| -> Result<Option<String>> {
+                let Some(data) = data else { return Ok(None) };
+                if data.is_empty() {
+                    bail!("the {field} file is empty");
+                }
+                let name = match (new.blob_name.is_empty(), new.title.trim().is_empty()) {
+                    (false, _) => new.blob_name.clone(),
+                    (true, false) => crate::collection::blob_name(&new.title),
+                    (true, true) => if field == "sram" { "save" } else { "snapshot" }.to_string(),
+                };
+                let (b, made) = col.write_blob_new(data, field, &name)?;
+                written.extend(made);
+                Ok(Some(b))
+            };
+            let snapshot = blob(&new.snapshot, "snapshot")?;
+            let sram = blob(&new.sram, "sram")?;
+            let r = crate::edit::root_from_blobs(&id, &new.title, new.frames, snapshot.as_deref(), sram.as_deref(), new.start_frame, &new.lines)?;
+            col.segments.insert(id.clone(), r);
+            self.enter_segment(col, &id).with_context(|| format!("the core ({}) can't start from these files", self.build))?;
+            let start = self.state_hash(col)?;
+            col.segments.get_mut(&id).unwrap().set("start-hash", &start);
+            col.save_segment(&id)
+        })();
+        if let Err(e) = res {
+            col.segments.remove(&id);
+            for p in written {
+                let _ = std::fs::remove_file(p);
+            }
+            return Err(e);
+        }
+        Ok(id)
+    }
+
+    /// The core's state at the start of frame `frame` of `id`, and how many frames after
+    /// power-on that is. Plays from the nearest stored state of the segment, else from its
+    /// start.
+    pub fn state_at(&mut self, col: &Collection, id: &str, frame: u64) -> Result<(Vec<u8>, u64)> {
+        let at = self.play_to(col, id, frame)?;
+        Ok((self.snapshot()?, at))
+    }
+
+    /// The game's save RAM (its battery save) at the start of frame `frame` of `id`: what
+    /// `sram` on a root segment loads.
+    pub fn sram_at(&mut self, col: &Collection, id: &str, frame: u64) -> Result<Vec<u8>> {
+        self.play_to(col, id, frame)?;
+        self.save_ram()
+    }
+
+    /// The core's save RAM as it is now. An error when the core has none (a game with no
+    /// battery save).
+    pub fn save_ram(&self) -> Result<Vec<u8>> {
+        match self.core.memory_view(crate::libretro::MEMORY_SAVE_RAM) {
+            Some(m) if !m.is_empty() => Ok(m.to_vec()),
+            _ => bail!("the core ({}) has no save RAM for this game", self.build),
+        }
+    }
+
+    /// Puts the core at the start of frame `frame` of `id`; returns how many frames after
+    /// power-on that is.
+    fn play_to(&mut self, col: &Collection, id: &str, frame: u64) -> Result<u64> {
+        let frames = col.segments[id].frames()?;
+        if frame > frames {
+            bail!("{} has {frames} frames", &id[..8.min(id.len())]);
+        }
+        let first = self.enter_segment(col, id)?;
+        let start = self.state_hash(col)?;
+        let mut at = 0;
+        if let Some((f, state)) = self.nearest_stored(col, id, &start, frame)? {
+            if f > 0 {
+                self.load_state(&state)?;
+                at = f;
+            }
+        }
+        self.restore_inputs(col, id, at)?;
+        for f in at..frame {
+            self.step(col, id, f, false)?;
+        }
+        Ok(first + frame)
     }
 
     /// Plays one segment from the core's current state.

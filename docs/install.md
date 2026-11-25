@@ -97,6 +97,6 @@ dj new --title "Boot to title" --frames 240
 ```
 
 Every command after `init` works on the project it is run in (or the one `-C DIR` names). `init` writes `config.toml` with every core option pinned, remembers the ROM and core
-paths in `.local/local.toml`, and creates a `.gitignore` that lists `.local/` when the project has none. Pass `--symbols FILE` to
+paths in `.local/local.toml`, and creates a `.gitignore` that lists `.local/` when the project has none. The folder and `--name` can be left out: the folder is then named after the ROM file (`game` here), and the project after the folder. Pass `--symbols FILE` to
 add a symbol map ([coverage.md](coverage.md#symbol-maps)). Then open the project in the
 GUI to record inputs, or edit the segment file by hand ([segments.md](segments.md)).

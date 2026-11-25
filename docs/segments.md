@@ -13,7 +13,7 @@ my-project/
     7f3c…e1.segment      one file per segment, named by its id
     0a9b…44.segment
   blobs/
-    9a1c…7e.srm          SRAM and other blobs, named by content hash
+    world-3-save-9a1c7e04.srm   SRAM and snapshot blobs: a name, then 8 digits of the content hash
   symbols/               optional: symbol maps for rolling coverage up into functions
   annotations.toml       optional: unreachable code, data, and function fixes (config.md)
   .local/                local only, never committed
@@ -68,8 +68,8 @@ end-hash: 71ee…
 | `title` | no | One line for humans and agents. |
 | `frames` | yes | Length in frames. The segment ends after this many frames even if the last input is earlier, so no trailing "wait" lines are needed. |
 | `start-frame` | no | Frames since power-on when this segment starts (the sum of its ancestors' `frames`, or the frame recorded with a `snapshot` blob). Written by tools; used to catch mistakes. |
-| `snapshot` | root only | Blob id of a snapshot to load before frame 0. (Formerly `save`; tools still read that name.) |
-| `sram` | root only | Blob id of battery-backed save RAM to load before frame 0. Use it with or without `snapshot`; when both are given, `sram` is applied after the state loads (for cores whose states leave SRAM out). |
+| `snapshot` | root only | Content hash of the snapshot [blob](#blobs) to load before frame 0. (Formerly `save`; tools still read that name.) |
+| `sram` | root only | Content hash of the [blob](#blobs) of battery-backed save RAM to load before frame 0. Use it with or without `snapshot`; when both are given, `sram` is applied after the state loads (for cores whose states leave SRAM out). |
 | `start-hash` | no | State hash at frame 0, before any input ([state hashes](playback.md#state-hashes)). |
 | `end-hash` | no | State hash after the last frame. |
 | `checkpoint` | no | Repeatable: `checkpoint: <frame> <hash>`. The state hash at the start of frame `<frame>`, before that frame's lines apply (so `checkpoint: 0` would equal `start-hash`). Narrows down where a run diverged. Editors check checkpoints while playing and keep the ones before an edit. |
@@ -220,9 +220,29 @@ because skipping a state-changing command would make every hash after it wrong.
 
 ## Blobs
 
-`blobs/` holds SRAM and snapshot files, each named by its content hash ([state hashes](playback.md#state-hashes))
-and an extension for its kind: `<hash>.srm` for SRAM (libretro's own name for save
-RAM files, so other emulators can open them) and `<hash>.state` for a core state.
+`blobs/` holds SRAM and snapshot files. A root segment's header names one by the hash of
+its content ([state hashes](playback.md#state-hashes)); the file has a name someone chose,
+then `-` and the first 8 digits of that hash, then an extension for its kind: `.srm` for
+SRAM (libretro's own name for save RAM files, so other emulators can open them) and
+`.state` for a core state.
+
+```
+sram: 9a1c7e04b52f6d0e8a3c1f7745d2e960        blobs/world-3-save-9a1c7e04.srm
+```
+
+- **The name is for people.** Letters, digits, `-`, `_` and `.`, at most 60. dj makes one
+  from the file's name or the segment's title when none is given.
+- **Renaming never touches a segment.** Rename the file in the GUI (Properties), with
+  `dj blob rename BLOB NAME`, or in the file manager. dj finds a blob by the 8 digits in
+  its file name; a file renamed without them is still found, by hashing the files of its
+  kind.
+- **The content is checked every time a blob is read**, against the whole hash in the
+  header, so a file that was edited or swapped is refused instead of played.
+- **`dj blob list`** shows each file, its size, its hash and the segments that start from
+  it.
+- **A file named by its whole hash** (`<hash>.srm`, as dj wrote them before names) is found
+  the same way.
+
 The header field that names a blob (`sram` or `snapshot`) says which it is. Many segments
 share one blob (for example a blank save).
 A blob is the exact byte layout the pinned core uses: `retro_serialize`

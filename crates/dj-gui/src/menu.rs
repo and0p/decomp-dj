@@ -83,6 +83,9 @@ impl App {
                 if ui.add_enabled(self.col.is_some(), egui::Button::new(t::NEW_ROOT_SEGMENT)).on_hover_text(t::NEW_ROOT_TIP).clicked() {
                     self.new_root();
                 }
+                if ui.add_enabled(has, egui::Button::new(t::NEW_ROOT_SEGMENT_FROM_HERE)).on_hover_text(t::NEW_ROOT_SEGMENT_FROM_HERE_TIP).clicked() {
+                    self.new_root_here();
+                }
                 if ui.add_enabled(sel.is_some(), egui::Button::new(t::DUPLICATE)).on_hover_text(t::DUP_TIP).clicked() {
                     self.ask_duplicate(sel.as_deref().unwrap());
                 }
@@ -131,6 +134,7 @@ impl App {
                 ui.checkbox(&mut self.history.return_to_edit, t::RETURN_TO_THE_EDIT).keep_open().on_hover_text(t::RETURN_TO_THE_EDIT_TIP);
                 ui.checkbox(&mut self.roll.all_buttons, t::SHOW_EVERY_JOYPAD_BUTTON).keep_open();
                 ui.separator();
+                ui.checkbox(&mut self.pad.open, t::STICK_PAD).keep_open().on_hover_text(t::STICK_PAD_TIP);
                 ui.checkbox(&mut self.console.show, t::DEBUG_CONSOLE)
                     .keep_open()
                     .on_hover_text(t::A_LOG_BELOW_THE_COVERAGE_TIP);
@@ -193,6 +197,13 @@ impl App {
                     let end = self.pb.as_ref().map_or(0, |p| p.frames.saturating_sub(1));
                     self.seek(end);
                     self.roll.follow_to(end);
+                }
+                ui.separator();
+                if ui.add_enabled(has, egui::Button::new(t::EXPORT_SAVE_RAM_MENU)).on_hover_text(t::EXPORT_SAVE_RAM_TIP).clicked() {
+                    self.export_save_ram();
+                }
+                if ui.add_enabled(has, egui::Button::new(t::NEW_ROOT_SEGMENT_FROM_THIS_SAVE)).on_hover_text(t::NEW_ROOT_SEGMENT_FROM_THIS_SAVE_TIP).clicked() {
+                    self.new_root_from_save();
                 }
                 ui.separator();
                 // Clicking the submenu's own button leaves the menu open, as egui does by default.

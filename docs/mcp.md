@@ -31,7 +31,7 @@ The ROM and core come from `.local/local.toml`, like every other command.
 | --- | --- |
 | `query` | Queries only: no core is started |
 | `draft` (the default) | Also sessions, drafts, traces and jobs. Nothing in `segments/` changes. |
-| `save` | Also `save_draft`, which writes `segments/` |
+| `save` | Also `save_draft` and `new_root`, which write `segments/` (`new_root` also `blobs/`) |
 
 Pass `--allow` on the command line, or set it per machine in `.local/local.toml`:
 
@@ -49,7 +49,7 @@ pipe from `dj mcp` and exit when it closes, so they end with it even if it crash
 they are also killed with it (`PR_SET_PDEATHSIG`).
 
 - Each session is a worker. Up to 6 can be open; a session idle for 30 minutes is closed (its draft stays).
-- Traces, `snapshot` and `save_draft` share one more worker.
+- Traces, `snapshot`, `save_ram`, `new_root` and `save_draft` share one more worker.
 - A job runs its own workers, 4 by default.
 
 Several `dj mcp` servers and the GUI can use one project at once. The database is in WAL
@@ -83,6 +83,7 @@ there is more.
 | `function(addr)` | Every block of one function: covered or not, the first segment and frame that runs it, where control goes next; its callers (direct calls, and jumps from other functions: JSR and JMP on the 6502, JAL and J on MIPS) and whether they run; the segments that enter it |
 | `frontier(addr?)` | Covered branches and calls that lead into uncovered code, with the segments and frames that run that branch. For an address in uncovered code, the ways into its block; for a function never entered, its covered callers; with none, the largest across the ROM |
 | `segments(filter?)` | The tree: id, title, parent, frames, status, poked, children |
+| `blobs()` | The snapshots and save files in `blobs/` that root segments start from: file, kind, content hash, size and the segments that use each ([segments.md](segments.md#blobs)) |
 | `parity_summary(compare?, limit?)` | Parity with a comparison core ([below](#parity)): instructions that ran, as parity, failed, failed with an older build or not checked; the functions with the most failed or unchecked code; the failures kept, newest first |
 | `parity_failures(compare?, addr?, old?)` | The failures kept, newest first: segment and frame, where in the frame the core gave its verdict (`at`: its breakpoint's name, or "the frame end"), the last jump before it (`jump_segment`, `jump_frame`: the run that found it started there) and how many frames from there were pre-roll, the reason, and whether it failed with the build there is now. `addr` keeps those whose failing frame ran that code (a function's start: any of it); `old=true` only older builds', `old=false` only this build's |
 | `gui_view()` | What the person is looking at in `dj-gui`, when they share it ([below](#the-gui)) |
@@ -110,6 +111,7 @@ database directly isn't safe; everything in it can be rebuilt by cleaning.
 | `trace(addr, segment?, frame?, before=20, after=120, frames_before=0, frames_after=0)` | Plays the best segment that runs the code (or the one given) from its nearest snapshot, with the connector's trace hook on, and returns the instructions around the first run: address, disassembly with symbol names, registers before each instruction, and the data it read (`r$0201=05`) and wrote (`w$0300=05`). The whole traced span, every frame of it, goes to `.local/traces/` |
 | `calls(addr, limit=3, per_segment=3)` | For the best segments that run a function: each call in its first frame, with registers on entry and on return, instructions and cycles, the memory it read before writing it (its inputs) and what it wrote |
 | `snapshot(segment, frame)` | Writes the core state there to `.local/snapshots/`, to load in another tool or debugger |
+| `save_ram(segment, frame)` | Writes the game's save RAM (its battery save) there to `.local/snapshots/` as an `.srm`. An error when the game has no battery save |
 
 ```
 $9884 JSR practiceDoClick  A:80 X:FF Y:00 S:FD P:85 w$01FD=98 w$01FC=86
@@ -194,6 +196,7 @@ in the tree as unsaved segments ([below](#the-gui)). They are not counted in cov
 | `drafts()`, `draft(id)` | List them, or read one's text |
 | `discard_draft(id)` | Deletes it |
 | `save_draft(id, title?, parent?)` | Needs `--allow save`. Plays the draft once with recording on, writes its hashes, and moves it to `segments/` as a normal segment file (so it is a normal diff in git, undone with `git restore` or `rm`). A draft whose parent is a draft waits for that one to be saved first |
+| `new_root(from, frame?, start?, title?, frames=600, name?)` | Needs `--allow save`. Makes a root segment that starts where segment `from` is at the start of `frame` (default: its end), and saves it with its blob ([a root from a snapshot](editing.md#a-root-from-a-snapshot)). `start: "snapshot"` (the default) starts from the core's state there, with the inputs held and the devices plugged in carried onto frame 0; the reply carries the note on what a snapshot holds unless the project is marked shareable. `start: "save"` powers on with the game's save RAM as it is there and copies nothing else. The new root's own hashes are recorded the first time it is played (`dj clean`) |
 
 Text uses the segment body format ([segments.md](segments.md#input-lines)):
 

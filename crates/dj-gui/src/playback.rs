@@ -427,6 +427,9 @@ impl App {
         }
         if let Some(cur) = self.pb.as_ref().and_then(|p| p.shown()) {
             let t = (cur as i64 + delta).max(0) as u64;
+            if delta > 0 {
+                self.pad.stepped_on();
+            }
             self.seek(t);
             self.roll.follow_to(t);
         }

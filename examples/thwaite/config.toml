@@ -5,6 +5,8 @@ name = "Thwaite"
 [rom]
 sha256 = "ee51cd9562f28195ba015d9857c6c4fc9bf67cdfb213e95f655e586b92195173"
 file = "thwaite.nes"
+# Thwaite is free software (LICENSE.txt), so snapshots of it may be shared (docs/config.md).
+shareable = true
 
 [core]
 name = "mesen"
@@ -40,6 +42,8 @@ mesen_swap_duty_cycle = "disabled"
 [[ports]]
 port = 1
 device = "JOYPAD"
+# Mesen also names turbo buttons and Famicom Disk System and VS System controls.
+hide = ["Y", "X", "L", "R", "L2", "R2", "L3"]
 
 [hash]
 algorithm = "blake3"

@@ -33,6 +33,8 @@ mgba_use_bios = "ON"
 [[ports]]
 port = 1
 device = "JOYPAD"
+# mGBA also names turbo buttons and the solar sensor.
+hide = ["Y", "X", "L2", "R2", "L3", "R3"]
 
 [hash]
 algorithm = "blake3"

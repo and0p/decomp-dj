@@ -6,8 +6,10 @@ hashes, fills the local database and reports coverage. Building it is in
 
 | Command | What it does | More |
 | --- | --- | --- |
-| `dj init <dir> --name NAME --rom ROM --core CORE [--option KEY=VALUE]... [--symbols FILE]` | Creates a project and pins the setup in `config.toml` | [install.md](install.md#a-first-project), [config.md](config.md) |
+| `dj init [dir] --rom ROM --core CORE [--name NAME] [--option KEY=VALUE]... [--symbols FILE]` | Creates a project and pins the setup in `config.toml`. Without `dir`, the folder is named after the ROM file; without `--name`, the project is named after the folder | [install.md](install.md#a-first-project), [config.md](config.md) |
 | `dj new [--parent ID] [--title TEXT] [--frames N]` | Adds a segment and prints its path | [editing.md](editing.md) |
+| `dj new --snapshot FILE [--sram FILE] [--start-frame N] [--blob-name NAME]` | Adds a root segment that starts from a save state, a save file or both, after checking that the core loads them | [editing.md](editing.md#a-root-from-a-snapshot) |
+| `dj new --from SEGMENT --at FRAME` | Adds a root segment that starts where SEGMENT is at that frame | [editing.md](editing.md#a-root-from-a-snapshot) |
 | `dj import-tas FILE [--title TEXT] [--strict]` | Imports a BizHawk TAS movie (`.bk2`) as a new root segment and prints its id | [tas.md](tas.md#importing) |
 | `dj export-tas SEGMENT --out FILE [--through FRAME] [--author NAME] [--strict]` | Writes the chain from the root down to SEGMENT (through FRAME of it) as a BizHawk `.bk2` movie, leaving out what it can't carry, with a warning (`--strict`: refuse) | [tas.md](tas.md#exporting) |
 | `dj status` | The tree with clean and dirty marks | [playback.md](playback.md#clean-and-dirty) |
@@ -15,6 +17,7 @@ hashes, fills the local database and reports coverage. Building it is in
 | `dj check [SEGMENT...] [--tag NAME]... [--children] [--from-power-on] [--strict] [--junit FILE] [--screenshots DIR [--shot 60,120]]` | Plays every segment (or those chosen, each from the nearest stored state above it) and compares its hashes with the recorded ones; fails when one differs. A segment with no hashes recorded yet passes with a note, or fails with `--strict` (for CI). Writes no file | [playback.md](playback.md#checking-hashes) |
 | `dj repin` | After rebuilding or updating the core: plays every segment from power-on and, if all still match, records the core's build in `[core] build` | [config.md](config.md#core) |
 | `dj upgrade` | Rewrites every segment file in this dj's format, and records this dj in config.toml | [segments.md](segments.md#older-projects) |
+| `dj controls` | Lists each port's controls: the core's name for each, the project's label, and whether the GUI shows it | [config.md](config.md#naming-the-controls) |
 | `dj parity check [SEGMENT...] [--tag NAME]... [--children] [--compare NAME] [--again] [--dirty] [--json] [--junit FILE]` | Checks segments against a comparison core, each from its own start, at every verdict the core gives; exits 1 when one fails | [below](#parity), [ci.md](ci.md) |
 | `dj parity report`, `rerun [ID...]`, `clear ID...`, `explain ID`, `core` | Work with the results kept, and inspect the comparison core | [below](#parity) |
 | `dj summary [--segments]` | Coverage of the current, clean, saved segments: instructions, blocks and functions covered, what was left out (dirty, not played, drafts), and the segments that add most. `--segments`: each segment's share, and the smallest set that keeps all the coverage | [coverage.md](coverage.md#from-the-command-line) |
@@ -25,6 +28,9 @@ hashes, fills the local database and reports coverage. Building it is in
 | `dj annotations` | Lists `annotations.toml`'s entries and checks them against the coverage; fails when an annotated range ran as code | [config.md](config.md#annotationstoml) |
 | `dj connector-check [--json]` | Developer tool: checks the coverage connector's flags in the local database against the decoder, inside the symbol maps' functions. Lists opcode flags where the decoder starts no instruction, operand flags that don't belong to an instruction that ran, operand bytes missing their flag, and opcodes run in both widths of a mode pair; fails when any disagree. For writing or updating a connector, not for normal use | [connectors.md](connectors.md#writing-one-for-another-core) |
 | `dj mcp [--allow query\|draft\|save]` | Serves the project to an AI agent over MCP (stdio) | [mcp.md](mcp.md) |
+| `dj sram SEGMENT FRAME --out FILE` | Writes the game's save RAM (battery save) at that frame, for `dj new --sram` | [editing.md](editing.md#a-root-from-a-save-file) |
+| `dj blob list` | Lists the snapshots and save files in `blobs/`, with the segments that start from each | [segments.md](segments.md#blobs) |
+| `dj blob rename BLOB NAME` | Renames a blob's file. No segment changes, since segments name its hash | [segments.md](segments.md#blobs) |
 | `dj snapshot SEGMENT FRAME --out FILE` | Writes the core state at that frame, to start a trace from | [coverage.md](coverage.md#from-the-command-line) |
 | `dj sql "SELECT ..."` | Queries the local database | [database.md](database.md) |
 | `dj cache fill [SEGMENT [--children]] [--force]` | Plays into the local database what it doesn't hold yet, top down, and writes no file (records no hashes, so plays segments that aren't clean too) | [database.md](database.md#from-the-command-line) |
@@ -33,14 +39,14 @@ hashes, fills the local database and reports coverage. Building it is in
 
 Common to every command:
 
-- **The project** is the nearest folder with a dj `config.toml`, from the current folder up, so dj runs inside a project as git runs inside a repository. `-C DIR` (`--project DIR`), before or after the command, names another. It doesn't change the folder other relative paths (`--out`, `--junit`, `DJ_ROM`) are read from. `dj init DIR` takes the folder it creates as an argument. A project folder given the old way, as the first argument (`dj check examples/thwaite`), is refused with a hint.
+- **The project** is the nearest folder with a dj `config.toml`, from the current folder up, so dj runs inside a project as git runs inside a repository. `-C DIR` (`--project DIR`), before or after the command, names another. It doesn't change the folder other relative paths (`--out`, `--junit`, `DJ_ROM`) are read from. `dj init [DIR]` takes the folder it creates as an argument (default: one named after the ROM file, in the current folder). A project folder given the old way, as the first argument (`dj check examples/thwaite`), is refused with a hint.
 - **Colour.** Verdicts are coloured (red for a failure, green for a pass, yellow for what was left out) when the output is a terminal or `CI` is set. `NO_COLOR` turns it off; `CLICOLOR_FORCE` turns it on. JSON is never coloured.
 - **JUnit.** `dj check` and `dj parity check` write a JUnit XML report with `--junit FILE`, one test case per segment, or into the folder `DJ_JUNIT` names ([ci.md](ci.md)).
 - **Exit status**, the same for every command: 0 when all is well, 1 when the command ran and found something wrong (hashes that differ, a changed ending, a parity failure, an annotated range that ran, connector flags that disagree), 2 when it couldn't do its job (an error). A segment left out because it crashed or hung the core is a 1.
 
 - Ids can be shortened to any unique prefix.
 - `--rom` and `--core` are remembered per project in `.local/local.toml`, so later commands don't need them. `DJ_ROM` and `DJ_CORE` give them too, ahead of `.local/local.toml`, and are never saved into it ([ci.md](ci.md#the-rom-and-the-cores)). Commands that run a core take both; commands that only read the ROM (the queries, `annotations`, `parity report`, the TAS commands) take `--rom`; the rest take neither.
-- `dj check` and `dj snapshot` take `--no-db` to run without the local database. The other commands that play keep their results in it.
+- `dj check`, `dj snapshot` and `dj sram` take `--no-db` to run without the local database. The other commands that play keep their results in it.
 - **One meaning per flag.** `SEGMENT` is an id or a unique prefix. A command that takes one works on it alone, and `--children` adds every segment below it. `dj check`, `dj parity check` and `dj cache export` also take several, and `--tag NAME` for the segments with that tag. `--force` plays what the database already holds. `--json` prints JSON to stdout.
 - `dj check`, `dj clean`, `dj cache fill` and the `dj parity` commands that play run in a child `dj` process that the command
   watches, so a core that crashes or hangs can't stop the batch. A crash, or a frame that

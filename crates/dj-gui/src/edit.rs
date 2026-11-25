@@ -23,6 +23,23 @@ impl App {
         self.invalidate_from(&id, from);
     }
 
+    /// Gives stick axes new values in the selected segment (`Segment::set_values`).
+    pub(crate) fn apply_axis_edit(&mut self, edits: Vec<(InputKey, Vec<(u64, i16)>)>, from: u64) {
+        let Some(id) = self.selected.clone() else { return };
+        if !self.remember(t::EDIT_STICK, &[&id]) {
+            return;
+        }
+        let Some(col) = &mut self.col else { return };
+        let r = col.segments.get_mut(&id).unwrap();
+        for (key, values) in edits {
+            if let Err(e) = r.set_values(key, &values) {
+                self.error(e);
+                return;
+            }
+        }
+        self.invalidate_from(&id, from);
+    }
+
     /// After a change at frame `from` of `id`: drops the end hash and later checkpoints
     /// (so the segment and everything below turn dirty) and redraws.
     pub(crate) fn invalidate_from(&mut self, id: &str, from: u64) {

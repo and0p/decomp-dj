@@ -1,7 +1,7 @@
 //! The piano roll: time runs left to right, one row per button, rows grouped by
 //! controller. Groups that the segment uses are highlighted and open; unused
-//! groups are dimmed and collapsed. Only binary inputs (buttons and keys) get
-//! rows for now; other input lines show as ticks on their group's header.
+//! groups are dimmed and collapsed. Buttons and keys get rows, and a controller's
+//! sticks a taller row per axis; other input lines show as ticks on their group's header.
 //!
 //! Spans are worked out once per segment edit and drawn only where visible, so
 //! long segments with many presses stay cheap to draw.
@@ -9,6 +9,8 @@
 use crate::strings as t;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind};
 use dj_core::collection::Collection;
+use dj_core::controls::{self, Controls};
+use dj_core::tas::profile::StickUnits;
 use dj_core::format::{self, Command, InputKey, DEVICE_JOYPAD, DEVICE_KEYBOARD, DEVICE_MOUSE};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -19,6 +21,8 @@ const MARK_H: f32 = 18.0;
 const LABEL_CHARS: usize = 40;
 const GROUP_H: f32 = 20.0;
 const ROW_H: f32 = 15.0;
+/// A stick axis's row: tall enough to read its value as a height.
+const AXIS_H: f32 = 34.0;
 /// Joypad rows in display order: d-pad, SELECT, START, B, A, then the rest.
 const JOYPAD_ORDER: [u32; 16] = [4, 5, 6, 7, 2, 3, 0, 8, 1, 9, 10, 11, 12, 13, 14, 15];
 const JOYPAD_BASIC: usize = 8;
@@ -46,6 +50,8 @@ pub enum Action {
     OpenFrame(u64),
     /// New spans for one or more buttons; `from` is the first frame whose input changed.
     Edit { edits: Vec<(InputKey, Vec<(u64, u64)>)>, from: u64 },
+    /// New values for stick axes (`Segment::values`' form); `from` as for `Edit`.
+    EditAxes { edits: Vec<(InputKey, Vec<(u64, i16)>)>, from: u64 },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -76,7 +82,198 @@ enum Gesture {
 struct Row {
     key: InputKey,
     label: String,
+    /// libretro's name for it, when the label is another.
+    raw: Option<String>,
     spans: Vec<(u64, u64)>,
+}
+
+/// A stick's axis: a value for every frame, kept as the frames where it changes. The row
+/// shows `values`: the console's units where dj can convert to them (the game reads one
+/// number from the two axes together), else libretro's, and either way with up positive.
+struct Axis {
+    key: InputKey,
+    label: String,
+    raw: Option<String>,
+    values: Vec<(u64, i32)>,
+    /// The furthest the row's values go.
+    max: i32,
+    /// libretro's values for the stick's X and Y, as the segment has them.
+    stick: (Vec<(u64, i16)>, Vec<(u64, i16)>),
+    units: Option<StickUnits>,
+}
+
+impl Axis {
+    fn is_y(&self) -> bool {
+        self.key.id == 1
+    }
+
+    /// A stick's two rows.
+    fn pair(port: u32, index: u32, r: &dj_core::format::Segment, controls: &Controls) -> [Axis; 2] {
+        let key = |id| InputKey { port, device: format::DEVICE_ANALOG, index, id };
+        let stick = (r.values(key(0)), r.values(key(1)));
+        let units = controls.units(key(0)).copied();
+        let shown = |id: u32| -> Vec<(u64, i32)> {
+            let mut out: Vec<(u64, i32)> = vec![];
+            let mut push = |f: u64, v: i32| {
+                if v != out.last().map_or(0, |l| l.1) {
+                    out.push((f, v));
+                }
+            };
+            match &units {
+                Some(u) => {
+                    let mut at: Vec<u64> = stick.0.iter().chain(&stick.1).map(|(f, _)| *f).collect();
+                    at.sort();
+                    at.dedup();
+                    for f in at {
+                        let c = u.to_console(value_at(&stick.0, f), value_at(&stick.1, f));
+                        push(f, if id == 0 { c.0 } else { c.1 });
+                    }
+                }
+                // libretro counts down as positive.
+                None => (if id == 0 { &stick.0 } else { &stick.1 }).iter().for_each(|(f, v)| push(*f, if id == 0 { *v as i32 } else { -(*v as i32) })),
+            }
+            out
+        };
+        let max = units.map_or(format::STICK_FULL as i32, |u| u.max());
+        [0, 1].map(|id| {
+            let (label, raw) = labels(controls, key(id));
+            Axis { key: key(id), label, raw, values: shown(id), max, stick: stick.clone(), units }
+        })
+    }
+
+    /// The stick's lines with this row set to `v` on frames `[a, b)`: this axis's, and with
+    /// console units the other's too, since the game's number comes from both.
+    fn set(&self, a: u64, b: u64, v: i32, frames: u64) -> Vec<(InputKey, Vec<(u64, i16)>)> {
+        let other = InputKey { id: 1 - self.key.id, ..self.key };
+        let (xk, yk) = if self.is_y() { (other, self.key) } else { (self.key, other) };
+        let Some(u) = &self.units else {
+            let raw = (if self.is_y() { -v } else { v }).clamp(-(format::STICK_FULL as i32), format::STICK_FULL as i32) as i16;
+            return vec![(self.key, set_range(if self.is_y() { &self.stick.1 } else { &self.stick.0 }, a, b, raw, frames))];
+        };
+        // Each run of frames where neither axis changes keeps its other number.
+        let mut at: Vec<u64> = self.stick.0.iter().chain(&self.stick.1).map(|(f, _)| *f).filter(|f| *f > a && *f < b).collect();
+        at.extend([a, b]);
+        at.sort();
+        at.dedup();
+        let (mut x, mut y) = self.stick.clone();
+        for w in at.windows(2) {
+            let c = u.to_console(value_at(&self.stick.0, w[0]), value_at(&self.stick.1, w[0]));
+            let (nx, ny) = u.from_console(if self.is_y() { c.0 } else { v }, if self.is_y() { v } else { c.1 });
+            x = set_range(&x, w[0], w[1], nx, frames);
+            y = set_range(&y, w[0], w[1], ny, frames);
+        }
+        vec![(xk, x), (yk, y)]
+    }
+}
+
+/// The value of an axis at frame `f`.
+fn value_at<T: Copy + Default>(values: &[(u64, T)], f: u64) -> T {
+    let i = values.partition_point(|(a, _)| *a <= f);
+    if i == 0 { T::default() } else { values[i - 1].1 }
+}
+
+/// The run of one value around frame `f`: `[start, end)`.
+fn run_at<T>(values: &[(u64, T)], f: u64, frames: u64) -> (u64, u64) {
+    let i = values.partition_point(|(a, _)| *a <= f);
+    (if i == 0 { 0 } else { values[i - 1].0 }, values.get(i).map_or(frames, |v| v.0))
+}
+
+/// The frames a quick input at frame `f` covers: the run already there when the stick is
+/// off centre on `f` (so it can be changed as a whole), else a new one `len` frames long,
+/// like a click on an empty button cell, cut short where the next input begins.
+fn input_at<T: Copy + Default + PartialEq>(values: &[(u64, T)], f: u64, frames: u64, len: u64) -> (u64, u64) {
+    let (a, b) = run_at(values, f, frames);
+    if value_at(values, f) != T::default() { (a, b) } else { (f, (f + len.max(1)).min(b)) }
+}
+
+/// `values` with frames `[a, b)` set to `v`; what came after `b` stays as it was.
+fn set_range<T: Copy + Default + PartialEq>(values: &[(u64, T)], a: u64, b: u64, v: T, frames: u64) -> Vec<(u64, T)> {
+    let after = value_at(values, b);
+    let mut out: Vec<(u64, T)> = values.iter().copied().filter(|(f, _)| *f < a || *f > b).collect();
+    out.push((a, v));
+    if b < frames {
+        out.push((b, after));
+    }
+    out.sort_by_key(|(f, _)| *f);
+    // Only the frames where the value changes.
+    let mut now = T::default();
+    out.retain(|(_, v)| *v != std::mem::replace(&mut now, *v));
+    out
+}
+
+/// Setting an axis by dragging: up and down for the value, on the input under the pointer
+/// (or a new short one); dragging across picks the frames instead.
+struct AxisDrag {
+    key: InputKey,
+    /// The row's top and bottom, in content y.
+    lane: (f32, f32),
+    anchor: u64,
+    current: u64,
+    /// The frames a drag that doesn't go across sets (`input_at`).
+    span: (u64, u64),
+    value: i32,
+    /// The furthest the row's values go.
+    max: i32,
+    start: Pos2,
+    moved: bool,
+}
+
+impl AxisDrag {
+    /// The frames the drag sets, `[a, b)`.
+    fn range(&self) -> (u64, u64) {
+        if self.current == self.anchor { self.span } else { (self.anchor.min(self.current), self.anchor.max(self.current) + 1) }
+    }
+}
+
+/// The change of value nearest frame position `ff`, within `slack` frames: its index in
+/// `values`. Beside a short run the reach is less, so the run itself can still be grabbed.
+fn edge_near(values: &[(u64, i32)], ff: f32, slack: f32, frames: u64) -> Option<usize> {
+    let j = values.partition_point(|(f, _)| (*f as f32) < ff);
+    let away = |i: &usize| (values[*i].0 as f32 - ff).abs();
+    let i = [j.checked_sub(1), (j < values.len()).then_some(j)].into_iter().flatten().filter(|i| values[*i].0 > 0).min_by(|a, b| away(a).total_cmp(&away(b)))?;
+    let (before, after) = (if i == 0 { 0 } else { values[i - 1].0 }, values.get(i + 1).map_or(frames, |n| n.0));
+    let narrow = (values[i].0 - before).min(after.saturating_sub(values[i].0)) as f32;
+    (away(&i) <= slack.min(narrow * 0.3)).then_some(i)
+}
+
+/// How far the change at `values[i]` can be dragged: an input on either side keeps at least
+/// one frame, and a stretch of 0 can go altogether.
+fn edge_limits(values: &[(u64, i32)], i: usize, frames: u64) -> (u64, u64) {
+    let (before, left) = if i == 0 { (0, 0) } else { values[i - 1] };
+    let after = values.get(i + 1).map_or(frames, |n| n.0);
+    (if left != 0 { before + 1 } else { before }, if values[i].1 != 0 { after.saturating_sub(1).max(values[i].0) } else { after })
+}
+
+/// Dragging the boundary between two values of an axis: one side grows as the other shrinks.
+struct AxisEdge {
+    key: InputKey,
+    /// The frame the boundary was on, and the frame it is on now.
+    at: u64,
+    to: u64,
+    /// How far it can go (`edge_limits`).
+    limits: (u64, u64),
+    /// The values before and after it.
+    sides: (i32, i32),
+    /// Alt: the frames it passes over are left at 0, opening a gap.
+    gap: bool,
+}
+
+impl AxisEdge {
+    /// The frames that change, `[a, b)`, and their new value.
+    fn change(&self) -> Option<(u64, u64, i32)> {
+        let v = if self.gap { 0 } else if self.to < self.at { self.sides.1 } else { self.sides.0 };
+        (self.to != self.at).then(|| (self.at.min(self.to), self.at.max(self.to), v))
+    }
+}
+
+/// Typing an axis's value for frames `[a, b)`, in a box at `pos`.
+struct AxisType {
+    key: InputKey,
+    a: u64,
+    b: u64,
+    text: String,
+    pos: Pos2,
+    focus: bool,
 }
 
 struct Group {
@@ -84,6 +281,8 @@ struct Group {
     device: u32,
     name: String,
     rows: Vec<Row>,
+    /// The controller's sticks, below its buttons.
+    axes: Vec<Axis>,
     /// All rows' spans merged, drawn on the header.
     union: Vec<(u64, u64)>,
     /// Frames with non-binary input lines (axes, pointer positions).
@@ -93,7 +292,7 @@ struct Group {
 
 impl Group {
     fn used(&self) -> bool {
-        self.presses > 0 || !self.other.is_empty()
+        self.presses > 0 || !self.other.is_empty() || self.axes.iter().any(|a| !a.values.is_empty())
     }
 }
 
@@ -110,6 +309,7 @@ struct Model {
     id: String,
     gen: u64,
     all_buttons: bool,
+    controls: Controls,
     frames: u64,
     groups: Vec<Group>,
     markers: Vec<Marker>,
@@ -137,7 +337,7 @@ fn build_side(col: &Collection, id: &str, groups: &[Group]) -> Option<Side> {
             }
         }
     }
-    let rows = groups.iter().map(|g| g.rows.iter().map(|row| if keys.contains(&row.key) { r.binary_spans(row.key) } else { vec![] }).collect()).collect();
+    let rows = groups.iter().map(|g| g.rows.iter().map(|row| if keys.contains(&row.key) || format::direction_of(row.key).is_some() { r.binary_spans(row.key) } else { vec![] }).collect()).collect();
     let union = groups
         .iter()
         .map(|g| merge(keys.iter().filter(|k| k.port == g.port && k.device == g.device).flat_map(|k| r.binary_spans(*k)).collect()))
@@ -186,6 +386,9 @@ pub struct RollState {
     /// Selected presses.
     sel: BTreeSet<PressId>,
     gesture: Option<Gesture>,
+    axis_drag: Option<AxisDrag>,
+    axis_edge: Option<AxisEdge>,
+    axis_type: Option<AxisType>,
     scrubbing: bool,
     jump_to: Option<u64>,
     /// Record mode is on: the ruler is tinted red and the roll's own keys (Delete,
@@ -195,7 +398,7 @@ pub struct RollState {
 
 impl Default for RollState {
     fn default() -> Self {
-        RollState { px_per_frame: 4.0, scroll_x: 0.0, scroll_y: 0.0, follow: true, all_buttons: false, labels: true, markers_open: false, draw: false, open: HashMap::new(), gen: 0, model: None, drag: None, last_len: 4, sel: BTreeSet::new(), gesture: None, scrubbing: false, jump_to: None, recording: false }
+        RollState { px_per_frame: 4.0, scroll_x: 0.0, scroll_y: 0.0, follow: true, all_buttons: false, labels: true, markers_open: false, draw: false, open: HashMap::new(), gen: 0, model: None, drag: None, last_len: 4, sel: BTreeSet::new(), gesture: None, axis_drag: None, axis_edge: None, axis_type: None, scrubbing: false, jump_to: None, recording: false }
     }
 }
 
@@ -235,6 +438,15 @@ fn key_label(key: InputKey) -> String {
     }
 }
 
+/// What a row is called, and libretro's name for it when that is another.
+fn labels(controls: &Controls, key: InputKey) -> (String, Option<String>) {
+    let raw = controls::control_name(key).unwrap_or_else(|| key_label(key));
+    match controls.label(key) {
+        Some(l) if l != raw => (l.to_string(), Some(raw)),
+        _ => (raw, None),
+    }
+}
+
 pub fn merge(mut v: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
     v.sort();
     let mut out: Vec<(u64, u64)> = vec![];
@@ -247,7 +459,7 @@ pub fn merge(mut v: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
     out
 }
 
-fn build_model(col: &Collection, id: &str, gen: u64, all_buttons: bool) -> Model {
+fn build_model(col: &Collection, id: &str, gen: u64, all_buttons: bool, controls: &Controls) -> Model {
     let r = &col.segments[id];
     let frames = r.frames().unwrap_or(0);
     let mut used: BTreeSet<InputKey> = BTreeSet::new();
@@ -255,17 +467,23 @@ fn build_model(col: &Collection, id: &str, gen: u64, all_buttons: bool) -> Model
     let mut markers = vec![];
     let mut groups_wanted: BTreeSet<(u32, u32)> = BTreeSet::new();
     // Joypads on the collection's ports, and always at least two of them.
-    for p in &col.config.ports {
+    for p in col.config.ports.iter().filter(|p| p.port > 0) {
         if let Ok(d) = format::device_from_name(&p.device) {
             if d & 0xff == DEVICE_JOYPAD {
-                groups_wanted.insert((p.port, DEVICE_JOYPAD));
+                groups_wanted.insert((p.port - 1, DEVICE_JOYPAD));
             }
         }
     }
+    // A stick's axes are rows of their controller.
+    let mut axes_used: BTreeSet<InputKey> = BTreeSet::new();
     groups_wanted.insert((0, DEVICE_JOYPAD));
     groups_wanted.insert((1, DEVICE_JOYPAD));
     for l in &r.lines {
         match &l.command {
+            Command::Input { key, .. } if controls::is_axis(*key) => {
+                groups_wanted.insert((key.port, DEVICE_JOYPAD));
+                axes_used.insert(*key);
+            }
             Command::Input { key, .. } => {
                 groups_wanted.insert((key.port, key.device));
                 if format::is_binary(*key) {
@@ -292,7 +510,17 @@ fn build_model(col: &Collection, id: &str, gen: u64, all_buttons: bool) -> Model
     let mut groups = vec![];
     for (port, device) in groups_wanted {
         let ids: Vec<u32> = match device {
-            DEVICE_JOYPAD => JOYPAD_ORDER.iter().enumerate().filter(|(i, id)| all_buttons || *i < JOYPAD_BASIC || used.contains(&InputKey { port, device, index: 0, id: **id })).map(|(_, id)| *id).collect(),
+            // The buttons the core or the project names; for a core that names none, the
+            // usual eight. Anything the segment presses shows whatever else.
+            DEVICE_JOYPAD => JOYPAD_ORDER
+                .iter()
+                .enumerate()
+                .filter(|(i, id)| {
+                    let key = InputKey { port, device, index: 0, id: **id };
+                    all_buttons || used.contains(&key) || controls.has(key) || (!controls.core_knows(port) && *i < JOYPAD_BASIC && !controls.hidden(key))
+                })
+                .map(|(_, id)| *id)
+                .collect(),
             DEVICE_MOUSE => {
                 let mut v = vec![2, 3, 6];
                 v.extend(used.iter().filter(|k| k.port == port && k.device == device && !v.contains(&k.id)).map(|k| k.id).collect::<Vec<_>>());
@@ -313,17 +541,36 @@ fn build_model(col: &Collection, id: &str, gen: u64, all_buttons: bool) -> Model
             };
             for key in keys {
                 let spans = r.binary_spans(key);
-                rows.push(Row { key, label: key_label(key), spans });
+                let (label, raw) = labels(controls, key);
+                rows.push(Row { key, label, raw, spans });
+            }
+        }
+        let mut axes = vec![];
+        if device == DEVICE_JOYPAD {
+            for index in 0..2 {
+                for ax in Axis::pair(port, index, r, controls) {
+                    let key = ax.key;
+                    if controls.directions(key) {
+                        // The project names this axis's directions: two buttons, left or up first.
+                        for positive in [false, true] {
+                            let key = format::direction(key, positive);
+                            let (label, raw) = labels(controls, key);
+                            rows.push(Row { key, label, raw, spans: r.binary_spans(key) });
+                        }
+                    } else if all_buttons || axes_used.contains(&key) || controls.has(key) {
+                        axes.push(ax);
+                    }
+                }
             }
         }
         let presses = rows.iter().map(|r| r.spans.len()).sum();
         let union = merge(rows.iter().flat_map(|r| r.spans.iter().copied()).collect());
         let mut oth = other.remove(&(port, device)).unwrap_or_default();
         oth.dedup();
-        groups.push(Group { port, device, name: format!("P{} {}", port + 1, device_name(device)), rows, union, other: oth, presses });
+        groups.push(Group { port, device, name: format!("P{} {}", port + 1, device_name(device)), rows, axes, union, other: oth, presses });
     }
     markers.sort_by_key(|m| m.frame);
-    Model { id: id.to_string(), gen, all_buttons, frames, groups, markers, prev: None, next: None }
+    Model { id: id.to_string(), gen, all_buttons, controls: controls.clone(), frames, groups, markers, prev: None, next: None }
 }
 
 /// Spans overlapping `[f0, f1)`, found by binary search.
@@ -374,6 +621,8 @@ fn tick_step(px_per_frame: f32) -> u64 {
 enum Item {
     Header(usize),
     Row(usize, usize),
+    /// A stick's axis: group, and which of its axes.
+    Axis(usize, usize),
 }
 
 impl RollState {
@@ -422,10 +671,10 @@ impl RollState {
         self.jump_to = Some(frame);
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, col: &Collection, id: &str, playhead: Option<u64>, playing: bool, nb: &Neighbours) -> Option<Action> {
+    pub fn show(&mut self, ui: &mut egui::Ui, col: &Collection, controls: &Controls, id: &str, playhead: Option<u64>, playing: bool, nb: &Neighbours) -> Option<Action> {
         let side_id = |s: &Option<Side>| s.as_ref().map(|s| s.id.clone());
         let stale = match &self.model {
-            Some(m) => m.id != id || m.gen != self.gen || m.all_buttons != self.all_buttons || side_id(&m.prev) != nb.prev || side_id(&m.next) != nb.next,
+            Some(m) => m.id != id || m.gen != self.gen || m.all_buttons != self.all_buttons || m.controls != *controls || side_id(&m.prev) != nb.prev || side_id(&m.next) != nb.next,
             None => true,
         };
         if stale {
@@ -441,9 +690,12 @@ impl RollState {
                 };
                 self.drag = None;
                 self.gesture = None;
+                self.axis_drag = None;
+                self.axis_edge = None;
+                self.axis_type = None;
                 self.sel.clear();
             }
-            let mut m = build_model(col, id, self.gen, self.all_buttons);
+            let mut m = build_model(col, id, self.gen, self.all_buttons, controls);
             m.prev = nb.prev.as_deref().and_then(|p| build_side(col, p, &m.groups));
             m.next = nb.next.as_deref().and_then(|n| build_side(col, n, &m.groups));
             // Keep only selected presses that still exist after the edit.
@@ -543,6 +795,10 @@ impl RollState {
                 for ri in 0..g.rows.len() {
                     items.push((y, y + ROW_H, Item::Row(gi, ri)));
                     y += ROW_H;
+                }
+                for ai in 0..g.axes.len() {
+                    items.push((y, y + AXIS_H, Item::Axis(gi, ai)));
+                    y += AXIS_H;
                 }
             }
         }
@@ -797,6 +1053,18 @@ impl RollState {
                     self.scrubbing = true;
                 } else if p.y < rows_top && p.x >= tl_left {
                     // The marker lane, between markers: nothing.
+                } else if let (true, Some((y0, y1, Item::Axis(gi, ai)))) = (p.x >= tl_left, hit(p).map(|ix| items[ix])) {
+                    // A stick's axis: dragging across picks the frames, up and down the value.
+                    let f = frame_at(p.x).min(m.frames.saturating_sub(1));
+                    let ax = &m.groups[gi].axes[ai];
+                    self.axis_type = None;
+                    if let Some(i) = edge_near(&ax.values, ff_at(p.x), 3.0 / self.px_per_frame, m.frames) {
+                        // On the boundary between two values: dragging moves it.
+                        let at = ax.values[i].0;
+                        self.axis_edge = Some(AxisEdge { key: ax.key, at, to: at, limits: edge_limits(&ax.values, i, m.frames), sides: (if i == 0 { 0 } else { ax.values[i - 1].1 }, ax.values[i].1), gap: mods.alt });
+                    } else {
+                    self.axis_drag = Some(AxisDrag { key: ax.key, lane: (y0, y1), anchor: f, current: f, span: input_at(&ax.values, f, m.frames, self.last_len), value: value_at(&ax.values, f), max: ax.max, start: p, moved: false });
+                    }
                 } else if p.x >= tl_left && !header_at(p) && hit(p).is_some() && mods.command && press_at(p).is_some() {
                     // Ctrl/Cmd+drag from a press: select an area.
                     let a = (ff_at(p.x), p.y - rows_top + self.scroll_y);
@@ -881,6 +1149,23 @@ impl RollState {
                 d.current = frame_at(p.x).min(m.frames.saturating_sub(1));
                 if d.current != d.anchor {
                     d.moved = true;
+                }
+            }
+            if let Some(e) = &mut self.axis_edge {
+                e.to = (ff_at(p.x).round().max(0.0) as u64).clamp(e.limits.0, e.limits.1);
+                e.gap = mods.alt;
+            }
+            if let Some(d) = &mut self.axis_drag {
+                d.current = frame_at(p.x).min(m.frames.saturating_sub(1));
+                if (p - d.start).length() > 3.0 {
+                    d.moved = true;
+                }
+                if d.moved {
+                    // The row's middle is 0. Near the middle and near either edge the value
+                    // snaps, so nothing and all the way are easy to hit.
+                    let (top, bot) = (rows_top + d.lane.0 - self.scroll_y + 2.0, rows_top + d.lane.1 - self.scroll_y - 2.0);
+                    let k = (((top + bot) * 0.5 - p.y) / ((bot - top) * 0.5)).clamp(-1.0, 1.0);
+                    d.value = if k.abs() < 0.08 { 0 } else if k.abs() > 0.94 { d.max * k.signum() as i32 } else { (k * d.max as f32).round() as i32 };
                 }
             }
         }
@@ -970,6 +1255,21 @@ impl RollState {
                 }
             }
             self.scrubbing = false;
+            if let Some(e) = self.axis_edge.take() {
+                if let (Some(ax), Some((a, b, v))) = (m.groups.iter().flat_map(|g| &g.axes).find(|a| a.key == e.key), e.change()) {
+                    action = Some(Action::EditAxes { edits: ax.set(a, b, v, m.frames), from: a });
+                }
+            }
+            if let Some(d) = self.axis_drag.take().filter(|d| d.moved) {
+                if let Some(ax) = m.groups.iter().flat_map(|g| &g.axes).find(|a| a.key == d.key) {
+                    let (a, b) = d.range();
+                    if d.current != d.anchor {
+                        // As with a press: the next quick input is as long as this one.
+                        self.last_len = b - a;
+                    }
+                    action = Some(Action::EditAxes { edits: ax.set(a, b, d.value, m.frames), from: a });
+                }
+            }
             if let Some(d) = self.drag.take() {
                 let (a, b) = d.span(self.last_len, m.frames);
                 let row = &m.groups[d.group].rows[d.row];
@@ -984,6 +1284,47 @@ impl RollState {
                     self.sel.insert((row.key, t.0));
                 }
                 action = Some(Action::Edit { edits: vec![(row.key, spans)], from: a });
+            }
+        }
+
+        // A stick's axis: a double-click types a value for the input under the pointer (or
+        // a new short one), and a right-click puts the input there back to 0.
+        if let (true, Some(p)) = (resp.hovered() && self.axis_drag.as_ref().is_none_or(|d| !d.moved), pointer) {
+            if let (true, Some((_, _, Item::Axis(gi, ai)))) = (p.x >= tl_left && !outside(p.x), hit(p).map(|ix| items[ix])) {
+                let ax = &m.groups[gi].axes[ai];
+                let f = frame_at(p.x).min(m.frames.saturating_sub(1));
+                let (a, b) = input_at(&ax.values, f, m.frames, self.last_len);
+                if resp.double_clicked() {
+                    self.axis_drag = None;
+                    self.axis_edge = None;
+                    self.axis_type = Some(AxisType { key: ax.key, a, b, text: value_at(&ax.values, f).to_string(), pos: p, focus: true });
+                } else if ui.input(|i| i.pointer.secondary_pressed()) && value_at(&ax.values, f) != 0 {
+                    action = Some(Action::EditAxes { edits: ax.set(a, b, 0, m.frames), from: a });
+                }
+            }
+        }
+        if let Some(mut ty) = self.axis_type.take() {
+            let mut keep = true;
+            egui::Area::new(egui::Id::unique("roll_axis_type")).order(egui::Order::Foreground).fixed_pos(ty.pos + egui::vec2(8.0, 8.0)).show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.label(egui::RichText::new(format!("Frames {} to {}", ty.a, ty.b.saturating_sub(1))).small().weak());
+                    let edit = ui.add(egui::TextEdit::singleline(&mut ty.text).desired_width(70.0));
+                    if ty.focus {
+                        ty.focus = false;
+                        edit.request_focus();
+                    } else if edit.lost_focus() {
+                        // Enter keeps the value; Escape or a click elsewhere drops it.
+                        keep = false;
+                        if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            if let (Ok(v), Some(ax)) = (ty.text.trim().parse::<i32>(), m.groups.iter().flat_map(|g| &g.axes).find(|a| a.key == ty.key)) {
+                                action = Some(Action::EditAxes { edits: ax.set(ty.a, ty.b, v.clamp(-ax.max, ax.max), m.frames), from: ty.a });
+                            }
+                        }
+                    }
+                });
+            });
+            if keep {
+                self.axis_type = Some(ty);
             }
         }
 
@@ -1175,6 +1516,51 @@ impl RollState {
                         }
                     }
                 }
+                Item::Axis(gi, ai) => {
+                    let g = &m.groups[gi];
+                    let ax = &g.axes[ai];
+                    rp.rect_filled(row_rect, 0.0, Color32::from_gray(18));
+                    let c = port_color(g.port, g.device);
+                    let (mid, half) = ((top + bot) * 0.5, (bot - top) * 0.5 - 2.0);
+                    // A bar from the middle (0) to the value, up for positive, for each run of
+                    // one value, and the number where it fits.
+                    let bar = |a: u64, b: u64, v: i32, c: Color32, text: Color32| {
+                        if v == 0 {
+                            return;
+                        }
+                        let (x0, x1) = (x_of(a as f32), x_of(b as f32));
+                        let y = mid - (v as f32 / ax.max as f32).clamp(-1.0, 1.0) * half;
+                        rp.rect_filled(Rect::from_min_max(Pos2::new(x0, y.min(mid)), Pos2::new(x1.max(x0 + 1.5), y.max(mid))), 0.0, c);
+                        if x1 - x0 > 44.0 {
+                            rp.text(Pos2::new(x0.max(tl_left) + 3.0, if v > 0 { bot - 2.0 } else { top + 2.0 }), if v > 0 { Align2::LEFT_BOTTOM } else { Align2::LEFT_TOP }, v.to_string(), FontId::monospace(9.5), text);
+                        }
+                    };
+                    // While a boundary is dragged, the row as it would be.
+                    let edge = self.axis_edge.as_ref().filter(|e| e.key == ax.key);
+                    let moved = edge.and_then(|e| e.change()).map(|(a, b, v)| set_range(&ax.values, a, b, v, m.frames));
+                    let values = moved.as_ref().unwrap_or(&ax.values);
+                    let i0 = values.partition_point(|(f, _)| *f <= f0).saturating_sub(1);
+                    for (i, &(a, v)) in values.iter().enumerate().skip(i0) {
+                        if a >= f1 {
+                            break;
+                        }
+                        let b = values.get(i + 1).map_or(m.frames, |n| n.0);
+                        bar(a, b, v, c.gamma_multiply(0.75), Color32::from_gray(230));
+                    }
+                    rp.line_segment([Pos2::new(tl_left, mid), Pos2::new(end_x, mid)], Stroke::new(1.0, Color32::from_white_alpha(28)));
+                    if let Some(e) = edge {
+                        let x = x_of(e.to as f32);
+                        rp.line_segment([Pos2::new(x, top + 1.0), Pos2::new(x, bot - 1.0)], Stroke::new(1.5, Color32::WHITE));
+                    }
+                    if let Some(d) = self.axis_drag.as_ref().filter(|d| d.moved && d.key == ax.key) {
+                        let (a, b) = d.range();
+                        let r = Rect::from_min_max(Pos2::new(x_of(a as f32), top + 1.0), Pos2::new(x_of(b as f32).max(x_of(a as f32) + 2.0), bot - 1.0));
+                        rp.rect_filled(r, 0.0, Color32::from_gray(18));
+                        rp.rect_stroke(r, 0.0, Stroke::new(1.0, Color32::from_white_alpha(90)), StrokeKind::Inside);
+                        bar(a, b, d.value, Color32::WHITE.gamma_multiply(0.75), Color32::WHITE);
+                    }
+                    rp.line_segment([Pos2::new(rect.left(), bot - 0.5), Pos2::new(rect.right(), bot - 0.5)], Stroke::new(1.0, Color32::from_gray(34)));
+                }
             }
         }
         // Grid lines, per-frame lines when zoomed in, and the area past the end.
@@ -1297,7 +1683,18 @@ impl RollState {
                         if let Some(ix) = hit(p) {
                             let what = match items[ix].2 {
                                 Item::Header(gi) => m.groups[gi].name.clone(),
-                                Item::Row(gi, ri) => format!("{} {}", m.groups[gi].name, m.groups[gi].rows[ri].label),
+                                Item::Row(gi, ri) => {
+                                    let row = &m.groups[gi].rows[ri];
+                                    format!("{} {}{}", m.groups[gi].name, row.label, row.raw.as_ref().map(|r| format!(" ({r})")).unwrap_or_default())
+                                }
+                                Item::Axis(gi, ai) => {
+                                    let ax = &m.groups[gi].axes[ai];
+                                    let v = match self.axis_drag.as_ref().filter(|d| d.moved && d.key == ax.key) {
+                                        Some(d) => d.value,
+                                        None => value_at(&ax.values, f),
+                                    };
+                                    format!("{} {}{} · {v}", m.groups[gi].name, ax.label, ax.raw.as_ref().map(|r| format!(" ({r})")).unwrap_or_default())
+                                }
                             };
                             hover_text = Some(format!("{what} · frame {f}"));
                         }
@@ -1381,6 +1778,18 @@ impl RollState {
                         lrows.circle_filled(Pos2::new(rect.left() + 17.0, mid), 2.5, port_color(g.port, g.device));
                     }
                 }
+                Item::Axis(gi, ai) => {
+                    let g = &m.groups[gi];
+                    let ax = &g.axes[ai];
+                    let has = !ax.values.is_empty();
+                    lrows.text(Pos2::new(rect.left() + 26.0, mid - 6.0), Align2::LEFT_CENTER, &ax.label, FontId::monospace(10.5), if has { Color32::from_gray(225) } else { Color32::from_gray(110) });
+                    // The value on the frame shown.
+                    let v = value_at(&ax.values, playhead.unwrap_or(0));
+                    lrows.text(Pos2::new(rect.left() + 26.0, mid + 7.0), Align2::LEFT_CENTER, v.to_string(), FontId::monospace(9.5), if v != 0 { port_color(g.port, g.device) } else { Color32::from_gray(90) });
+                    if has {
+                        lrows.circle_filled(Pos2::new(rect.left() + 17.0, mid - 6.0), 2.5, port_color(g.port, g.device));
+                    }
+                }
             }
         }
         lp.line_segment([Pos2::new(tl_left - 0.5, rect.top()), Pos2::new(tl_left - 0.5, rect.bottom())], Stroke::new(1.0, Color32::from_gray(55)));
@@ -1402,8 +1811,10 @@ impl RollState {
             Some(Gesture::Move { dr, .. }) => Some(if mods.alt || *dr != 0 { egui::CursorIcon::AllScroll } else { egui::CursorIcon::Grabbing }),
             Some(Gesture::Resize { .. }) => Some(egui::CursorIcon::ResizeHorizontal),
             Some(Gesture::Marquee { .. }) => None,
+            None if self.axis_edge.is_some() => Some(egui::CursorIcon::ResizeHorizontal),
             None if self.drag.is_some() => Some(egui::CursorIcon::Crosshair),
             None if resp.hovered() => match pointer {
+                Some(p) if p.x >= tl_left && !outside(p.x) && self.axis_drag.is_none() && matches!(hit(p).map(|ix| items[ix].2), Some(Item::Axis(gi, ai)) if edge_near(&m.groups[gi].axes[ai].values, ff_at(p.x), 3.0 / self.px_per_frame, m.frames).is_some()) => Some(egui::CursorIcon::ResizeHorizontal),
                 Some(p) if mods.command && in_rows(p) && press_at(p).is_some() => None,
                 Some(p) => match press_at(p) {
                     Some((_, _, edge)) => Some(if edge.is_some() { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::Grab }),
@@ -1482,4 +1893,110 @@ fn move_presses(m: &Model, sel: &BTreeSet<PressId>, delta: i64, dr: i64) -> Opti
         edits.push((key, spans));
     }
     Some((edits, from, new_sel))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn axis_runs() {
+        let v = vec![(10, 500), (20, -300), (30, 0)];
+        assert_eq!((value_at(&v, 0), value_at(&v, 10), value_at(&v, 19), value_at(&v, 20), value_at(&v, 99)), (0, 500, 500, -300, 0));
+        assert_eq!(run_at(&v, 5, 100), (0, 10));
+        assert_eq!(run_at(&v, 25, 100), (20, 30));
+        assert_eq!(run_at(&v, 60, 100), (30, 100));
+        assert_eq!(run_at::<i16>(&[], 60, 100), (0, 100));
+    }
+
+    #[test]
+    fn a_quick_input_is_short() {
+        let v = vec![(10, 500), (20, 0), (50, -300)];
+        // On an input: the whole of it. On nothing: `len` frames, stopping at the next input.
+        assert_eq!(input_at(&v, 12, 100, 4), (10, 20));
+        assert_eq!(input_at(&v, 30, 100, 4), (30, 34));
+        assert_eq!(input_at(&v, 48, 100, 4), (48, 50));
+        assert_eq!(input_at(&v, 3, 100, 4), (3, 7));
+        // An empty row doesn't mean the whole segment, and the end of the segment is the limit.
+        assert_eq!(input_at::<i32>(&[], 0, 100, 4), (0, 4));
+        assert_eq!(input_at::<i32>(&[], 98, 100, 4), (98, 100));
+    }
+
+    #[test]
+    fn a_boundary_between_two_values_moves() {
+        let v = vec![(10, 500), (20, -300), (30, 0), (50, 80)];
+        // Near a change, and not in the middle of a run or at the segment's start.
+        assert_eq!(edge_near(&v, 20.4, 1.0, 100), Some(1));
+        assert_eq!(edge_near(&v, 19.2, 1.0, 100), Some(1));
+        assert_eq!(edge_near(&v, 15.0, 1.0, 100), None);
+        assert_eq!(edge_near(&[(0, 5), (8, 0)], 0.1, 1.0, 100), None);
+        // Beside a one-frame run the reach is short, so the run can still be grabbed.
+        assert_eq!(edge_near(&[(10, 5), (11, 9), (12, 0)], 10.5, 1.0, 100), None);
+        assert_eq!(edge_near(&[(10, 5), (11, 9), (12, 0)], 10.8, 1.0, 100), Some(1));
+        // Each input keeps a frame; a stretch of 0 can be covered.
+        assert_eq!(edge_limits(&v, 1, 100), (11, 29));
+        assert_eq!(edge_limits(&v, 0, 100), (0, 19));
+        assert_eq!(edge_limits(&v, 2, 100), (21, 50));
+        assert_eq!(edge_limits(&v, 3, 100), (30, 99));
+        // Left: the value after takes the frames. Right: the value before does. Nothing else moves.
+        let edge = |to, gap| AxisEdge { key: InputKey { port: 0, device: format::DEVICE_ANALOG, index: 0, id: 0 }, at: 20, to, limits: (11, 29), sides: (500, -300), gap };
+        let moved = |e: AxisEdge| e.change().map(|(a, b, x)| set_range(&v, a, b, x, 100));
+        assert_eq!(moved(edge(16, false)), Some(vec![(10, 500), (16, -300), (30, 0), (50, 80)]));
+        assert_eq!(moved(edge(24, false)), Some(vec![(10, 500), (24, -300), (30, 0), (50, 80)]));
+        assert_eq!(moved(edge(20, false)), None);
+        // Alt leaves a gap.
+        assert_eq!(moved(edge(16, true)), Some(vec![(10, 500), (16, 0), (20, -300), (30, 0), (50, 80)]));
+    }
+
+    #[test]
+    fn setting_a_range_keeps_what_follows() {
+        let v = vec![(10, 500), (20, -300), (30, 0)];
+        // Inside one run: the run's value comes back after the range.
+        assert_eq!(set_range(&v, 12, 15, 9, 100), vec![(10, 500), (12, 9), (15, 500), (20, -300), (30, 0)]);
+        // Across changes: those inside go, and the value at the end resumes.
+        assert_eq!(set_range(&v, 5, 25, 9, 100), vec![(5, 9), (25, -300), (30, 0)]);
+        // Ending on a change keeps that change's value, and at the segment's end nothing resumes.
+        assert_eq!(value_at(&set_range(&v, 15, 20, 9, 100), 20), -300);
+        assert_eq!(set_range(&v, 90, 100, 9, 100), vec![(10, 500), (20, -300), (30, 0), (90, 9)]);
+        // An empty axis: the range, then back to 0.
+        assert_eq!(set_range(&[], 3, 6, -7, 100), vec![(3, -7), (6, 0)]);
+    }
+
+    fn segment(body: &str) -> dj_core::format::Segment {
+        dj_core::format::Segment::parse(&format!("dj-segment 1\nid: a\nparent: none\nframes: 100\n---\n{body}")).unwrap()
+    }
+
+    #[test]
+    fn a_stick_without_units_shows_libretro_values_with_up_positive() {
+        let r = segment("10 P1 ANALOG LEFT X 1000\n10 P1 ANALOG LEFT Y -2000\n");
+        let [x, y] = Axis::pair(0, 0, &r, &Controls::default());
+        assert_eq!((x.values.clone(), y.values.clone(), x.max), (vec![(10, 1000)], vec![(10, 2000)], 32767));
+        // Setting Y up writes a negative libretro value, and only Y's lines.
+        let edits = y.set(20, 30, 500, 100);
+        assert_eq!(edits, vec![(y.key, vec![(10, -2000), (20, -500), (30, -2000)])]);
+    }
+
+    #[test]
+    fn a_stick_with_console_units_keeps_the_other_axis() {
+        let units = StickUnits::for_core("mupen64plus-next", &Default::default());
+        let controls = Controls::default().with_units(units);
+        let u = units.unwrap();
+        let (ax, ay) = u.from_console(30, 50);
+        let r = segment(&format!("10 P1 ANALOG LEFT X {ax}\n10 P1 ANALOG LEFT Y {ay}\n"));
+        let [x, y] = Axis::pair(0, 0, &r, &controls);
+        assert_eq!((x.values.clone(), y.values.clone(), x.max), (vec![(10, 30)], vec![(10, 50)], 80));
+        // The right stick has no conversion.
+        assert_eq!(Axis::pair(0, 1, &r, &controls)[0].max, 32767);
+        // X to -60 on frames 20 to 39: both axes are rewritten there, and the game still reads Y as 50.
+        let mut r2 = r.clone();
+        for (key, values) in x.set(20, 40, -60, 100) {
+            r2.set_values(key, &values).unwrap();
+        }
+        let [x2, y2] = Axis::pair(0, 0, &r2, &controls);
+        assert_eq!(x2.values, vec![(10, 30), (20, -60), (40, 30)]);
+        assert_eq!(y2.values, vec![(10, 50)]);
+        // Frames the edit didn't cover keep their lines exactly.
+        assert_eq!((value_at(&x2.stick.0, 15), value_at(&x2.stick.1, 50)), (ax, ay));
+    }
+
 }

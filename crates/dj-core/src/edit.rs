@@ -6,13 +6,66 @@
 //! about the segments it shows: dj-gui has its undo steps and its list of unsaved edits.
 
 use crate::collection::Collection;
-use crate::format::{input_text, Command, InputKey, Segment};
+use crate::format::{device_from_name, device_name, input_text, Command, InputKey, Segment};
 use anyhow::{anyhow, Result};
 use std::collections::{BTreeMap, HashMap};
 
 /// An id for a new segment.
 pub fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+/// The lines a root made from the state at the start of frame `frame` of `id` needs on its
+/// frame 0 to be where `id` was. A save state holds the console's memory, not what dj was
+/// doing to it: so a `[DEVICE]` line for each port whose device isn't the one config.toml
+/// plugs in (an ancestor's line, or one of `id`'s before `frame`), and an input line for
+/// each button held and each stick off centre on that frame.
+pub fn carried_lines(col: &Collection, id: &str, frame: u64) -> Result<Vec<String>> {
+    let r = col.segments.get(id).ok_or_else(|| anyhow!("no segment {id}"))?;
+    let mut plugged: BTreeMap<u32, u32> = BTreeMap::new();
+    for p in &col.config.ports {
+        plugged.insert(p.port.saturating_sub(1), device_from_name(&p.device)?);
+    }
+    let mut devices = crate::player::devices_at_start(col, id)?;
+    let mut held: BTreeMap<InputKey, i16> = BTreeMap::new();
+    for l in r.lines.iter().take_while(|l| l.frame < frame) {
+        match &l.command {
+            Command::Input { key, value, impulse: false } => {
+                held.insert(*key, *value);
+            }
+            Command::Device { port, device } => {
+                devices.insert(*port, *device);
+            }
+            _ => {}
+        }
+    }
+    let mut out: Vec<String> = devices.iter().filter(|(port, dev)| plugged.get(port) != Some(dev)).map(|(port, dev)| format!("[DEVICE] P{} {}", port + 1, device_name(*dev))).collect();
+    out.extend(held.into_iter().filter(|(_, v)| *v != 0).map(|(k, v)| input_text(k, v)));
+    Ok(out)
+}
+
+/// A root segment that starts from blobs already in `blobs/`: a save state (`snapshot`,
+/// taken `start_frame` frames after power-on), a save file (`sram`), or both. `lines` go on
+/// its frame 0 (`carried_lines`). Whether the core can load the blobs is
+/// `Session::add_root`'s to check; this only writes the segment.
+pub fn root_from_blobs(id: &str, title: &str, frames: u64, snapshot: Option<&str>, sram: Option<&str>, start_frame: u64, lines: &[String]) -> Result<Segment> {
+    let mut r = Segment::new(id, None, title, frames);
+    if let Some(s) = snapshot {
+        r.set("snapshot", s);
+        if start_frame > 0 {
+            r.set("start-frame", &start_frame.to_string());
+        }
+    }
+    if let Some(s) = sram {
+        r.set("sram", s);
+    }
+    if frames == 0 && !lines.is_empty() {
+        return Err(anyhow!("a segment with no frames can't hold the inputs and devices carried over"));
+    }
+    for l in lines {
+        r.insert_line(0, l)?;
+    }
+    Ok(r)
 }
 
 /// `id`'s child, if it has exactly one.
@@ -265,10 +318,20 @@ mod tests {
     #[test]
     fn reparent_drops_hashes_and_under_a_parent_the_save_file() {
         let mut col = project("reparent");
+        // A root with a snapshot stays one when it is moved to the root again.
+        col.segments.get_mut("d").unwrap().set("snapshot", "S");
+        reparent(&mut col, &["d".to_string()], None);
+        assert_eq!(col.segments["d"].get("snapshot"), Some("S"));
         let done = reparent(&mut col, &["d".to_string(), "nope".to_string()], Some("c"));
         assert_eq!(done, ["d"]);
         let d = &col.segments["d"];
-        assert_eq!((d.parent(), d.get("sram")), (Some("c"), None));
+        assert_eq!((d.parent(), d.get("sram"), d.get("snapshot")), (Some("c"), None, None));
+        // The project still loads: only a root may name blobs.
+        col.save_segment("d").unwrap();
+        col.save_segment("c").unwrap();
+        col.save_segment("b").unwrap();
+        col.save_segment("a").unwrap();
+        assert!(Collection::open(&col.root).is_ok());
         reparent(&mut col, &["b".to_string()], None);
         let b = &col.segments["b"];
         assert_eq!(b.parent(), None);
@@ -305,6 +368,35 @@ mod tests {
         let mut col = project("split-differs");
         assert!(split(&mut col, "b", 2, "CUT", "up").unwrap());
         assert!(split(&mut col, "nope", 2, "CUT", "up2").is_err());
+    }
+
+    #[test]
+    fn a_root_cut_from_a_frame_carries_what_is_held_and_plugged_in() {
+        let mut col = project("carried");
+        // An ancestor plugs a mouse into port 2; `c` holds B and a stick, and lets A go.
+        col.segments.get_mut("a").unwrap().insert_line(3, "[DEVICE] P2 MOUSE").unwrap();
+        let c = col.segments.get_mut("c").unwrap();
+        for (f, l) in [(0, "P1 JOYPAD B 1"), (1, "P1 JOYPAD A 1"), (2, "P1 JOYPAD A 0"), (2, "P1 ANALOG LEFT X -9000"), (4, "P1 JOYPAD START 1")] {
+            c.insert_line(f, l).unwrap();
+        }
+        assert_eq!(carried_lines(&col, "c", 3).unwrap(), ["[DEVICE] P2 MOUSE", "P1 JOYPAD B 1", "P1 ANALOG LEFT X -9000"]);
+        // Before anything is pressed only the device is carried, and a root with the
+        // config's own devices carries nothing.
+        assert_eq!(carried_lines(&col, "c", 0).unwrap(), ["[DEVICE] P2 MOUSE"]);
+        assert!(carried_lines(&col, "d", 5).unwrap().is_empty());
+        assert!(carried_lines(&col, "nope", 0).is_err());
+        // The root made from them says the same on its frame 0, and plays as written.
+        let lines = carried_lines(&col, "c", 3).unwrap();
+        let r = root_from_blobs("n", "cut", 60, Some("S"), None, 18, &lines).unwrap();
+        assert_eq!((r.parent(), r.get("snapshot"), r.get("start-frame"), r.get("sram")), (None, Some("S"), Some("18"), None));
+        let again = Segment::parse(&r.to_text()).unwrap();
+        assert_eq!(again.lines.len(), 3);
+        assert!(again.lines.iter().all(|l| l.frame == 0));
+        assert!(matches!(again.lines[0].command, Command::Device { port: 1, .. }));
+        // A save file alone is a power-on root: no start frame.
+        let r = root_from_blobs("m", "", 60, None, Some("R"), 18, &[]).unwrap();
+        assert_eq!((r.get("snapshot"), r.get("start-frame"), r.get("sram")), (None, None, Some("R")));
+        assert!(root_from_blobs("z", "", 0, Some("S"), None, 0, &lines).is_err());
     }
 
     #[test]

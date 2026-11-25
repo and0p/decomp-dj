@@ -50,6 +50,23 @@ pub struct RomConfig {
     pub sha256: String,
     #[serde(default)]
     pub file: String,
+    /// true: the game's code and data may be published with the project (homebrew, open
+    /// source, a game the author owns), so tools don't warn before making a snapshot.
+    /// Missing: not said, and they do. It changes that warning and nothing else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shareable: Option<bool>,
+}
+
+/// What tools say before they make a snapshot blob, after a first sentence of their own
+/// saying what is about to be written (`Collection::warns_about_snapshots`).
+pub const SNAPSHOT_WARNING: &str = "A snapshot is a copy of the console's memory, which can include the game's code and data. Don't publish it unless you have the right to share the game. To avoid this, start a root segment from a save file, set up the state with memory writes, or use an in-game password.";
+
+/// `[gui]` in .local/local.toml: what the GUI remembers for this person and project.
+#[derive(Serialize, Deserialize, Default, Clone, Debug)]
+pub struct GuiLocal {
+    /// "Don't show this again" on the warning before a snapshot is made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hide_snapshot_warning: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -66,6 +83,13 @@ pub struct CoreConfig {
 pub struct PortConfig {
     pub port: u32,
     pub device: String,
+    /// What to call this port's inputs, instead of the core's names for them: a control
+    /// (`B`, `L2`, `LEFT X`: docs/config.md#ports) and its label.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub labels: BTreeMap<String, String>,
+    /// Controls the console doesn't have, left out of the GUI.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hide: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -198,6 +222,9 @@ pub struct LocalConfig {
     /// `[record]`: the options in the GUI's Record dropdown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record: Option<RecordLocal>,
+    /// `[gui]`: what the GUI remembers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gui: Option<GuiLocal>,
 }
 
 /// `rom` and `core` are a path in local.toml's short form, or a table with a `path` key
@@ -221,7 +248,7 @@ fn path_or_table<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<
 
 /// The keys `LocalConfig` owns: `save_local` writes these and keeps every other key of
 /// local.toml as it is.
-const LOCAL_KEYS: [&str; 8] = ["rom", "core", "database", "max_memory_mb", "cache", "mcp", "keyboard", "record"];
+const LOCAL_KEYS: [&str; 9] = ["rom", "core", "database", "max_memory_mb", "cache", "mcp", "keyboard", "record", "gui"];
 
 fn read_table(p: &Path) -> Result<toml::Table> {
     if !p.exists() {
@@ -435,8 +462,9 @@ impl Collection {
         // Every setting may be in either file; local.toml's win. The format is checked
         // first: a project from a newer dj would only fail to read as settings.
         let table = layered_table(root)?;
-        let warnings = check_versions(&table)?;
+        let mut warnings = check_versions(&table)?;
         let config: Config = toml::Value::Table(table).try_into().with_context(|| format!("reading the settings in {} and .local/local.toml", cfg_path.display()))?;
+        warnings.extend(crate::controls::check(&config.ports));
         config.hash.excluded().with_context(|| format!("reading the settings in {} and .local/local.toml", cfg_path.display()))?;
         let mut segments = BTreeMap::new();
         let mut paths = HashMap::new();
@@ -859,8 +887,9 @@ impl Collection {
         Ok(())
     }
 
-    /// `blobs/<hash>.srm` for the header field `sram`, `blobs/<hash>.state` for `snapshot`.
-    pub fn blob_path(&self, blob: &str, field: &str) -> PathBuf {
+    /// Where a blob named by its whole hash is, as older projects have them
+    /// (`<hash>.srm` for the header field `sram`, `<hash>.state` for `snapshot`).
+    fn hash_named(&self, blob: &str, field: &str) -> PathBuf {
         self.root.join("blobs").join(format!("{blob}.{}", blob_ext(field)))
     }
 
@@ -870,7 +899,7 @@ impl Collection {
         for r in self.segments.values() {
             for field in ["snapshot", "sram"] {
                 let Some(blob) = r.get(field) else { continue };
-                let path = self.blob_path(blob, field);
+                let path = self.hash_named(blob, field);
                 if path.exists() {
                     continue;
                 }
@@ -887,22 +916,186 @@ impl Collection {
         Ok(())
     }
 
-    pub fn read_blob(&self, blob: &str, field: &str) -> Result<Vec<u8>> {
-        let data = std::fs::read(self.blob_path(blob, field)).with_context(|| format!("reading blob {blob}"))?;
-        let actual = blob_id(&data);
-        if actual != blob {
-            bail!("blob {blob} has the wrong content (hashes to {actual})");
-        }
-        Ok(data)
+    /// Whether tools warn before making a snapshot blob (`SNAPSHOT_WARNING`): unless the
+    /// project says its game may be shared (`[rom] shareable = true`).
+    pub fn warns_about_snapshots(&self) -> bool {
+        self.config.rom.shareable != Some(true)
     }
 
-    /// Copies `data` into blobs/ under its content hash and returns that id.
-    pub fn write_blob(&self, data: &[u8], field: &str) -> Result<String> {
-        let id = blob_id(data);
-        std::fs::create_dir_all(self.root.join("blobs"))?;
-        std::fs::write(self.blob_path(&id, field), data)?;
-        Ok(id)
+    /// The files in blobs/ of `field`'s kind, by name.
+    fn blob_files(&self, field: &str) -> Vec<PathBuf> {
+        let Ok(entries) = std::fs::read_dir(self.root.join("blobs")) else { return vec![] };
+        let mut out: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().and_then(|x| x.to_str()) == Some(blob_ext(field)) && p.is_file()).collect();
+        out.sort();
+        out
     }
+
+    /// The file holding the blob with content hash `blob` (what a header says), and its
+    /// bytes. Looks at the files whose names end with the hash's first digits (or are the
+    /// hash), then at every other file of that kind, so one renamed by hand is still found.
+    fn find_blob(&self, blob: &str, field: &str) -> Result<(PathBuf, Vec<u8>)> {
+        let files = self.blob_files(field);
+        let stem = |p: &PathBuf| p.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let (named, others): (Vec<&PathBuf>, Vec<&PathBuf>) = files.iter().partition(|p| {
+            let s = stem(p);
+            s == blob || blob_name_parts(&s).is_some_and(|(_, h)| blob.starts_with(h))
+        });
+        let mut wrong = None;
+        for p in named {
+            let data = std::fs::read(p).with_context(|| format!("reading {}", p.display()))?;
+            let actual = blob_id(&data);
+            if actual == blob {
+                return Ok((p.clone(), data));
+            }
+            wrong = Some((stem(p), actual));
+        }
+        for p in others {
+            if file_hash(p).as_deref() == Some(blob) {
+                return Ok((p.clone(), std::fs::read(p)?));
+            }
+        }
+        match wrong {
+            Some((name, actual)) => bail!("blob {name} has the wrong content (it hashes to {actual}, the segment names {blob})"),
+            None => bail!("no {} with hash {blob} in blobs/", if field == "sram" { "save file" } else { "snapshot" }),
+        }
+    }
+
+    pub fn read_blob(&self, blob: &str, field: &str) -> Result<Vec<u8>> {
+        Ok(self.find_blob(blob, field)?.1)
+    }
+
+    /// The file of the blob with content hash `blob`, if blobs/ has it.
+    pub fn blob_path(&self, blob: &str, field: &str) -> Option<PathBuf> {
+        self.find_blob(blob, field).ok().map(|(p, _)| p)
+    }
+
+    /// The name people gave that blob: its file's name without the hash digits and the
+    /// extension. None when blobs/ doesn't have it or it is named by its hash alone.
+    pub fn blob_name_of(&self, blob: &str, field: &str) -> Option<String> {
+        let stem = self.blob_path(blob, field)?.file_stem()?.to_string_lossy().into_owned();
+        match blob_name_parts(&stem) {
+            Some((name, _)) => Some(name.to_string()),
+            None => (stem != blob).then_some(stem),
+        }
+    }
+
+    /// Copies `data` into blobs/ as `<name>-<first 8 hex of its hash>` and returns the
+    /// content hash, which is what a segment's header says. Content blobs/ already has,
+    /// under any name, is not copied again.
+    pub fn write_blob(&self, data: &[u8], field: &str, name: &str) -> Result<String> {
+        Ok(self.write_blob_new(data, field, name)?.0)
+    }
+
+    /// `write_blob`, also saying which file it made, if it made one.
+    pub fn write_blob_new(&self, data: &[u8], field: &str, name: &str) -> Result<(String, Option<PathBuf>)> {
+        check_blob_name(name)?;
+        let id = blob_id(data);
+        if self.find_blob(&id, field).is_ok() {
+            return Ok((id, None));
+        }
+        let path = self.root.join("blobs").join(format!("{}.{}", blob_file_stem(name, &id), blob_ext(field)));
+        if path.exists() {
+            bail!("blobs/ already has another file called {}: choose another name", path.file_name().unwrap_or_default().to_string_lossy());
+        }
+        std::fs::create_dir_all(self.root.join("blobs"))?;
+        std::fs::write(&path, data)?;
+        Ok((id, Some(path)))
+    }
+
+    /// The snapshots and save files in blobs/, by kind and file name.
+    pub fn blobs(&self) -> Vec<BlobFile> {
+        let mut out = vec![];
+        for field in ["snapshot", "sram"] {
+            for path in self.blob_files(field) {
+                let Some(hash) = file_hash(&path) else { continue };
+                let stem = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let users = self.segments.iter().filter(|(_, r)| r.get(field) == Some(hash.as_str())).map(|(id, _)| id.clone()).collect();
+                out.push(BlobFile { size: std::fs::metadata(&path).map_or(0, |m| m.len()), stem, hash, field, users });
+            }
+        }
+        out
+    }
+
+    /// Gives the blob with content hash `blob` the name `name`: renames its file, keeping
+    /// the hash digits. No segment changes, since segments name the hash. Returns the new
+    /// file name without its extension.
+    pub fn rename_blob(&self, blob: &str, field: &str, name: &str) -> Result<String> {
+        check_blob_name(name)?;
+        let (from, data) = self.find_blob(blob, field)?;
+        let stem = blob_file_stem(name, blob);
+        let to = self.root.join("blobs").join(format!("{stem}.{}", blob_ext(field)));
+        if to != from {
+            if to.exists() && std::fs::read(&to)? != data {
+                bail!("blobs/ already has another file called {}: choose another name", to.file_name().unwrap_or_default().to_string_lossy());
+            }
+            std::fs::rename(&from, &to).with_context(|| format!("renaming {}", from.display()))?;
+        }
+        Ok(stem)
+    }
+}
+
+/// A file in blobs/: its name without the extension, the hash of its content (what a
+/// segment's header says), which field it is for, and the segments that name it.
+pub struct BlobFile {
+    pub stem: String,
+    pub hash: String,
+    pub field: &'static str,
+    pub size: u64,
+    pub users: Vec<String>,
+}
+
+/// The content hash of a file in blobs/, remembered until the file changes.
+fn file_hash(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    let stamp = (meta.modified().ok(), meta.len());
+    static SEEN: std::sync::Mutex<Option<HashMap<PathBuf, ((Option<std::time::SystemTime>, u64), String)>>> = std::sync::Mutex::new(None);
+    if let Some((s, h)) = SEEN.lock().unwrap().get_or_insert_with(HashMap::new).get(path) {
+        if *s == stamp {
+            return Some(h.clone());
+        }
+    }
+    let id = blob_id(&std::fs::read(path).ok()?);
+    SEEN.lock().unwrap().get_or_insert_with(HashMap::new).insert(path.to_path_buf(), (stamp, id.clone()));
+    Some(id)
+}
+
+/// How many hex digits of its content hash a blob's file name ends with.
+pub const BLOB_HASH_LEN: usize = 8;
+
+/// A blob's file name without the extension: the name people chose and the start of its
+/// content hash `id`.
+pub fn blob_file_stem(name: &str, id: &str) -> String {
+    format!("{name}-{}", &id[..BLOB_HASH_LEN.min(id.len())])
+}
+
+/// `world-3-save-a1b2c3d4` as (`world-3-save`, `a1b2c3d4`). None for a file named some
+/// other way (by its whole hash, as older projects have them, or by hand).
+pub fn blob_name_parts(stem: &str) -> Option<(&str, &str)> {
+    let (name, h) = stem.rsplit_once('-')?;
+    (!name.is_empty() && h.len() == BLOB_HASH_LEN && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))).then_some((name, h))
+}
+
+/// A blob name made from any text (a segment's title, a file's name): letters, digits,
+/// `_` and `.` stay, everything else becomes one `-`.
+pub fn blob_name(text: &str) -> String {
+    let mut out = String::new();
+    for c in text.trim().chars() {
+        if c.is_alphanumeric() || c == '_' || c == '.' {
+            out.push(c);
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let out: String = out.trim_matches(['-', '.']).chars().take(60).collect();
+    let out = out.trim_end_matches(['-', '.']);
+    if out.is_empty() { "blob".to_string() } else { out.to_string() }
+}
+
+pub fn check_blob_name(name: &str) -> Result<()> {
+    if name.is_empty() || name != blob_name(name) {
+        bail!("`{name}` can't be a blob's name: use letters, digits, `-`, `_` and `.`, at most 60, starting and ending with a letter or digit (for example `{}`)", blob_name(name));
+    }
+    Ok(())
 }
 
 pub fn blob_id(data: &[u8]) -> String {
@@ -1072,5 +1265,36 @@ mod version_tests {
         col.save_segment("a").unwrap();
         assert!(std::fs::read_to_string(dir.join("config.toml")).unwrap().contains("dj = \"999.0.0\""));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn the_snapshot_warning_settings() {
+        // A project says its game may be shared; nothing else turns the warning off.
+        let config = |rom: &str| -> Config { toml::from_str(&format!("format = 1\nname = \"t\"\n[rom]\nsha256 = \"\"\n{rom}[core]\nname = \"c\"\nbuild = \"c\"\n[hash]\nalgorithm = \"blake3\"\nregions = [\"RAM\"]\n")).unwrap() };
+        assert_eq!(config("").rom.shareable, None);
+        assert_eq!(config("shareable = true\n").rom.shareable, Some(true));
+        assert!(!toml::to_string(&config("")).unwrap().contains("shareable"), "not written unless set");
+        // "Don't show this again" is [gui] in local.toml.
+        let l: LocalConfig = toml::from_str("[gui]\nhide_snapshot_warning = true\n").unwrap();
+        assert_eq!(l.gui.and_then(|g| g.hide_snapshot_warning), Some(true));
+        assert!(LOCAL_KEYS.contains(&"gui"));
+    }
+
+
+    #[test]
+    fn blob_names() {
+        assert_eq!(blob_name("World 3: the save!"), "World-3-the-save");
+        assert_eq!(blob_name("../../etc/passwd"), "etc-passwd");
+        assert_eq!(blob_name("  "), "blob");
+        assert_eq!(blob_name(&"x".repeat(80)).len(), 60);
+        assert!(check_blob_name("world-3_save.v2").is_ok());
+        for bad in ["", "a b", "a/b", "-a", "a-", ".a"] {
+            assert!(check_blob_name(bad).is_err(), "{bad}");
+        }
+        let id = blob_id(b"data");
+        let stem = blob_file_stem("world-3", &id);
+        assert_eq!(blob_name_parts(&stem), Some(("world-3", &id[..8])));
+        // A whole hash, as older projects name blobs, is not a name.
+        assert_eq!(blob_name_parts(&id), None);
+        assert_eq!(blob_name_parts("world-3"), None);
     }
 }

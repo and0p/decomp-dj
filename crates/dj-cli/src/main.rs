@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use dj_core::collection::{sha256_file, Collection, Config, CoreConfig, HashConfig, LocalConfig, PortConfig, RomConfig, Status, SymbolsConfig};
+use dj_core::collection::{sha256_file, Collection, Status};
 use dj_core::format::Segment;
 use dj_core::hydrate::Hydrator;
 use dj_core::player::{PlayOptions, SegmentResult, Session};
@@ -72,7 +72,7 @@ fn real_main() -> Result<()> {
         if cli.project.is_some() {
             bail!("dj init takes the folder to create as its argument, not -C");
         }
-        return init(dir, name, rom, core, core_build.clone(), options, symbols.as_deref());
+        return init(dir.as_deref(), name.as_deref(), rom, core, core_build.clone(), options, symbols.as_deref());
     }
     let dir = project_dir(cli.project.as_deref())?;
     // Batch commands play in a child dj, so a core that crashes or hangs costs a segment,
@@ -95,7 +95,8 @@ fn real_main() -> Result<()> {
     }
     match cli.cmd {
         Cmd::Init { .. } => unreachable!("dj init is handled above"),
-        Cmd::New { parent, title, frames } => new_segment(&dir, parent, &title, frames),
+        Cmd::New { parent, title, frames, snapshot: None, sram: None, from: None, .. } => new_segment(&dir, parent, &title, frames),
+        Cmd::New { title, frames, snapshot, sram, start_frame, from, at, blob_name, core, .. } => new_root(&dir, &title, frames, snapshot.as_deref(), sram.as_deref(), start_frame.unwrap_or(0), from.as_deref().zip(at), blob_name.as_deref(), &core.local(false)),
         Cmd::Status => status(&dir),
         Cmd::ImportTas { file, title, strict, rom } => import_tas(&dir, &file, title.as_deref(), strict, &rom.local()),
         Cmd::ExportTas { segment, out, through, author, strict, rom } => export_tas(&dir, &segment, &out, through, author.as_deref(), strict, &rom.local()),
@@ -117,10 +118,14 @@ fn real_main() -> Result<()> {
         Cmd::Frontier { what, query } => queries::frontier(&dir, what.as_deref(), &query),
         Cmd::ConnectorCheck { query } => exit_with(queries::connector_check(&dir, &query)?),
         Cmd::Snapshot { segment, frame, out, core, no_db } => snapshot_cmd(&dir, &segment, frame, &out, &core.local(no_db)),
+        Cmd::Sram { segment, frame, out, core, no_db } => sram_cmd(&dir, &segment, frame, &out, &core.local(no_db)),
+        Cmd::Blob { cmd: BlobCmd::List } => blob_list(&dir),
+        Cmd::Blob { cmd: BlobCmd::Rename { blob, name } } => blob_rename(&dir, &blob, &name),
         Cmd::Sql { query } => sql(&dir, &query),
         Cmd::Worker => mcp::worker::run(dir.clone()),
         Cmd::Repin { core } => exit_with(repin(&dir, &core.local(false))?),
         Cmd::Upgrade => upgrade(&dir),
+        Cmd::Controls { core } => controls(&dir, &core.local(true)),
         Cmd::Mcp { allow } => mcp::serve(dir.clone(), mcp::tools::Options { allow }),
         Cmd::Cache { cmd: CacheCmd::Stats } => cache_stats(&dir),
         Cmd::Cache { cmd: CacheCmd::Gc { core, force } } => cache_gc(&dir, &core.local(false), force),
@@ -206,28 +211,3 @@ fn open_session(col: &Collection, local: &Local) -> Result<Session> {
     Ok(s)
 }
 
-/// Prints what the connector reports about its regions (docs/connectors.md), and checks
-/// that the bytes it hands out match the ROM file where it says they lie.
-fn print_connector_regions(core: &mut libretro::Core, rom: &Path) -> Result<()> {
-    let file = std::fs::read(rom).with_context(|| format!("reading {}", rom.display()))?;
-    let facts = core.region_facts();
-    let code = dj_core::analysis::code_region(&facts);
-    println!("connector regions:");
-    for (i, f) in facts.iter().enumerate() {
-        let place = f.file_offset.map(|o| format!("ROM file from byte {o}")).unwrap_or_else(|| "not from the ROM file".into());
-        let decoder = match f.cpu.as_deref() {
-            Some(c) if dj_core::analysis::has_decoder(c) => format!("{c}"),
-            Some(c) => format!("{c} (no built-in decoder: a plugin or the core can add one, docs/decoders.md)"),
-            None => "no instruction set".into(),
-        };
-        let mark = if f.name == code { "  <- coverage rolls up here" } else { "" };
-        println!("  {:<6} {:>8} bytes  {decoder}, {place}{mark}", f.name, f.size);
-        if let (Some(off), Some(data)) = (f.file_offset, core.region_data(i)) {
-            let off = off as usize;
-            if file.get(off..off + data.len()) != Some(data) {
-                eprintln!("warning: the connector's {} bytes don't match {} from byte {off}", f.name, rom.display());
-            }
-        }
-    }
-    Ok(())
-}

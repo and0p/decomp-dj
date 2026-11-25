@@ -84,6 +84,7 @@ format = "ca65-dbg"
 | --- | --- | --- |
 | `sha256` | yes | SHA-256 of the ROM file exactly as the core loads it (headers included). The tools refuse a ROM that doesn't match. |
 | `file` | no | A file name hint for people. The hash is what counts. |
+| `shareable` | no | `true` says the game's code and data may be published with the project (homebrew, open source, a game you own), so the tools don't warn before making a snapshot ([editing.md](editing.md#a-root-from-a-snapshot)). It changes that warning and nothing else: dj never refuses a snapshot or decides what a project shares. |
 | `path` | no | Where the ROM is, usually set in `.local/local.toml` ([layering](#layering)). |
 
 ### `[core]`
@@ -111,8 +112,53 @@ One table per controller port, giving the device plugged in at power-on. Segment
 | --- | --- |
 | `port` | Port number, starting at 1. |
 | `device` | `NONE`, `JOYPAD`, `MOUSE`, `KEYBOARD`, `LIGHTGUN`, `ANALOG`, `POINTER`, or a raw libretro device number (for subclassed devices). |
+| `labels` | Optional. What to call this port's controls in the GUI, instead of the core's names: a table of control to label. |
+| `hide` | Optional. Controls the console doesn't have, left out of the GUI: a list of controls. |
 
 Ports that aren't listed keep the core's default.
+
+#### Naming the controls
+
+A segment file names inputs as libretro does (`P1 JOYPAD B 1`), whatever the console calls
+them. The GUI shows better names when it has them: a core usually says what each input is
+on its console, and `labels` and `hide` correct or trim that. They only change what the GUI
+shows; no segment, hash or stored state depends on them.
+
+A control is a joypad button as segment lines spell it (`B`, `Y`, `SELECT`, `START`, `UP`,
+`DOWN`, `LEFT`, `RIGHT`, `A`, `X`, `L`, `R`, `L2`, `R2`, `L3`, `R3`), a stick's axis
+(`LEFT X`, `LEFT Y`, `RIGHT X`, `RIGHT Y`), or one direction of an axis (`RIGHT X-`,
+`RIGHT X+`, `RIGHT Y-`, `RIGHT Y+`, and the same for `LEFT`: minus is left and up).
+
+A label on a direction makes that axis two buttons in the GUI, for a console whose buttons
+a core reads from a stick: the N64's C buttons are the right stick on Mupen64Plus-Next. A
+press on such a button writes the axis pushed all the way (`P1 ANALOG RIGHT Y -32767`),
+and the button shows as held wherever the axis is more than half way over.
+
+`dj controls` lists each port's controls with
+the core's name and the project's label for each, which is where to start from.
+
+```toml
+[[ports]]
+port = 1
+device = "JOYPAD"
+# Mupen64Plus-Next calls these "(C1)", "(C4)" and "C Buttons Mode".
+hide = ["A", "X", "R2"]
+
+[ports.labels]
+B = "A"
+Y = "B"
+L2 = "Z"
+"LEFT X" = "Stick X"
+"LEFT Y" = "Stick Y"
+"RIGHT Y-" = "C Up"
+"RIGHT Y+" = "C Down"
+"RIGHT X-" = "C Left"
+"RIGHT X+" = "C Right"
+```
+
+The GUI shows, for each controller: the controls the core or `labels` name, less those in
+`hide`; for a core that names nothing, the usual eight joypad buttons; and always whatever
+the segment uses. "All buttons" in the piano roll shows every control.
 
 ### `[hash]`
 
@@ -304,6 +350,7 @@ diff_every = 300
 | `max_memory_mb` | `512` | How much memory the GUI's in-memory snapshots for the current segment may use (Emulation > Snapshot memory). |
 | `[cache]` | none | Any key from `config.toml`'s `[cache]`, overriding it on this machine only. |
 | `[keyboard]`, `[record]` | defaults | The GUI's recording keys and options ([gui.md](gui.md#recording)). |
+| `[gui] hide_snapshot_warning` | `false` | "Don't show this again" on the GUI's warning before it makes a snapshot ([editing.md](editing.md#a-root-from-a-snapshot)). |
 | anything else | | Any setting from `config.toml`, overriding it on this machine ([layering](#layering)). |
 | `[mcp] allow` | `"draft"` | What `dj mcp` lets an agent do: `"query"`, `"draft"` or `"save"` ([mcp.md](mcp.md#what-an-agent-may-do)). `--allow` overrides it. |
 | `[mcp] gui` | `false` | Whether the GUI works with agents: their drafts, sessions and the shared view. MCP > Enable MCP writes it. |
@@ -317,7 +364,7 @@ Next to it in `.local/`, the tools keep `cache.db` (the [local database](databas
 These aren't settings, but they sit next to `config.toml` and change results:
 
 - `annotations.toml`: what you know about the ROM that the symbol maps don't say ([below](#annotationstoml)).
-- `blobs/`: SRAM and snapshot files a root segment starts from, named by content hash.
+- `blobs/`: SRAM and snapshot files a root segment starts from, each file a name and 8 digits of its content hash ([segments.md](segments.md#blobs)).
 
 ## annotations.toml
 

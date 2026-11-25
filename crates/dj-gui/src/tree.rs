@@ -48,6 +48,9 @@ impl App {
         let Some(col) = &self.col else {
             ui.add_space(8.0);
             ui.label(t::NO_PROJECT_OPEN);
+            if ui.button(t::NEW_PROJECT).on_hover_text(t::NEW_PROJECT_TIP).clicked() {
+                self.new_project();
+            }
             if ui.button(t::OPEN_PROJECT).clicked() {
                 if let Some(dir) = rfd::FileDialog::new().pick_folder() {
                     self.open_collection(&dir);

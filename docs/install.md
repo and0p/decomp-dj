@@ -91,20 +91,37 @@ target/release/dj-gui examples/thwaite
 ## A first project
 
 ```sh
-dj init --rom game.nes
-cd game
-dj-gui .
+cd my-decomp
+dj init
 ```
 
-`init` needs only the ROM. It makes a folder named after the ROM file (`game` here; give another as `dj init my-game --rom game.nes`), names the project after the folder (`--name` for another), and:
+On a terminal, `dj init` asks for what it needs, one question at a time. Enter takes the answer in brackets:
 
-- **Finds the core** for the ROM's console (NES, GBA and N64, told by the ROM's header or extension): `mesen_libretro`, `mgba_libretro` or `mupen64plus_next_libretro`, looked for in `$DJ_CORES`, then `cores/` next to `dj`, then `build/cores/` of a source checkout (where the connectors' `build.sh` put them), then `build/cores/` in the current folder. If the core isn't there, it says which script builds it. `--core FILE` names a core's file, for any other console; `--core NAME` looks for that name in the same folders.
-- **Writes `config.toml`** with every core option pinned and the console's defaults ([config.md](config.md#console-defaults)), and remembers where the ROM and the core are in `.local/local.toml`.
-- **Makes a first root segment**, 60 frames from power-on, to record into (`--no-segment` leaves it out; `dj new` makes more).
-- **Keeps the ROM out of git.** `.local/` goes into the project's `.gitignore`, and so does the ROM when it is in the project's folder. Lines are added to a `.gitignore` that is there, never taken away.
+```text
+A new dj project. Press Enter to take the answer in [brackets].
 
-Before it writes anything, `init` prints the project it would make. On a terminal it then asks once, `Create it? [Y/n]`: Enter or `y` makes it, anything else makes nothing and exits with status 1. `--yes` (`-y`) skips the question, and it is never asked when dj's input or output isn't a terminal (a script, CI, an agent), so the flags alone decide there.
+ROM file: game.nes
+Project folder [.dj]:
+Project name [game]:
+  game.nes is an NES ROM. dj suggests the Mesen core, which has a coverage connector.
+Core [/opt/decomp-dj/cores/mesen_libretro.so]:
+Symbol map, if you have one (.dbg, .mlb, .map, ELF or CSV) [none]:
+Make a first segment to record into (60 frames from power-on)? [Y/n]:
+```
 
-Every command after `init` works on the project it is run in (or the one `-C DIR` names). Pass `--symbols FILE` to
-add a symbol map ([coverage.md](coverage.md#symbol-maps)). Then open the project in the
-GUI to record inputs, or edit the segment file by hand ([segments.md](segments.md)).
+It then loads the core with the ROM, shows the project it would make, and asks `Create it? [Y/n]`. Nothing is written before that yes; a no, or Ctrl-D at any question, makes nothing and exits with status 1.
+
+- **The ROM** is the one thing with no default. A path can be typed, pasted or dropped into the terminal (quotes, `\ ` and `~/` are understood).
+- **The folder** is `.dj` in the current folder unless you name another. dj finds a project in `.dj` from that folder and from any folder below it, as git finds a repository, so the project sits inside the decomp or port it is about. A project in `.dj` is named after the ROM file, one in a folder of its own after the folder.
+- **The core** suggested is the one for the ROM's console (NES, GBA and N64, told by the ROM's header or extension): `mesen_libretro`, `mgba_libretro` or `mupen64plus_next_libretro`, looked for in `$DJ_CORES`, then `cores/` next to `dj`, then `build/cores/` of a source checkout (where the connectors' `build.sh` put them), then `build/cores/` in the current folder. If it isn't there, dj says which script builds it and asks for a core's file. For another console, give any libretro core's file, or a name to look for in those folders.
+- **The first segment** is a root segment of 60 frames from power-on, to record into (`dj new` makes more).
+
+What a flag says isn't asked: `dj init my-game --rom game.nes --name "My Game" --core mesen_libretro --symbols game.dbg --no-segment` asks only for the last yes. **`--yes` (`-y`) asks nothing** and takes the default for everything the flags don't say; so does a `dj init` whose input or output isn't a terminal (a script, CI, an agent). Both need `--rom`:
+
+```sh
+dj init --rom game.nes --yes
+```
+
+`init` writes `config.toml` with every core option pinned and the console's defaults ([config.md](config.md#console-defaults)), and remembers where the ROM and the core are in `.local/local.toml`. It keeps the ROM out of git: `.local/` goes into the project's `.gitignore`, and so does the ROM when it is in the project's folder. Lines are added to a `.gitignore` that is there, never taken away. A ROM beside `.dj`, in your own repository's folder, is yours to ignore there: dj doesn't edit a `.gitignore` outside the project.
+
+Every command after `init` works on the project it is run in (or the one `-C DIR` names): `dj status` shows the tree. Then open the project in the GUI to record inputs (`dj-gui .dj`), or edit the segment file by hand ([segments.md](segments.md)). A symbol map can also be added later ([coverage.md](coverage.md#symbol-maps)).

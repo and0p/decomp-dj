@@ -18,7 +18,7 @@ use dj_core::hydrate::Hydrator;
 use dj_core::player::{PlayOptions, SegmentResult, Session};
 
 use cli::*;
-use commands::{cache::*, check::*, project::*, tas::*};
+use commands::{cache::*, check::*, init::*, project::*, tas::*};
 
 fn main() {
     // Started as a worker for code dj doesn't trust (docs/decoders.md, docs/cli.md)?
@@ -72,7 +72,8 @@ fn real_main() -> Result<()> {
         if cli.project.is_some() {
             bail!("dj init takes the folder to create as its argument, not -C");
         }
-        return exit_with(init(dir.as_deref(), name.as_deref(), rom, core.as_deref(), core_build.clone(), options, symbols.as_deref(), !no_segment, *yes)?);
+        let args = InitArgs { dir: dir.clone(), name: name.clone(), rom: rom.clone(), core: core.clone(), core_build: core_build.clone(), options: options.clone(), symbols: symbols.clone(), no_segment: *no_segment, yes: *yes };
+        return exit_with(init(args)?);
     }
     let dir = project_dir(cli.project.as_deref())?;
     // Batch commands play in a child dj, so a core that crashes or hangs costs a segment,
@@ -146,22 +147,36 @@ fn is_project(d: &Path) -> bool {
     t.get("rom").is_some_and(|v| v.is_table()) && t.get("core").is_some_and(|v| v.is_table())
 }
 
-/// The project a command works on: `-C DIR`, else the nearest folder with a project, from
-/// the current one up. Other relative paths stay relative to the current folder.
+/// The folder `dj init` makes a project in when it isn't told one: a project kept inside
+/// the folder of what it is about (a decomp's repository), found from there as from inside.
+pub(crate) const PROJECT_SUBDIR: &str = dj_core::scaffold::PROJECT_SUBDIR;
+
+/// The project `d` holds: `d` itself, or the `.dj` folder in it.
+fn project_in(d: &Path) -> Option<PathBuf> {
+    if is_project(d) {
+        return Some(d.to_path_buf());
+    }
+    Some(d.join(PROJECT_SUBDIR)).filter(|sub| is_project(sub))
+}
+
+/// The nearest project from `here` up: at each folder, the folder itself, else its `.dj`.
+fn nearest_project(here: &Path) -> Option<PathBuf> {
+    here.ancestors().find_map(project_in)
+}
+
+/// The project a command works on: `-C DIR` (the folder, or the `.dj` in it), else the
+/// nearest project from the current folder up. Other relative paths stay relative to the
+/// current folder.
 fn project_dir(given: Option<&Path>) -> Result<PathBuf> {
     if let Some(d) = given {
-        if !is_project(d) {
-            bail!("{} isn't a dj project (no config.toml with [rom] and [core])", d.display());
-        }
-        return Ok(d.to_path_buf());
+        return project_in(d).ok_or_else(|| anyhow!("{} isn't a dj project (no config.toml with [rom] and [core], there or in its {PROJECT_SUBDIR} folder)", d.display()));
     }
     let here = std::env::current_dir().context("finding the current folder")?;
-    for d in here.ancestors() {
-        if is_project(d) {
-            return Ok(if d == here { PathBuf::from(".") } else { d.to_path_buf() });
-        }
+    match nearest_project(&here) {
+        // Short, when it's here: the folder shows in messages.
+        Some(d) => Ok(d.strip_prefix(&here).map(|rel| if rel.as_os_str().is_empty() { PathBuf::from(".") } else { rel.to_path_buf() }).unwrap_or(d)),
+        None => bail!("not in a dj project (no config.toml or {PROJECT_SUBDIR}/config.toml here or in a folder above); run dj inside one, or pass -C DIR"),
     }
-    bail!("not in a dj project (no config.toml here or in a folder above); run dj inside one, or pass -C DIR")
 }
 
 /// The old way of naming the project, `dj check examples/thwaite`: the first argument that
@@ -211,3 +226,35 @@ fn open_session(col: &Collection, local: &Local) -> Result<Session> {
     Ok(s)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_project_in_dot_dj_is_found_from_its_folder_and_below() {
+        let tmp = std::env::temp_dir().join(format!("dj-cli-find-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let config = "format = 1\nname = \"g\"\n[rom]\nsha256 = \"\"\n[core]\nname = \"c\"\nbuild = \"1\"\n";
+        // repo/.dj is a project; repo/sub/plain is one too; repo/src is neither.
+        for d in ["repo/.dj", "repo/src/deep", "repo/sub/plain/inner"] {
+            std::fs::create_dir_all(tmp.join(d)).unwrap();
+        }
+        std::fs::write(tmp.join("repo/.dj/config.toml"), config).unwrap();
+        std::fs::write(tmp.join("repo/sub/plain/config.toml"), config).unwrap();
+        // Another tool's config.toml isn't a project.
+        std::fs::write(tmp.join("repo/config.toml"), "[package]\nname = \"x\"\n").unwrap();
+
+        let dj = tmp.join("repo/.dj");
+        assert_eq!(nearest_project(&tmp.join("repo")), Some(dj.clone()));
+        assert_eq!(nearest_project(&tmp.join("repo/src/deep")), Some(dj.clone()));
+        assert_eq!(nearest_project(&dj), Some(dj.clone()));
+        // A nearer project wins, and a folder that is one is taken before its .dj.
+        assert_eq!(nearest_project(&tmp.join("repo/sub/plain/inner")), Some(tmp.join("repo/sub/plain")));
+        assert_eq!(nearest_project(&tmp), None);
+        // -C names the folder or the project in it.
+        assert_eq!(project_dir(Some(&tmp.join("repo"))).unwrap(), dj);
+        assert_eq!(project_dir(Some(&dj)).unwrap(), dj);
+        assert!(project_dir(Some(&tmp.join("repo/src"))).is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

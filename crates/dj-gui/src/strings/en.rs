@@ -389,6 +389,50 @@ pub(crate) const NO_LIBRETRO_CORE_SET_FOR: &str = "No libretro core set for this
 pub(crate) const RUNNING_WITHOUT_THE_LOCAL_DATABASE: &str = "Running without the local database";
 pub(crate) const USING_THE_LOCAL_DATABASE: &str = "Using the local database";
 
+// ---- New project ----
+
+pub(crate) const NEW_PROJECT: &str = "New project…";
+pub(crate) const NEW_PROJECT_TIP: &str = "Make a project from a game's ROM and a core, as dj init does";
+pub(crate) const NEW_PROJECT_TITLE: &str = "New project";
+pub(crate) const NEW_ROM_FILE: &str = "ROM file";
+pub(crate) const NEW_ROM_HINT: &str = "The game's ROM";
+pub(crate) const NEW_BROWSE: &str = "Browse…";
+pub(crate) const NEW_FOLDER: &str = "Folder";
+pub(crate) const NEW_FOLDER_TIP: &str = "The folder the project is made in: config.toml, segments/ and blobs/ go straight into it. A .dj folder is found by dj from the folder it is in and from any below.";
+pub(crate) const NEW_FOLDER_BROWSE_TIP: &str = "The folder you choose becomes the project's own folder";
+pub(crate) const NEW_NAME: &str = "Name";
+pub(crate) const NEW_CORE: &str = "Core";
+pub(crate) const NEW_OTHER_CORE: &str = "Other core file…";
+pub(crate) const NEW_CORE_HINT: &str = "A libretro core's library";
+pub(crate) const NEW_UNKNOWN_CONSOLE: &str = "dj can't tell which console this ROM is for (it knows NES, GBA and N64 ROMs), so it has no core to suggest. Any libretro core plays; one without a connector records no coverage.";
+pub(crate) const NEW_SYMBOL_MAP: &str = "Symbol map";
+pub(crate) const NEW_SYMBOL_MAP_HINT: &str = "None";
+pub(crate) const NEW_SYMBOL_MAP_TIP: &str = "Optional: a cc65 .dbg, Mesen .mlb, GNU ld .map, ELF, CSV or splat symbol_addrs.txt, copied into the project's symbols/ folder. One can be added later from the Functions tab.";
+pub(crate) const NEW_FIRST_SEGMENT: &str = "Make a first segment (60 frames from power-on)";
+pub(crate) const NEW_FIRST_SEGMENT_TIP: &str = "A root segment to record into. Without it, make one with Edit > New root segment.";
+pub(crate) const NEW_FIRST_SEGMENT_TITLE: &str = "Power-on";
+pub(crate) const NEW_CHOOSE_THE_ROM: &str = "Choose the game's ROM file";
+pub(crate) const NEW_CHOOSE_A_FOLDER: &str = "Choose the project's folder";
+pub(crate) const NEW_CHOOSE_A_CORE: &str = "Choose a core";
+pub(crate) const NEW_NAME_THE_PROJECT: &str = "Give the project a name";
+pub(crate) const NEW_LOADING: &str = "Loading the core with the ROM…";
+pub(crate) const NEW_CORE_DIDNT_LOAD: &str = "The core didn't load this ROM";
+pub(crate) const NEW_CORE_LOADS: &str = "The core loads this ROM. The project would pin:";
+pub(crate) const NEW_NOT_CHECKED: &str = "The core hasn't loaded this ROM yet";
+pub(crate) const NEW_CREATE: &str = "Create project";
+pub(crate) const NEW_WAIT_FOR_THE_JOB: &str = "A job is running: make a new project once it's done.";
+pub(crate) const NEW_ROW_CONSOLE: &str = "Console";
+pub(crate) const NEW_ROW_BUILD: &str = "Core build";
+pub(crate) const NEW_ROW_COVERAGE: &str = "Coverage";
+pub(crate) const NEW_ROW_HASHES: &str = "Hashes";
+pub(crate) const NEW_ROW_SNAPSHOTS: &str = "Snapshots";
+pub(crate) const NEW_ROW_CONTROLLER: &str = "Input";
+pub(crate) const NEW_ROW_SYMBOLS: &str = "Symbols";
+pub(crate) const NEW_NO_CONSOLE_DEFAULTS: &str = "No defaults for this core: a plain joypad, RAM hashed";
+pub(crate) const NEW_NO_CONNECTOR: &str = "No: this core has no coverage connector";
+pub(crate) const NEW_COVERAGE_NO_CODE_REGION: &str = "The connector names no code region";
+pub(crate) const NEW_DEFAULT_PRESET: &str = "The default preset (nes-sparse)";
+
 // ---- Keyboard mapping ----
 
 pub(crate) const KEYBOARD_MAPPING_TITLE: &str = "Keyboard mapping";

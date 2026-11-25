@@ -208,13 +208,33 @@ decomp's CI can run it after each build ([ci.md](ci.md)).
 
 | Menu | Holds |
 | --- | --- |
-| File | Open project…, Save (Ctrl/Cmd+S): writes every unsaved segment and moves drafts into `segments/`; when that would leave segments dirty it offers **Clean, then save** or **Save anyway**. Clean, then save saves at once only if the clean changed no ending; otherwise it stops with the changed endings marked **!** and offers **Save**, **Save anyway** or **Review first**, so nothing unreviewed is saved without asking. Save selected segment (writes only that segment's file), Revert selected segment (drops only its unsaved changes and puts back its file; undo brings them back), Reload all from disk (every segment, dropping all unsaved edits), Options… (not yet: GUI preferences), Keyboard mapping… ([below](#recording)), Quit. With unsaved edits, Open, Reload all and Quit (also the window's close button) ask first: **Save and …**, **Discard and …** or **Cancel**. Drafts nobody edited here don't count: they stay in `.local/drafts/`. |
+| File | New project… ([below](#new-project)), Open project…, Save (Ctrl/Cmd+S): writes every unsaved segment and moves drafts into `segments/`; when that would leave segments dirty it offers **Clean, then save** or **Save anyway**. Clean, then save saves at once only if the clean changed no ending; otherwise it stops with the changed endings marked **!** and offers **Save**, **Save anyway** or **Review first**, so nothing unreviewed is saved without asking. Save selected segment (writes only that segment's file), Revert selected segment (drops only its unsaved changes and puts back its file; undo brings them back), Reload all from disk (every segment, dropping all unsaved edits), Options… (not yet: GUI preferences), Keyboard mapping… ([below](#recording)), Quit. With unsaved edits, Open, Reload all and Quit (also the window's close button) ask first: **Save and …**, **Discard and …** or **Cancel**. Drafts nobody edited here don't count: they stay in `.local/drafts/`. |
 | Edit | Undo, Redo, Cut, Copy, Paste at play cursor ([editing.md](editing.md#undo-cut-copy-and-paste)), Select all (Ctrl/Cmd+A: every press in the piano roll), Drag to draw inputs (off to begin with; [editing.md](editing.md#piano-roll)); then the segment edits and Add event at playhead (E) ([editing.md](editing.md#segment-editing)) |
 | View | Zoom in, Zoom out, Follow playhead, Return to the edit ([editing.md](editing.md#return-to-the-edit)), Show every joypad button, Stick pad ([editing.md](editing.md#stick-axes)), Debug console ([below](#debug-console)) |
 | Project | Clean all segments, Replay everything, Use the local database ([database.md](database.md#in-the-gui)), Set ROM…, Set core…, Project settings… (not yet) |
 | Emulation | Play/pause, step, go to start or end, Export save RAM, New root segment from this save ([editing.md](editing.md#a-root-from-a-save-file)), Snapshot memory |
 | Compare | Comparison core, Run, Sync now, Check parity, Re-run old failures or Stop re-running ([above](#comparison-cores)) |
 | MCP | Enable MCP (off by default), Show agent drafts, follow an agent session, Stop following, Share my view with agents ([mcp.md](mcp.md#the-gui)) |
+
+## New project
+
+**File > New project…** (and **New project…** where no project is open) makes a project as `dj init` does ([install.md](install.md#a-first-project)), in one form:
+
+| Field | What it is | Starts as |
+| --- | --- | --- |
+| ROM file | The game's ROM. Choosing it fills in the rest | empty |
+| Folder | The project's own folder: `config.toml`, `segments/` and `blobs/` go straight into it | `.dj` beside the ROM |
+| Name | The project's name | The ROM file's name for a project in `.dj`, else the folder's |
+| Core | The cores in the folders dj looks in (`$DJ_CORES`, `cores/` next to the program, `build/cores/`), the one for the ROM's console marked as suggested, and **Other core file…** | The suggested core |
+| Symbol map | Optional, copied into `symbols/` | none |
+| Make a first segment | A root segment of 60 frames from power-on, to record into | on |
+
+Once the ROM and the core are chosen, dj-gui loads the core with the ROM and shows what the project would pin: the console, the core's build, whether coverage is recorded and where, what is hashed, the snapshot preset and the controller ([config.md](config.md#console-defaults)). If the core can't load the ROM it says why. Nothing is written until **Create project**, which makes the project and opens it.
+
+- A process holds one core at a time, so the check lets go of the open project's core; **Cancel** loads it again. Unsaved edits aren't touched: opening the new project asks about them as Open project… does.
+- If the core dj suggests isn't on this machine, the form names the script that builds it.
+- Core options and a core build id of your own are `dj init`'s flags (`--option`, `--core-build`), or edit `config.toml` afterwards.
+- New project… waits while a job (cleaning, a parity check) is running.
 
 ## Debug console
 

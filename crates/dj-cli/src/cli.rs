@@ -94,17 +94,20 @@ pub(crate) struct QueryArgs {
 
 #[derive(Subcommand)]
 pub(crate) enum Cmd {
-    /// Create a project pinned to a ROM and a core, with every core option recorded
+    /// Create a project pinned to a ROM and a core, with every core option recorded. On a
+    /// terminal it asks for what the flags don't say, one thing at a time, each with a
+    /// default; elsewhere (a script, CI) or with --yes it takes the defaults and needs --rom
     Init {
-        /// The folder to create the project in (default: one named after the ROM file,
-        /// without its extension, in the current folder)
+        /// The folder to create the project in (default: .dj in the current folder, where
+        /// dj finds it from that folder and any below it)
         dir: Option<PathBuf>,
-        /// The project's name (default: the folder's name, else the ROM file's without its
-        /// extension)
+        /// The project's name (default: the folder's name when one is given, else the ROM
+        /// file's without its extension)
         #[arg(long)]
         name: Option<String>,
+        /// The game's ROM file
         #[arg(long)]
-        rom: PathBuf,
+        rom: Option<PathBuf>,
         /// libretro core library, or the name of one in a cores folder (`mesen_libretro`).
         /// Default: $DJ_CORE, else the core for the ROM's console (NES, GBA, N64), looked
         /// for in $DJ_CORES, cores/ next to dj, and build/cores/
@@ -122,8 +125,8 @@ pub(crate) enum Cmd {
         /// Don't make a first root segment (60 frames from power-on, titled "Power-on")
         #[arg(long)]
         no_segment: bool,
-        /// Make the project without asking first. On a terminal dj shows what it would
-        /// make and asks once; when its input or output isn't a terminal it never asks
+        /// Ask nothing: take the default for whatever the flags don't say, and make the
+        /// project. dj never asks when its input or output isn't a terminal
         #[arg(long, short = 'y')]
         yes: bool,
     },

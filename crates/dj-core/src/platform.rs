@@ -111,6 +111,8 @@ pub fn detect(head: &[u8], path: &Path) -> Option<&'static str> {
 /// The core dj makes a console's projects with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CoreChoice {
+    /// What people call the core ("Mesen").
+    pub title: &'static str,
     /// The library's file name without its suffix (`mesen_libretro`).
     pub library: &'static str,
     /// The script that builds it with its connector, from the top of dj's folder.
@@ -120,9 +122,9 @@ pub struct CoreChoice {
 /// The core for a console `detect` names.
 pub fn core_for(console: &str) -> Option<CoreChoice> {
     Some(match console {
-        "NES" => CoreChoice { library: "mesen_libretro", build: "connectors/mesen/build.sh" },
-        "GBA" => CoreChoice { library: "mgba_libretro", build: "connectors/mgba/build.sh" },
-        "N64" => CoreChoice { library: "mupen64plus_next_libretro", build: "connectors/mupen64plus/build.sh" },
+        "NES" => CoreChoice { title: "Mesen", library: "mesen_libretro", build: "connectors/mesen/build.sh" },
+        "GBA" => CoreChoice { title: "mGBA", library: "mgba_libretro", build: "connectors/mgba/build.sh" },
+        "N64" => CoreChoice { title: "Mupen64Plus-Next", library: "mupen64plus_next_libretro", build: "connectors/mupen64plus/build.sh" },
         _ => return None,
     })
 }
@@ -140,7 +142,9 @@ pub fn core_dirs() -> Vec<PathBuf> {
         dirs.push(PathBuf::from(d));
     }
     if let Some(exe) = std::env::current_exe().ok().and_then(|e| std::fs::canonicalize(e).ok()) {
-        if let Some(dir) = exe.parent() {
+        // A program inside a macOS app bundle (X.app/Contents/MacOS/) is where the bundle is.
+        let in_bundle = exe.parent().filter(|d| d.ends_with("Contents/MacOS")).and_then(|d| d.parent()?.parent()).filter(|app| app.extension().is_some_and(|e| e == "app")).and_then(Path::parent);
+        if let Some(dir) = in_bundle.or(exe.parent()) {
             dirs.push(dir.join("cores"));
             if let Some(top) = dir.parent().and_then(Path::parent) {
                 dirs.push(top.join("build").join("cores"));
@@ -149,6 +153,36 @@ pub fn core_dirs() -> Vec<PathBuf> {
     }
     dirs.push(PathBuf::from("build").join("cores"));
     dirs
+}
+
+/// Every core in `dirs`: files named `*_libretro` with this system's library suffix, each
+/// name once (the first folder that has it wins, as `find_core` finds it).
+pub fn cores_in(dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = vec![];
+    for d in dirs {
+        let Ok(entries) = std::fs::read_dir(d) else { continue };
+        let mut here: Vec<PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.is_file() && p.extension().is_some_and(|e| e == std::env::consts::DLL_EXTENSION) && p.file_stem().is_some_and(|s| s.to_string_lossy().ends_with("_libretro"))).collect();
+        here.sort();
+        for p in here {
+            if seen.insert(p.file_name().map(|n| n.to_os_string())) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// What to call a core's file: the name of a core dj has a console for ("Mesen"), else
+/// the file's name without `_libretro` and its suffix.
+pub fn core_title(path: &Path) -> String {
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    for console in ["NES", "GBA", "N64"] {
+        if let Some(c) = core_for(console).filter(|c| c.library == stem) {
+            return c.title.to_string();
+        }
+    }
+    stem.strip_suffix("_libretro").unwrap_or(&stem).to_string()
 }
 
 /// The file of the core called `library` (with or without its suffix) in the first of
@@ -184,6 +218,23 @@ mod tests {
             assert!(core_for(c).is_some(), "{c}");
         }
         assert_eq!(core_for("SNES"), None);
+    }
+
+    #[test]
+    fn cores_in_folders() {
+        let tmp = std::env::temp_dir().join(format!("dj-cores-in-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let ext = std::env::consts::DLL_EXTENSION;
+        for (dir, file) in [("a", format!("mesen_libretro.{ext}")), ("a", "notes.txt".to_string()), ("a", format!("helper.{ext}")), ("b", format!("mesen_libretro.{ext}")), ("b", format!("fceumm_libretro.{ext}"))] {
+            std::fs::create_dir_all(tmp.join(dir)).unwrap();
+            std::fs::write(tmp.join(dir).join(file), "").unwrap();
+        }
+        let dirs = [tmp.join("a"), tmp.join("missing"), tmp.join("b")];
+        // Only cores, each name once, the first folder's copy.
+        assert_eq!(cores_in(&dirs), [tmp.join("a").join(format!("mesen_libretro.{ext}")), tmp.join("b").join(format!("fceumm_libretro.{ext}"))]);
+        assert_eq!(core_title(&dirs[0].join(format!("mesen_libretro.{ext}"))), "Mesen");
+        assert_eq!(core_title(&dirs[2].join(format!("fceumm_libretro.{ext}"))), "fceumm");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

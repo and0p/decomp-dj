@@ -28,6 +28,7 @@ mod dialogs;
 mod edit;
 mod jobs;
 mod menu;
+mod new_project;
 mod nodes;
 mod parity;
 mod playback;
@@ -204,6 +205,8 @@ struct Dialogs {
     save: Option<SaveAsk>,
     /// Open, Reload or Quit asked for with unsaved edits: waiting on "discard them?".
     discard: Option<Discard>,
+    /// File > New project…
+    new_project: Option<new_project::NewProject>,
     /// Join with parent, waiting on its confirmation: (segment id, leave a marker, marker text).
     join: Option<(String, bool, String)>,
     /// Join chain, waiting on its confirmation: (top segment id, leave markers).
@@ -226,6 +229,7 @@ impl Default for Dialogs {
             snapshot_warning: None,
             save: None,
             discard: None,
+            new_project: None,
             join: None,
             chain: None,
             frame: None,

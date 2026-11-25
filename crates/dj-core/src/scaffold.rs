@@ -89,9 +89,69 @@ pub struct InitPlan {
     pub console: Option<&'static str>,
     /// What the console's defaults chose that someone making the project should know.
     pub notes: Vec<String>,
+    /// The controllers the project starts with, in a few words.
+    pub controllers: Controllers,
 }
 
-fn has_project(dir: &Path) -> bool {
+/// A project's controllers, counted: for "2 joypads, 8 buttons each".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Controllers {
+    /// The joypads in `[[ports]]`.
+    pub joypads: usize,
+    /// The buttons one of them shows: those the core names that the project doesn't hide,
+    /// and each direction of a stick it names as a button. None when the core names none.
+    pub buttons: Option<usize>,
+    /// Its sticks that aren't shown as buttons.
+    pub sticks: usize,
+}
+
+impl Controllers {
+    fn count(ports: &[PortConfig], inputs: &[(crate::format::InputKey, String)]) -> Controllers {
+        use crate::controls::{control_from_name, control_name, is_axis};
+        let joypads = ports.iter().filter(|p| p.device == "JOYPAD").count();
+        let Some(first) = ports.first() else { return Controllers::default() };
+        let port = first.port.saturating_sub(1);
+        let named: Vec<crate::format::InputKey> = inputs.iter().filter(|(k, n)| k.port == port && !n.trim().is_empty()).map(|(k, _)| *k).collect();
+        let hidden: Vec<crate::format::InputKey> = first.hide.iter().filter_map(|n| control_from_name(port, n)).collect();
+        // A label on one direction of an axis makes that direction a button.
+        let directions: Vec<&String> = first.labels.keys().filter(|n| n.ends_with(['+', '-'])).collect();
+        let as_buttons = |stick: u32| directions.iter().any(|n| control_from_name(port, n.trim_end_matches(['+', '-'])).is_some_and(|k| k.index == stick));
+        let pressed = named.iter().filter(|k| k.device == crate::format::DEVICE_JOYPAD && control_name(**k).is_some() && !hidden.contains(k)).count();
+        let sticks = (0..2).filter(|&stick| named.iter().any(|k| is_axis(*k) && k.index == stick && !hidden.contains(k)) && !as_buttons(stick)).count();
+        Controllers { joypads, buttons: (!named.is_empty()).then_some(pressed + directions.len()), sticks }
+    }
+
+    /// "2 joypads, 8 buttons each", "1 joypad, 14 buttons and a stick".
+    pub fn text(&self) -> String {
+        let mut s = format!("{} joypad{}", self.joypads, if self.joypads == 1 { "" } else { "s" });
+        if let Some(b) = self.buttons {
+            s += &format!(", {b} button{}", if b == 1 { "" } else { "s" });
+            match self.sticks {
+                0 => {}
+                1 => s += " and a stick",
+                n => s += &format!(" and {n} sticks"),
+            }
+            if self.joypads > 1 {
+                s += " each";
+            }
+        }
+        s
+    }
+}
+
+/// The folder a project is made in when none is named: inside the folder of what it is
+/// about (a decomp's repository, or beside the ROM), where dj finds it from there and below.
+pub const PROJECT_SUBDIR: &str = ".dj";
+
+/// The name a project gets when none is given: the folder's (for `.`, the folder that
+/// is), but the ROM's for a project in `.dj`.
+pub fn default_name(dir: &Path, rom: &Path) -> Option<String> {
+    let folder = dir.file_name().map(|n| n.to_os_string()).or_else(|| std::fs::canonicalize(dir).ok()?.file_name().map(|n| n.to_os_string()));
+    folder.map(|n| n.to_string_lossy().into_owned()).filter(|n| n != PROJECT_SUBDIR).or_else(|| stem(rom))
+}
+
+/// Whether a folder already holds a project.
+pub fn has_project(dir: &Path) -> bool {
     dir.join("config.toml").exists() || dir.join("collection.toml").exists()
 }
 
@@ -170,12 +230,25 @@ pub fn propose_with(req: &InitRequest, profiles: ProfileLookup) -> Result<InitPl
         }
     }
     let profile = p.profile;
-    let port = PortConfig {
-        port: 1,
-        device: "JOYPAD".into(),
-        labels: profile.map(|c| c.labels.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()).unwrap_or_default(),
-        hide: profile.map(|c| c.hide.iter().map(|h| h.to_string()).collect()).unwrap_or_default(),
+    // With a console's defaults, a joypad for every port the core names inputs on (the
+    // NES's two, the N64's four), so each is trimmed and named alike; else port 1 alone.
+    let mut numbers: Vec<u32> = match profile {
+        Some(_) => p.inputs.iter().map(|(k, _)| k.port + 1).collect::<std::collections::BTreeSet<u32>>().into_iter().collect(),
+        None => vec![],
     };
+    if !numbers.contains(&1) {
+        numbers.insert(0, 1);
+    }
+    let ports: Vec<PortConfig> = numbers
+        .into_iter()
+        .map(|port| PortConfig {
+            port,
+            device: "JOYPAD".into(),
+            labels: profile.map(|c| c.labels.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()).unwrap_or_default(),
+            hide: profile.map(|c| c.hide.iter().map(|h| h.to_string()).collect()).unwrap_or_default(),
+        })
+        .collect();
+    let controllers = Controllers::count(&ports, &p.inputs);
     let cache = profile.and_then(|c| c.cache_preset).map(|name| crate::cache::CacheConfig { preset: Some(name.to_string()), ..Default::default() });
 
     let config = Config {
@@ -185,50 +258,87 @@ pub fn propose_with(req: &InitRequest, profiles: ProfileLookup) -> Result<InitPl
         name,
         rom: RomConfig { sha256: sha256_file(&req.rom)?, file: req.rom.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default(), shareable: None },
         core: CoreConfig { name: p.library_name.to_lowercase(), build: req.core_build.clone().unwrap_or(p.build_id), sha256: String::new(), options: p.options },
-        ports: vec![port],
+        ports,
         hash: HashConfig { algorithm: "blake3".into(), regions: p.hash_regions, exclude: vec![] },
         tick: None,
         symbols: syms,
         cache,
         compare: vec![],
     };
-    Ok(InitPlan { dir, rom: req.rom.clone(), core: core_path, core_chosen_for, segment: req.segment.clone(), symbols: req.symbols.clone(), config, connector: p.connector, regions: p.regions, console: profile.map(|c| c.console), notes })
+    Ok(InitPlan { dir, rom: req.rom.clone(), core: core_path, core_chosen_for, segment: req.segment.clone(), symbols: req.symbols.clone(), config, connector: p.connector, regions: p.regions, console: profile.map(|c| c.console), notes, controllers })
+}
+
+/// The core dj would make a ROM's project with, and whether it is on this machine.
+#[derive(Clone, Debug)]
+pub struct CoreSuggestion {
+    /// The ROM's console (`platform::detect`), if dj can tell.
+    pub console: Option<&'static str>,
+    /// The core for that console.
+    pub choice: Option<crate::platform::CoreChoice>,
+    /// That core's file, in the first of `dirs` that has it.
+    pub found: Option<PathBuf>,
+    /// The folders dj looks for cores in (`platform::core_dirs`).
+    pub dirs: Vec<PathBuf>,
+}
+
+impl CoreSuggestion {
+    /// "an NES", "a GBA": the console with its article.
+    pub fn a_console(&self) -> Option<String> {
+        self.console.map(|c| format!("{} {c}", if c == "GBA" { "a" } else { "an" }))
+    }
+
+    /// The folders looked in, a line each.
+    pub fn looked(&self) -> String {
+        self.dirs.iter().map(|d| format!("  {}", d.display())).collect::<Vec<_>>().join("\n")
+    }
+}
+
+/// The core for a ROM file, from its header or extension.
+pub fn suggest_core(rom: &Path) -> Result<CoreSuggestion> {
+    let mut head = vec![];
+    std::io::Read::read_to_end(&mut std::io::Read::take(std::fs::File::open(rom).with_context(|| format!("reading {}", rom.display()))?, 0x200), &mut head)?;
+    let dirs = crate::platform::core_dirs();
+    let console = crate::platform::detect(&head, rom);
+    let choice = console.and_then(crate::platform::core_for);
+    let found = choice.and_then(|c| crate::platform::find_core(c.library, &dirs));
+    Ok(CoreSuggestion { console, choice, found, dirs })
+}
+
+/// The file of a core that was asked for: the path (with or without its suffix), or for a
+/// name with no folder, the core of that name in one of the folders dj looks in.
+pub fn resolve_core(core: &Path) -> Result<PathBuf> {
+    let path = libretro::library_path(core);
+    if path.is_file() {
+        return Ok(path);
+    }
+    if core.components().count() != 1 {
+        bail!("the core library {} doesn't exist", path.display());
+    }
+    let dirs = crate::platform::core_dirs();
+    match core.to_str().and_then(|name| crate::platform::find_core(name, &dirs)) {
+        Some(found) => Ok(found),
+        None => bail!("the core library {} doesn't exist here, nor in any of the folders dj looks for cores in:\n{}", path.display(), dirs.iter().map(|d| format!("  {}", d.display())).collect::<Vec<_>>().join("\n")),
+    }
 }
 
 /// The core's file: the one asked for, or the one for the ROM's console.
 fn find_core(req: &InitRequest) -> Result<(PathBuf, Option<&'static str>)> {
-    let dirs = crate::platform::core_dirs();
-    let looked = || dirs.iter().map(|d| format!("  {}", d.display())).collect::<Vec<_>>().join("\n");
     let asked = req.core.clone().or_else(|| std::env::var_os(crate::collection::CORE_ENV).filter(|c| !c.is_empty()).map(PathBuf::from));
     if let Some(core) = asked {
-        let path = libretro::library_path(&core);
-        if path.is_file() {
-            return Ok((path, None));
-        }
-        // A name with no folder: one of the cores folders may have it.
-        let bare = core.components().count() == 1;
-        if let Some(found) = core.to_str().filter(|_| bare).and_then(|name| crate::platform::find_core(name, &dirs)) {
-            return Ok((found, None));
-        }
-        if bare {
-            bail!("the core library {} doesn't exist here, nor in any of the folders dj looks for cores in:\n{}", path.display(), looked());
-        }
-        bail!("the core library {} doesn't exist", path.display());
+        return Ok((resolve_core(&core)?, None));
     }
-    let mut head = vec![];
-    std::io::Read::read_to_end(&mut std::io::Read::take(std::fs::File::open(&req.rom).with_context(|| format!("reading {}", req.rom.display()))?, 0x200), &mut head)?;
-    let Some(console) = crate::platform::detect(&head, &req.rom) else {
+    let s = suggest_core(&req.rom)?;
+    let (Some(console), Some(choice)) = (s.console, s.choice) else {
         bail!("can't tell which console {} is for (dj knows NES, GBA and N64 ROMs by their header or extension), so it can't pick a core: name one with --core", req.rom.display());
     };
-    let choice = crate::platform::core_for(console).ok_or_else(|| anyhow!("dj has no core for {console}: name one with --core"))?;
-    match crate::platform::find_core(choice.library, &dirs) {
-        Some(found) => Ok((found, Some(console))),
+    match &s.found {
+        Some(found) => Ok((found.clone(), Some(console))),
         None => bail!(
-            "{} is {} {console} ROM, which dj plays with the core {}, and that isn't in any of the folders dj looks for cores in:\n{}\nBuild it with {} (docs/install.md), or name a core's file with --core",
+            "{} is {} ROM, which dj plays with the core {}, and that isn't in any of the folders dj looks for cores in:\n{}\nBuild it with {} (docs/install.md), or name a core's file with --core",
             req.rom.display(),
-            if console == "GBA" { "a" } else { "an" },
+            s.a_console().unwrap_or_default(),
             libretro::library_path(Path::new(choice.library)).display(),
-            looked(),
+            s.looked(),
             choice.build
         ),
     }
@@ -282,6 +392,8 @@ struct Probed {
     connector: bool,
     regions: Vec<RegionNote>,
     profile: Option<&'static ConsoleProfile>,
+    /// What the core calls its inputs.
+    inputs: Vec<(crate::format::InputKey, String)>,
     /// The profile's bus ranges are what `hash_regions` has in place of `RAM`.
     bus_hashed: bool,
 }
@@ -321,7 +433,7 @@ fn probe(core_path: &Path, rom: &Path, work: &Path, options: &BTreeMap<String, S
             regions.push(RegionNote { decoder: f.cpu.as_deref().is_some_and(crate::analysis::has_decoder), rolls_up: f.name == code, differs_from_rom, facts: f });
         }
     }
-    Ok(Probed { library_name: core.library_name.clone(), build_id: core.build_id(), options: core.effective_options(), hash_regions, connector, regions, profile, bus_hashed })
+    Ok(Probed { library_name: core.library_name.clone(), build_id: core.build_id(), options: core.effective_options(), hash_regions, connector, regions, profile, inputs: core.input_names(), bus_hashed })
 }
 
 impl InitPlan {
@@ -363,5 +475,41 @@ impl InitPlan {
             None => None,
         };
         Ok(Written { config: path, segment, ignored })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::controls::control_from_name;
+
+    fn port(port: u32, hide: &[&str], labels: &[(&str, &str)]) -> PortConfig {
+        PortConfig { port, device: "JOYPAD".into(), hide: hide.iter().map(|h| h.to_string()).collect(), labels: labels.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() }
+    }
+
+    fn named(port: u32, controls: &[&str]) -> Vec<(crate::format::InputKey, String)> {
+        controls.iter().map(|c| (control_from_name(port, c).unwrap(), c.to_string())).collect()
+    }
+
+    #[test]
+    fn controllers_counted() {
+        // Two pads, the core naming ten buttons on the first, two of them hidden.
+        let buttons = ["B", "Y", "SELECT", "START", "UP", "DOWN", "LEFT", "RIGHT", "A", "X"];
+        let mut inputs = named(0, &buttons);
+        inputs.extend(named(1, &buttons));
+        let c = Controllers::count(&[port(1, &["Y", "X", "L3"], &[]), port(2, &["Y", "X"], &[])], &inputs);
+        assert_eq!(c, Controllers { joypads: 2, buttons: Some(8), sticks: 0 });
+        assert_eq!(c.text(), "2 joypads, 8 buttons each");
+
+        // One pad with a stick, and a second stick whose directions are buttons.
+        let inputs = named(0, &["B", "Y", "START", "A", "LEFT X", "LEFT Y", "RIGHT X", "RIGHT Y"]);
+        let labels = [("LEFT X", "Stick X"), ("RIGHT X-", "C Left"), ("RIGHT X+", "C Right"), ("RIGHT Y-", "C Up"), ("RIGHT Y+", "C Down")];
+        let c = Controllers::count(&[port(1, &["A"], &labels)], &inputs);
+        assert_eq!(c, Controllers { joypads: 1, buttons: Some(7), sticks: 1 });
+        assert_eq!(c.text(), "1 joypad, 7 buttons and a stick");
+
+        // A core that names nothing: the pad alone.
+        assert_eq!(Controllers::count(&[port(1, &[], &[])], &[]).text(), "1 joypad");
+        assert_eq!(Controllers { joypads: 2, buttons: Some(1), sticks: 2 }.text(), "2 joypads, 1 button and 2 sticks each");
     }
 }

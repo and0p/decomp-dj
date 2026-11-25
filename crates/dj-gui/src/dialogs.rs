@@ -12,6 +12,7 @@ impl App {
         if !self.recovery.offer.is_empty() {
             self.recovery_window(ctx);
         }
+        self.new_project_window(ctx);
         self.discard_window(ctx);
         self.save_window(ctx);
         self.duplicate_window(ctx);

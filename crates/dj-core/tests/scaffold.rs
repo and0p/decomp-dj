@@ -76,6 +76,8 @@ fn a_project_from_a_rom_and_a_core() {
     assert!(plan.notes.is_empty());
     assert_eq!(c.ports.len(), 1);
     assert!(c.ports[0].hide.is_empty() && c.ports[0].labels.is_empty());
+    // The test core names no inputs, so there is nothing to count but the pad.
+    assert_eq!(plan.controllers.text(), "1 joypad");
     assert!(c.cache.is_none());
     assert_eq!(c.symbols.len(), 1);
     assert_eq!((c.symbols[0].file.as_str(), c.symbols[0].format.as_str()), ("symbols/game.mlb", "mesen-mlb"));

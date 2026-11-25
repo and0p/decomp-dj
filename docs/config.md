@@ -15,11 +15,12 @@ A project has two settings files:
 
 | Core | Console | `[hash] regions` | `[cache] preset` | `[[ports]]` | `[core.options]` |
 | --- | --- | --- | --- | --- | --- |
-| Mesen | NES | `RAM`, and `SRAM` when the game has it | `nes-sparse` | `hide`: the buttons a NES pad doesn't have | as the core has them |
-| mGBA, a GBA game | GBA | IWRAM and EWRAM through the memory maps (`BUS:0x03000000-0x03007FFF`, `BUS:0x02000000-0x0203FFFF`), and `SRAM`: mGBA's `RAM` is only the first 32 KB of EWRAM | none (so `nes-sparse`) | `hide`: the buttons a GBA doesn't have | as the core has them |
-| Mupen64Plus-Next | N64 | `RAM`, and `SRAM` | `n64-sparse` | `hide` and `labels`: the N64's names for the buttons, the stick and the C buttons | as the core has them |
+| Mesen | NES | `RAM`, and `SRAM` when the game has it | `nes-sparse` | Two joypads; `hide`: the buttons a NES pad doesn't have | as the core has them |
+| mGBA, a GBA game | GBA | IWRAM and EWRAM through the memory maps (`BUS:0x03000000-0x03007FFF`, `BUS:0x02000000-0x0203FFFF`), and `SRAM`: mGBA's `RAM` is only the first 32 KB of EWRAM | none (so `nes-sparse`) | One joypad; `hide`: the buttons a GBA doesn't have | as the core has them |
+| Mupen64Plus-Next | N64 | `RAM`, and `SRAM` | `n64-sparse` | Four joypads; `hide` and `labels`: the N64's names for the buttons, the stick and the C buttons | as the core has them |
 
 - **The N64 keeps the core's own options**, the ones most games work with. With them the GPU copies its picture into the RAM dj hashes (`mupen64plus-EnableCopyColorToRDRAM`, `mupen64plus-EnableCopyDepthToRDRAM`), and that copy isn't the same after a jump as from power-on. If a segment's hash differs after a jump, leave the game's framebuffers out with [`[hash] exclude`](#hash) and [`[cache] exclude`](#cache-exclude); where they are depends on the game. Turning both options `Off` (`--option`, or `[core.options]`) also does it, for a game that doesn't read its framebuffers back. `dj init` prints this.
+- **A joypad for every port the core names inputs on**, each with the same `hide` and `labels`, so the second NES pad is trimmed like the first. `dj init` says what that comes to ("2 joypads, 8 buttons each").
 - **Any other core** (and a Game Boy game on mGBA) gets one joypad on port 1 with every control the core names, `RAM` and `SRAM` to hash, and no `[cache]` table.
 
 ## Layering

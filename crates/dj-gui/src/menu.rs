@@ -13,6 +13,9 @@ impl App {
         let mut bar: Vec<egui::InnerResponse<Option<()>>> = vec![];
         egui::MenuBar::new().config(config).ui(ui, |ui| {
             bar.push(ui.menu_button(t::FILE_MENU, |ui| {
+                if ui.button(t::NEW_PROJECT).on_hover_text(t::NEW_PROJECT_TIP).clicked() {
+                    self.new_project();
+                }
                 if ui.button(t::OPEN_PROJECT).clicked() {
                     if let Some(dir) = rfd::FileDialog::new().set_title(t::OPEN_A_PROJECT_FOLDER).pick_folder() {
                         self.discard_guard(Discard::Open(dir));

@@ -165,7 +165,12 @@ fn clean_check_and_the_queries() {
     };
     let (code, out, err) = bare(&["status"], &dir.join("segments"));
     assert!(code == 0 && out.contains("2 segments"), "{out}{err}");
-    let (code, _, err) = bare(&["status"], &tmp);
+    // Outside any project: in the system's temporary folder, since a project above this
+    // repository's folder (a .dj made while trying dj init) would be found from `tmp`.
+    let outside = std::env::temp_dir().join(format!("dj-batch-outside-{}", std::process::id()));
+    std::fs::create_dir_all(&outside).unwrap();
+    let (code, _, err) = bare(&["status"], &outside);
+    let _ = std::fs::remove_dir_all(&outside);
     assert!(code == 2 && err.contains("not in a dj project"), "{err}");
     let (code, _, err) = bare(&["status", dir.to_str().unwrap()], &tmp);
     assert!(code == 2 && err.contains("no longer takes as an argument") && err.contains("-C"), "{err}");

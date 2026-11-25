@@ -4,7 +4,8 @@ A coverage connector is a small patch to a libretro core that reports which ROM 
 Without one, a core still plays segments and checks hashes, but records no coverage and
 counts no [ticks](playback.md#logic-ticks-draft). There are connectors for Mesen (NES),
 [connectors/mesen/](../connectors/mesen/README.md), mGBA (GBA),
-[connectors/mgba/](../connectors/mgba/README.md), and, in a first version, Mupen64Plus-Next
+[connectors/mgba/](../connectors/mgba/README.md), Mesen-S (SNES),
+[connectors/mesen-s/](../connectors/mesen-s/README.md), and, in a first version, Mupen64Plus-Next
 (N64), [connectors/mupen64plus/](../connectors/mupen64plus/README.md).
 
 ## What a connector reports
@@ -12,7 +13,7 @@ counts no [ticks](playback.md#logic-ticks-draft). There are connectors for Mesen
 - Executed locations as **offsets into ROM regions**, never CPU addresses, because bank switching maps different ROM bytes to the same CPU address.
 - One flag byte per byte of each region (below). Flags only ever get set, until the player clears them.
 - For each region: its name, the instruction set that runs there, its bytes, and where it lies in the ROM file. The connector is the source of these facts; projects don't configure them ([.agents/_archive/CONNECTOR_PLAN.md](../.agents/_archive/CONNECTOR_PLAN.md) has the reasoning).
-- **Region names are a contract per system**, so that two cores for one system can share a project's coverage, annotations and symbol maps. NES: `PRG` (program ROM), `RAM`, `WRAM`, `SRAM`. N64: `RDRAM` (main RAM, by physical address, where code runs) and `ROM` (the cartridge, `.z64` order). GBA: `ROM` (the cartridge, from byte 0 of the file, its address mirrors folded together), `IWRAM`, `EWRAM` and `BIOS`. Coverage rolls up into the first region from the ROM file whose instruction set has a decoder (`PRG` on the NES), else into the first region a CPU runs (`RDRAM` on the N64).
+- **Region names are a contract per system**, so that two cores for one system can share a project's coverage, annotations and symbol maps. NES: `PRG` (program ROM), `RAM`, `WRAM`, `SRAM`. N64: `RDRAM` (main RAM, by physical address, where code runs) and `ROM` (the cartridge, `.z64` order). GBA: `ROM` (the cartridge, from byte 0 of the file, its address mirrors folded together), `IWRAM`, `EWRAM` and `BIOS`. SNES: `ROM` (the cartridge, after any 512-byte copier header, however the board maps it), `WRAM` and `SRAM`. Coverage rolls up into the first region from the ROM file whose instruction set has a decoder (`PRG` on the NES), else into the first region a CPU runs (`RDRAM` on the N64).
 
 | Bits | Meaning |
 | --- | --- |
@@ -29,6 +30,7 @@ registers, `0x20` 16-bit index registers.
 | `cpu` | Mode bits |
 | --- | --- |
 | `6502`, `mips3` | none |
+| `65816` | as above: `0x04` 8-bit accumulator, `0x08` 16-bit, `0x10` 8-bit index registers, `0x20` 16-bit; emulation mode is 8-bit |
 | `armv4t` | `0x04` ran in Thumb state, `0x08` in ARM state. The player starts a function in the mode its first instruction ran in. Thumb's `BL` pair is one instruction: its second halfword carries operand flags |
 
 ## The API
@@ -104,6 +106,7 @@ set (a first version: nothing in dj reads them yet):
 | --- | --- |
 | `6502` | 7 bytes: A, X, Y, SP, P, then PC with its low byte first |
 | `mips3` | 33 values of 64 bits in the host's byte order: PC, then r0 to r31 |
+| `65816` | 16 bytes: A, X, Y, S, D and PC as 16-bit values, low byte first, then the program bank, the data bank, P, and E (1 in emulation mode) |
 | `armv4t` | 17 values of 32 bits in the host's byte order: r0 to r15, then CPSR. r15 is as the CPU holds it, two instructions past the one about to run |
 
 `dj_build_id` names the build exactly and the same way on every platform: the upstream
@@ -159,7 +162,9 @@ struct dj_trace_event {      // 40 bytes
 Events past the capacity are counted in `dropped` rather than stored. A read or write of
 several bytes is one event per byte.
 
-The Mesen and Mupen64Plus connectors have the hook. The struct was made for the 6502; on
+The Mesen, Mesen-S and Mupen64Plus connectors have the hook. On the 65816 (Mesen-S) the
+address is `addr_high << 16 | addr`, 24 bits, and the registers are the low bytes of A, X,
+Y and S, and P. The struct was made for the 6502; on
 the N64 it is filled like this:
 
 - **The address** is `addr_high << 16 | addr`: the CPU's (virtual) address, such as
@@ -473,6 +478,6 @@ builds it and names it in a `[[compare]]` entry.
 6. If dj has no decoder for the CPU, write one ([decoders.md](decoders.md)): a plugin, or exported by the core itself (`dj_decoders`).
 
 Rolling coverage up into functions and blocks also needs a decoder for the region's `cpu`.
-The 6502, MIPS (`mips3`) and ARMv4T (`armv4t`: ARM and Thumb, for the GBA) are built in ([coverage.md](coverage.md#symbol-maps)), and a decoder plugin can add any
+The 6502, MIPS (`mips3`), ARMv4T (`armv4t`: ARM and Thumb, for the GBA) and the 65816 (`65816`, for the SNES) are built in ([coverage.md](coverage.md#symbol-maps)), and a decoder plugin can add any
 other ([decoders.md](decoders.md)); without one, the report counts opcode bytes and says no
 decoder exists yet.

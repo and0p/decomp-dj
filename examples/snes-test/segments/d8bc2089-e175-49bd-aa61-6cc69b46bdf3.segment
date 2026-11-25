@@ -1,0 +1,11 @@
+dj-segment 1
+id: d8bc2089-e175-49bd-aa61-6cc69b46bdf3
+parent: 27c59d4e-4976-4927-bd72-b9bc94a73a3e
+title: Hold A
+frames: 60
+start-frame: 60
+start-hash: 0b403ecbedd8ed7a9a08ae90147a8f6d
+end-hash: 5a534ad4384ab24ef0a22c20cea052fe
+---
+5 P1 JOYPAD A 1
+40 P1 JOYPAD A 0

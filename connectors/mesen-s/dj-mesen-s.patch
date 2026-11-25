@@ -1,0 +1,150 @@
+diff --git a/Core/Cpu.cpp b/Core/Cpu.cpp
+index 43d9ffb..0fa1ebb 100644
+--- a/Core/Cpu.cpp
++++ b/Core/Cpu.cpp
+@@ -8,6 +8,9 @@
+ #include "EventType.h"
+ #include "Cpu.Instructions.h"
+ #include "Cpu.Shared.h"
++#ifdef DECOMP_DJ
++#include "DjConnector.h"
++#endif
+ 
+ #ifndef DUMMYCPU
+ Cpu::Cpu(Console *console)
+@@ -15,6 +18,11 @@ Cpu::Cpu(Console *console)
+ 	_console = console;
+ 	_memoryManager = console->GetMemoryManager().get();
+ 	_dmaController = console->GetDmaController().get();
++#ifdef DECOMP_DJ
++	// dj_read_registers reads through this, also before anything has run (a frontend that
++	// loads a state first).
++	DjConnector::Regs = &_state;
++#endif
+ }
+ #endif
+ 
+@@ -104,7 +112,18 @@ uint8_t Cpu::Read(uint32_t addr, MemoryOperationType type)
+ {
+ 	_memoryManager->SetCpuSpeed(_memoryManager->GetCpuSpeed(addr));
+ 	ProcessCpuCycle();
++#ifdef DECOMP_DJ
++	if(DjConnector::Active && (type == MemoryOperationType::ExecOpCode || type == MemoryOperationType::ExecOperand)) {
++		DjConnector::Regs = &_state;
++		DjConnector::OnExec(_console, _memoryManager, addr, type == MemoryOperationType::ExecOpCode, _state.PS, _state.EmulationMode);
++	}
++#endif
+ 	uint8_t value = _memoryManager->Read(addr, type);
++#ifdef DECOMP_DJ
++	if(DjConnector::TraceOn) {
++		DjConnector::OnTrace(_memoryManager, (int)type, addr, value, &_state);
++	}
++#endif
+ 	UpdateIrqNmiFlags();
+ 	return value;
+ }
+@@ -113,6 +132,11 @@ void Cpu::Write(uint32_t addr, uint8_t value, MemoryOperationType type)
+ {
+ 	_memoryManager->SetCpuSpeed(_memoryManager->GetCpuSpeed(addr));
+ 	ProcessCpuCycle();
++#ifdef DECOMP_DJ
++	if(DjConnector::TraceOn) {
++		DjConnector::OnTrace(_memoryManager, (int)type, addr, value, &_state);
++	}
++#endif
+ 	_memoryManager->Write(addr, value, type);
+ 	UpdateIrqNmiFlags();
+ }
+diff --git a/Core/EmuSettings.cpp b/Core/EmuSettings.cpp
+index 4caf7a5..7148e3f 100644
+--- a/Core/EmuSettings.cpp
++++ b/Core/EmuSettings.cpp
+@@ -14,8 +14,13 @@ EmuSettings::EmuSettings(Console* console)
+ 	_debuggerFlags = 0;
+ 	_inputConfigVersion = 0;
+ 
++#ifdef DECOMP_DJ
++	// decomp-dj: the same "random" values on every run (RAM a game asks to be random).
++	_mt = std::mt19937(0);
++#else
+ 	std::random_device rd;
+ 	_mt = std::mt19937(rd());
++#endif
+ }
+ 
+ uint32_t EmuSettings::GetVersion()
+diff --git a/Libretro/Makefile b/Libretro/Makefile
+index 46266f4..e2508a1 100644
+--- a/Libretro/Makefile
++++ b/Libretro/Makefile
+@@ -339,7 +339,7 @@ ifeq (,$(findstring windows_msvc2017,$(platform)))
+ endif
+ 
+ CFLAGS   += -D LIBRETRO $(fpic)
+-CXXFLAGS += -D LIBRETRO $(fpic) -std=c++11
++CXXFLAGS += -D LIBRETRO -D DECOMP_DJ $(fpic) -std=c++11
+ 
+ ALTTARGET := $(subst mesen-s,mesens,$(TARGET))
+ 
+diff --git a/Libretro/Makefile.common b/Libretro/Makefile.common
+index b0bc009..595e5fe 100644
+--- a/Libretro/Makefile.common
++++ b/Libretro/Makefile.common
+@@ -41,6 +41,7 @@ SOURCES_CXX := $(LIBRETRO_DIR)/libretro.cpp \
+                $(CORE_DIR)/ConsoleLock.cpp \
+                $(CORE_DIR)/ControlManager.cpp \
+                $(CORE_DIR)/Cpu.cpp \
++               $(CORE_DIR)/DjConnector.cpp \
+                $(CORE_DIR)/CpuDebugger.cpp \
+                $(CORE_DIR)/CpuDisUtils.cpp \
+                $(CORE_DIR)/Cx4.cpp \
+diff --git a/Libretro/libretro.cpp b/Libretro/libretro.cpp
+index 6ecae6d..1338a7f 100644
+--- a/Libretro/libretro.cpp
++++ b/Libretro/libretro.cpp
+@@ -17,6 +17,9 @@
+ #include "../Core/SaveStateManager.h"
+ #include "../Core/CheatManager.h"
+ #include "../Core/SettingTypes.h"
++#ifdef DECOMP_DJ
++#include "../Core/DjConnector.h"
++#endif
+ #include "../Utilities/snes_ntsc.h"
+ #include "../Utilities/FolderUtilities.h"
+ #include "../Utilities/HexUtilities.h"
+@@ -113,6 +116,15 @@ extern "C" {
+ 	{
+ 		retroEnv = env;
+ 
++#ifdef DECOMP_DJ
++		{
++			static struct retro_get_proc_address_interface djProcs = {
++				[](const char* sym) -> retro_proc_address_t { return (retro_proc_address_t)DjConnector::GetProcAddress(sym); }
++			};
++			retroEnv(RETRO_ENVIRONMENT_SET_PROC_ADDRESS_CALLBACK, &djProcs);
++		}
++#endif
++
+ 		static constexpr struct retro_variable vars[] = {
+ 			{ MesenNtscFilter, "NTSC filter; Disabled|Composite (Blargg)|S-Video (Blargg)|RGB (Blargg)|Monochrome (Blargg)" },
+ 			{ MesenRegion, "Region; Auto|NTSC|PAL" },
+@@ -717,6 +729,9 @@ extern "C" {
+ 			//Round up to the next 1kb multiple
+ 			_saveStateSize = ((ss.str().size() * 2) + 0x400) & ~0x3FF;
+ 			retro_set_memory_maps();
++#ifdef DECOMP_DJ
++			DjConnector::OnLoad(_console.get(), game->size);
++#endif
+ 		}
+ 
+ 		return result;
+@@ -729,6 +744,9 @@ extern "C" {
+ 
+ 	RETRO_API void retro_unload_game()
+ 	{
++#ifdef DECOMP_DJ
++		DjConnector::OnUnload();
++#endif
+ 		_console->Stop(false);
+ 	}
+ 

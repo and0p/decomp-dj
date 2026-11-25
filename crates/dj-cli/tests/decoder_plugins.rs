@@ -66,7 +66,7 @@ impl Rng {
 fn the_reference_plugin_decodes_as_the_built_in_decoders_do() {
     let plugins = PluginDecoder::load(&reference_plugin(), "decoder plugin").unwrap();
     let cpus: Vec<&str> = plugins.iter().map(|p| p.cpu()).collect();
-    assert_eq!(cpus, ["6502", "mips3", "armv4t"]);
+    assert_eq!(cpus, ["6502", "mips3", "armv4t", "65816"]);
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     for p in &plugins {
         let b = decode::decoder_for(p.cpu()).unwrap();
@@ -82,7 +82,7 @@ fn the_reference_plugin_decodes_as_the_built_in_decoders_do() {
             let bytes = rng.next().to_le_bytes();
             let avail = (rng.next() % 5) as usize; // short slices too, as at the end of code
             let pc = rng.next() & 0xFFFF_FFFF;
-            let mode = (rng.next() & 1) as u32;
+            let mode = (rng.next() & 3) as u32; // the 65816 has four
             let s = &bytes[..avail.min(p.max_len())];
             assert_eq!(p.decode(s, pc, mode), b.decode(s, pc, mode), "{} {s:02x?} at {pc:#x} mode {mode}", p.cpu());
         }
@@ -95,6 +95,7 @@ fn the_reference_plugin_decodes_as_the_built_in_decoders_do() {
         ("6502", ex.join("thwaite/build/thwaite.nes"), Box::new(|| analysis::load_ca65_dbg(&ex.join("thwaite/build/thwaite.dbg"), 16).ok()), 16),
         ("6502", ex.join("tetris/build/tetris_usa.nes"), Box::new(|| analysis::load_csv(&ex.join("tetris/build/ref/tetris_symbols.csv")).ok()), 16),
         ("armv4t", ex.join("gba-test/build/gba-test.gba"), Box::new(|| analysis::load_elf(&ex.join("gba-test/symbols/gba-test.elf"), 0x0800_0000, "ROM").ok()), 0),
+        ("65816", ex.join("snes-test/build/snes-test.sfc"), Box::new(|| analysis::load_ca65_dbg(&ex.join("snes-test/build/snes-test.dbg"), 0).ok()), 0),
     ];
     for (cpu, path, funcs, header) in sweeps {
         let (Ok(rom), Some(funcs)) = (std::fs::read(&path), funcs()) else {

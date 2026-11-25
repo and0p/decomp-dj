@@ -76,7 +76,7 @@ A project can list several symbol maps. Where two describe the same bytes, the f
 listed wins, so a linker map can come first and a hand-edited `symbol_addrs.txt` can fill
 in what isn't matched yet. `dj init --symbols FILE` picks the format from the file's
 name. Functions are rolled up in the connector's code region (`PRG` on the NES, `RDRAM` on
-the N64), by the decoder for its instruction set: 6502, MIPS (`mips3`) and ARMv4T (`armv4t`) so far.
+the N64), by the decoder for its instruction set: 6502, MIPS (`mips3`), ARMv4T (`armv4t`) and 65816 so far.
 
 The player splits each function into instructions and basic blocks by a linear sweep
 from its start, the same for every instruction set: a block ends after a branch, jump,
@@ -110,6 +110,14 @@ pools, jump tables, a cartridge header): those ranges count as data, as `[[data]
 do, without writing them in annotations.toml. The mGBA connector reports `armv4t`
 ([connectors/mgba](../connectors/mgba/README.md)); coverage rolls up its `ROM` region, so
 code a game copies to IWRAM or EWRAM is flagged there but not counted in functions yet.
+
+For the 65816 (the SNES; `65816`) an immediate is one or two bytes by the register widths.
+A function starts in the widths its first instruction ran with (the connector's mode bits),
+else both 8-bit, and the sweep follows `REP` and `SEP`; widths changed any other way
+(`PLP`, a callee) aren't followed. `JSR`, `JSL` and `JSR (abs,X)` are calls; `RTS`, `RTL` and
+`RTI` return; `BRK` and `STP` stop. Branches and `JMP` stay in the instruction's bank, so a
+symbol map's addresses are 24 bits (`$018000`). The Mesen-S connector reports `65816`
+([connectors/mesen-s](../connectors/mesen-s/README.md)); coverage rolls up its `ROM`.
 
 ## Gap lists
 
@@ -192,5 +200,5 @@ that segment runs.
 ## Limits
 
 - Two cores have connectors: Mesen (NES) and Mupen64Plus-Next (N64, first version).
-- Block and function rollup decodes the 6502, MIPS (`mips3`) and ARMv4T (`armv4t`), in the connector's code region (`PRG`, `RDRAM`, the GBA's `ROM`); code that runs from the GBA's IWRAM or EWRAM isn't rolled up. Other CPUs get raw opcode-byte counts until their decoder is added.
+- Block and function rollup decodes the 6502, MIPS (`mips3`), ARMv4T (`armv4t`) and the 65816, in the connector's code region (`PRG`, `RDRAM`, the GBA's and the SNES's `ROM`); code that runs from the GBA's IWRAM or EWRAM isn't rolled up. Other CPUs get raw opcode-byte counts until their decoder is added.
 - N64: code that ran at an overlay's addresses is credited to whatever the symbol map names there, whichever overlay was loaded.

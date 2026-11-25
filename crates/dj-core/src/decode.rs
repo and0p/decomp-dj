@@ -23,7 +23,7 @@ pub fn decoder_for(cpu: &str) -> Option<&'static dyn Decoder> {
     BUILT_IN.iter().copied().find(|d| d.cpu() == cpu)
 }
 
-static BUILT_IN: [&dyn Decoder; 3] = [&Mos6502, &Mips3, &crate::arm::Armv4t];
+static BUILT_IN: [&dyn Decoder; 4] = [&Mos6502, &Mips3, &crate::arm::Armv4t, &dj_decoder::isa::W65816];
 
 // ---- plugins ------------------------------------------------------------------------
 

@@ -230,6 +230,13 @@ pub fn propose_with(req: &InitRequest, profiles: ProfileLookup) -> Result<InitPl
         }
     }
     let profile = p.profile;
+    // A symbol map's code is in the region coverage rolls up into (when that isn't PRG,
+    // which an entry without a region means): ROM on the SNES.
+    if let Some(r) = p.regions.iter().find(|r| r.rolls_up && r.facts.name != "PRG") {
+        for s in syms.iter_mut().filter(|s| s.region.is_none() && s.format == "ca65-dbg") {
+            s.region = Some(r.facts.name.clone());
+        }
+    }
     // With a console's defaults, a joypad for every port the core names inputs on (the
     // NES's two, the N64's four), so each is trimmed and named alike; else port 1 alone.
     let mut numbers: Vec<u32> = match profile {
@@ -296,7 +303,7 @@ impl CoreSuggestion {
 /// The core for a ROM file, from its header or extension.
 pub fn suggest_core(rom: &Path) -> Result<CoreSuggestion> {
     let mut head = vec![];
-    std::io::Read::read_to_end(&mut std::io::Read::take(std::fs::File::open(rom).with_context(|| format!("reading {}", rom.display()))?, 0x200), &mut head)?;
+    std::io::Read::read_to_end(&mut std::io::Read::take(std::fs::File::open(rom).with_context(|| format!("reading {}", rom.display()))?, 0x10200), &mut head)?;
     let dirs = crate::platform::core_dirs();
     let console = crate::platform::detect(&head, rom);
     let choice = console.and_then(crate::platform::core_for);
@@ -329,7 +336,7 @@ fn find_core(req: &InitRequest) -> Result<(PathBuf, Option<&'static str>)> {
     }
     let s = suggest_core(&req.rom)?;
     let (Some(console), Some(choice)) = (s.console, s.choice) else {
-        bail!("can't tell which console {} is for (dj knows NES, GBA and N64 ROMs by their header or extension), so it can't pick a core: name one with --core", req.rom.display());
+        bail!("can't tell which console {} is for (dj knows NES, SNES, GBA and N64 ROMs by their header or extension), so it can't pick a core: name one with --core", req.rom.display());
     };
     match &s.found {
         Some(found) => Ok((found.clone(), Some(console))),

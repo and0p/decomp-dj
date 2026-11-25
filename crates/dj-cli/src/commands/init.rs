@@ -180,7 +180,7 @@ fn questions<R: BufRead, W: Write>(io: &mut Asker<R, W>, args: &InitArgs) -> Res
                     None
                 }
                 (None, None, _) => {
-                    io.say("  dj can't tell which console this ROM is for (it knows NES, GBA and N64 ROMs), so it has no core to suggest. Any libretro core plays; one without a connector records no coverage.")?;
+                    io.say("  dj can't tell which console this ROM is for (it knows NES, SNES, GBA and N64 ROMs), so it has no core to suggest. Any libretro core plays; one without a connector records no coverage.")?;
                     None
                 }
             };

@@ -1,0 +1,11 @@
+dj-segment 1
+id: 7a19c2f3-e7cf-43a1-a144-33f99736fb99
+parent: 27c59d4e-4976-4927-bd72-b9bc94a73a3e
+title: Press Right
+frames: 60
+start-frame: 60
+start-hash: 0b403ecbedd8ed7a9a08ae90147a8f6d
+end-hash: 5920e46d26669e57ca095631518b22fb
+---
+10 P1 JOYPAD RIGHT 1
+12 P1 JOYPAD RIGHT 0

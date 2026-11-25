@@ -1,0 +1,17 @@
+dj-segment 1
+id: b859fb2b-8a73-410a-80cc-9e5368c76804
+parent: 27c59d4e-4976-4927-bd72-b9bc94a73a3e
+title: Tap B four times
+frames: 60
+start-frame: 60
+start-hash: 0b403ecbedd8ed7a9a08ae90147a8f6d
+end-hash: e8d0ef0d5db17d0c91bd5032104a4649
+---
+5 P1 JOYPAD B 1
+6 P1 JOYPAD B 0
+15 P1 JOYPAD B 1
+16 P1 JOYPAD B 0
+25 P1 JOYPAD B 1
+26 P1 JOYPAD B 0
+35 P1 JOYPAD B 1
+36 P1 JOYPAD B 0

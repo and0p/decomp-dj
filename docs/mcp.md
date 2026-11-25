@@ -288,6 +288,6 @@ or sharing your view.
 
 - Buttons are joypad buttons; other devices (mice, analog sticks) go through `play_text` with segment lines.
 - Fuzzing and goal searches press joypad buttons at random; they know nothing about the game.
-- Traces are for the 6502 (Mesen) and MIPS (Mupen64Plus); the mGBA connector has no trace hook. The MIPS disassembly covers loads, stores, jumps, branches and integer arithmetic, and prints the rest as `.word`. `calls` is 6502 only.
+- Traces are for the 6502 (Mesen), the 65816 (Mesen-S) and MIPS (Mupen64Plus); the mGBA connector has no trace hook. 65816 lines show the low bytes of A, X, Y and S. The MIPS disassembly covers loads, stores, jumps, branches and integer arithmetic, and prints the rest as `.word`. `calls` is 6502 only.
 - The GUI follows and shares through files, a second or so behind. It can't hand its own running core to an agent; the agent opens its own session at the same point.
 - On Windows, workers end when `dj mcp` closes their pipe, but there is no job object yet to end them if it is killed. Windows hasn't been tried.

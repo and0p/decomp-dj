@@ -109,7 +109,7 @@ pub(crate) enum Cmd {
         #[arg(long)]
         rom: Option<PathBuf>,
         /// libretro core library, or the name of one in a cores folder (`mesen_libretro`).
-        /// Default: $DJ_CORE, else the core for the ROM's console (NES, GBA, N64), looked
+        /// Default: $DJ_CORE, else the core for the ROM's console (NES, SNES, GBA, N64), looked
         /// for in $DJ_CORES, cores/ next to dj, and build/cores/
         #[arg(long)]
         core: Option<PathBuf>,

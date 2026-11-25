@@ -84,6 +84,117 @@ pub fn disasm_6502(pc: u16, op: u8, operands: &[u8], name: &dyn Fn(u16) -> Optio
     }
 }
 
+/// 65816 addressing modes, for traces.
+#[derive(Clone, Copy)]
+enum M65 {
+    Imp,
+    Acc,
+    Imm,
+    Dp,
+    DpX,
+    DpY,
+    DpInd,
+    DpIndX,
+    DpIndY,
+    DpLong,
+    DpLongY,
+    Abs,
+    AbsX,
+    AbsY,
+    Long,
+    LongX,
+    AbsInd,
+    AbsIndX,
+    AbsLong,
+    Sr,
+    SrY,
+    Rel,
+    Rel16,
+    Move,
+}
+
+/// Mnemonic and addressing mode of each 65816 opcode.
+fn op_65816(op: u8) -> (&'static str, M65) {
+    use M65::*;
+    const T: [(&str, M65); 256] = [
+        ("BRK", Imm), ("ORA", DpIndX), ("COP", Imm), ("ORA", Sr), ("TSB", Dp), ("ORA", Dp), ("ASL", Dp), ("ORA", DpLong),
+        ("PHP", Imp), ("ORA", Imm), ("ASL", Acc), ("PHD", Imp), ("TSB", Abs), ("ORA", Abs), ("ASL", Abs), ("ORA", Long),
+        ("BPL", Rel), ("ORA", DpIndY), ("ORA", DpInd), ("ORA", SrY), ("TRB", Dp), ("ORA", DpX), ("ASL", DpX), ("ORA", DpLongY),
+        ("CLC", Imp), ("ORA", AbsY), ("INC", Acc), ("TCS", Imp), ("TRB", Abs), ("ORA", AbsX), ("ASL", AbsX), ("ORA", LongX),
+        ("JSR", Abs), ("AND", DpIndX), ("JSL", Long), ("AND", Sr), ("BIT", Dp), ("AND", Dp), ("ROL", Dp), ("AND", DpLong),
+        ("PLP", Imp), ("AND", Imm), ("ROL", Acc), ("PLD", Imp), ("BIT", Abs), ("AND", Abs), ("ROL", Abs), ("AND", Long),
+        ("BMI", Rel), ("AND", DpIndY), ("AND", DpInd), ("AND", SrY), ("BIT", DpX), ("AND", DpX), ("ROL", DpX), ("AND", DpLongY),
+        ("SEC", Imp), ("AND", AbsY), ("DEC", Acc), ("TSC", Imp), ("BIT", AbsX), ("AND", AbsX), ("ROL", AbsX), ("AND", LongX),
+        ("RTI", Imp), ("EOR", DpIndX), ("WDM", Imm), ("EOR", Sr), ("MVP", Move), ("EOR", Dp), ("LSR", Dp), ("EOR", DpLong),
+        ("PHA", Imp), ("EOR", Imm), ("LSR", Acc), ("PHK", Imp), ("JMP", Abs), ("EOR", Abs), ("LSR", Abs), ("EOR", Long),
+        ("BVC", Rel), ("EOR", DpIndY), ("EOR", DpInd), ("EOR", SrY), ("MVN", Move), ("EOR", DpX), ("LSR", DpX), ("EOR", DpLongY),
+        ("CLI", Imp), ("EOR", AbsY), ("PHY", Imp), ("TCD", Imp), ("JML", Long), ("EOR", AbsX), ("LSR", AbsX), ("EOR", LongX),
+        ("RTS", Imp), ("ADC", DpIndX), ("PER", Rel16), ("ADC", Sr), ("STZ", Dp), ("ADC", Dp), ("ROR", Dp), ("ADC", DpLong),
+        ("PLA", Imp), ("ADC", Imm), ("ROR", Acc), ("RTL", Imp), ("JMP", AbsInd), ("ADC", Abs), ("ROR", Abs), ("ADC", Long),
+        ("BVS", Rel), ("ADC", DpIndY), ("ADC", DpInd), ("ADC", SrY), ("STZ", DpX), ("ADC", DpX), ("ROR", DpX), ("ADC", DpLongY),
+        ("SEI", Imp), ("ADC", AbsY), ("PLY", Imp), ("TDC", Imp), ("JMP", AbsIndX), ("ADC", AbsX), ("ROR", AbsX), ("ADC", LongX),
+        ("BRA", Rel), ("STA", DpIndX), ("BRL", Rel16), ("STA", Sr), ("STY", Dp), ("STA", Dp), ("STX", Dp), ("STA", DpLong),
+        ("DEY", Imp), ("BIT", Imm), ("TXA", Imp), ("PHB", Imp), ("STY", Abs), ("STA", Abs), ("STX", Abs), ("STA", Long),
+        ("BCC", Rel), ("STA", DpIndY), ("STA", DpInd), ("STA", SrY), ("STY", DpX), ("STA", DpX), ("STX", DpY), ("STA", DpLongY),
+        ("TYA", Imp), ("STA", AbsY), ("TXS", Imp), ("TXY", Imp), ("STZ", Abs), ("STA", AbsX), ("STZ", AbsX), ("STA", LongX),
+        ("LDY", Imm), ("LDA", DpIndX), ("LDX", Imm), ("LDA", Sr), ("LDY", Dp), ("LDA", Dp), ("LDX", Dp), ("LDA", DpLong),
+        ("TAY", Imp), ("LDA", Imm), ("TAX", Imp), ("PLB", Imp), ("LDY", Abs), ("LDA", Abs), ("LDX", Abs), ("LDA", Long),
+        ("BCS", Rel), ("LDA", DpIndY), ("LDA", DpInd), ("LDA", SrY), ("LDY", DpX), ("LDA", DpX), ("LDX", DpY), ("LDA", DpLongY),
+        ("CLV", Imp), ("LDA", AbsY), ("TSX", Imp), ("TYX", Imp), ("LDY", AbsX), ("LDA", AbsX), ("LDX", AbsY), ("LDA", LongX),
+        ("CPY", Imm), ("CMP", DpIndX), ("REP", Imm), ("CMP", Sr), ("CPY", Dp), ("CMP", Dp), ("DEC", Dp), ("CMP", DpLong),
+        ("INY", Imp), ("CMP", Imm), ("DEX", Imp), ("WAI", Imp), ("CPY", Abs), ("CMP", Abs), ("DEC", Abs), ("CMP", Long),
+        ("BNE", Rel), ("CMP", DpIndY), ("CMP", DpInd), ("CMP", SrY), ("PEI", DpInd), ("CMP", DpX), ("DEC", DpX), ("CMP", DpLongY),
+        ("CLD", Imp), ("CMP", AbsY), ("PHX", Imp), ("STP", Imp), ("JML", AbsLong), ("CMP", AbsX), ("DEC", AbsX), ("CMP", LongX),
+        ("CPX", Imm), ("SBC", DpIndX), ("SEP", Imm), ("SBC", Sr), ("CPX", Dp), ("SBC", Dp), ("INC", Dp), ("SBC", DpLong),
+        ("INX", Imp), ("SBC", Imm), ("NOP", Imp), ("XBA", Imp), ("CPX", Abs), ("SBC", Abs), ("INC", Abs), ("SBC", Long),
+        ("BEQ", Rel), ("SBC", DpIndY), ("SBC", DpInd), ("SBC", SrY), ("PEA", Abs), ("SBC", DpX), ("INC", DpX), ("SBC", DpLongY),
+        ("SED", Imp), ("SBC", AbsY), ("PLX", Imp), ("XCE", Imp), ("JSR", AbsIndX), ("SBC", AbsX), ("INC", AbsX), ("SBC", LongX),
+    ];
+    T[op as usize]
+}
+
+/// `LDA $0200,X` for a 65816 opcode at the 24-bit CPU address `pc` and its operand bytes.
+/// An immediate is as wide as the operand bytes the CPU fetched (8 or 16 bits, by the M and
+/// X flags it ran with). `name` turns the target of a jump, call or branch into a label.
+pub fn disasm_65816(pc: u32, op: u8, operands: &[u8], name: &dyn Fn(u32) -> Option<String>) -> String {
+    let (m, mode) = op_65816(op);
+    let b = |i: usize| operands.get(i).copied().unwrap_or(0) as u32;
+    let w = b(0) | b(1) << 8;
+    let l = w | b(2) << 16;
+    let bank = pc & 0xFF_0000;
+    let to = |a: u32, digits: usize| name(a).unwrap_or_else(|| if digits == 6 { format!("${a:06X}") } else { format!("${:04X}", a & 0xFFFF) });
+    // Jumps and calls within the bank name their target; data addresses depend on DB.
+    let abs = || if matches!(op, 0x20 | 0x4C) { to(bank | w, 4) } else { format!("${w:04X}") };
+    match mode {
+        M65::Imp => m.to_string(),
+        M65::Acc => format!("{m} A"),
+        M65::Imm if operands.len() >= 2 => format!("{m} #${w:04X}"),
+        M65::Imm => format!("{m} #${:02X}", b(0)),
+        M65::Dp => format!("{m} ${:02X}", b(0)),
+        M65::DpX => format!("{m} ${:02X},X", b(0)),
+        M65::DpY => format!("{m} ${:02X},Y", b(0)),
+        M65::DpInd => format!("{m} (${:02X})", b(0)),
+        M65::DpIndX => format!("{m} (${:02X},X)", b(0)),
+        M65::DpIndY => format!("{m} (${:02X}),Y", b(0)),
+        M65::DpLong => format!("{m} [${:02X}]", b(0)),
+        M65::DpLongY => format!("{m} [${:02X}],Y", b(0)),
+        M65::Abs => format!("{m} {}", abs()),
+        M65::AbsX => format!("{m} ${w:04X},X"),
+        M65::AbsY => format!("{m} ${w:04X},Y"),
+        M65::Long => format!("{m} {}", if matches!(op, 0x22 | 0x5C) { to(l, 6) } else { format!("${l:06X}") }),
+        M65::LongX => format!("{m} ${l:06X},X"),
+        M65::AbsInd => format!("{m} (${w:04X})"),
+        M65::AbsIndX => format!("{m} (${w:04X},X)"),
+        M65::AbsLong => format!("{m} [${w:04X}]"),
+        M65::Sr => format!("{m} ${:02X},S", b(0)),
+        M65::SrY => format!("{m} (${:02X},S),Y", b(0)),
+        M65::Rel => format!("{m} {}", to(bank | (pc.wrapping_add(2).wrapping_add(b(0) as u8 as i8 as u32) & 0xFFFF), 4)),
+        M65::Rel16 => format!("{m} {}", to(bank | (pc.wrapping_add(3).wrapping_add(w as u16 as i16 as u32) & 0xFFFF), 4)),
+        // The operand bytes are the destination bank, then the source; shown source first.
+        M65::Move => format!("{m} ${:02X},${:02X}", b(1), b(0)),
+    }
+}
+
 const MIPS_REGS: [&str; 32] = [
     "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "t8", "t9", "k0", "k1", "gp", "sp",
     "fp", "ra",
@@ -151,8 +262,11 @@ pub fn disasm_mips(pc: u32, w: u32, name: &dyn Fn(u32) -> Option<String>) -> Str
 }
 
 /// The instruction of an execute event, as text, for the instruction set `cpu` (a
-/// connector region's: "mips3", else the 6502).
+/// connector region's: "mips3", "65816", else the 6502).
 pub fn disasm(cpu: &str, e: &TraceEvent, name: &dyn Fn(u32) -> Option<String>) -> String {
+    if cpu == "65816" {
+        return disasm_65816(e.address(), e.value, &e.operands[..e.operand_count as usize], name);
+    }
     if cpu == "mips3" {
         let w = u32::from_be_bytes([e.value, e.operands[0], e.operands[1], e.operands[2]]);
         disasm_mips(e.address(), w, name)
@@ -161,8 +275,12 @@ pub fn disasm(cpu: &str, e: &TraceEvent, name: &dyn Fn(u32) -> Option<String>) -
     }
 }
 
-/// A CPU address as text: `$C123` on the 6502, `$80114514` with 32-bit addresses.
+/// A CPU address as text: `$C123` on the 6502, `$7E2000` on the 65816, `$80114514` with
+/// 32-bit addresses.
 pub fn addr_text(cpu: &str, a: u32) -> String {
+    if cpu == "65816" {
+        return format!("${a:06X}");
+    }
     if cpu == "mips3" {
         format!("${a:08X}")
     } else {
@@ -222,6 +340,20 @@ mod tests {
         assert_eq!(disasm_6502(0xC000, 0x20, &[0x34, 0x12], &|a| (a == 0x1234).then(|| "f".into())), "JSR f");
         assert_eq!(disasm_6502(0xC000, 0xB1, &[0x10], &none), "LDA ($10),Y");
         assert_eq!(disasm_6502(0xC000, 0x0A, &[], &none), "ASL A");
+    }
+
+    #[test]
+    fn disassembles_65816() {
+        let none = |_: u32| None;
+        assert_eq!(disasm_65816(0x00_8000, 0xA9, &[0x05], &none), "LDA #$05");
+        assert_eq!(disasm_65816(0x00_8000, 0xA9, &[0x34, 0x12], &none), "LDA #$1234");
+        assert_eq!(disasm_65816(0x00_8000, 0xC2, &[0x30], &none), "REP #$30");
+        assert_eq!(disasm_65816(0x01_8000, 0xD0, &[0xFE], &none), "BNE $8000");
+        assert_eq!(disasm_65816(0x00_8000, 0x22, &[0x00, 0x80, 0x01], &|a| (a == 0x01_8000).then(|| "on_a".into())), "JSL on_a");
+        assert_eq!(disasm_65816(0x01_8000, 0x20, &[0x13, 0x80], &|a| (a == 0x01_8013).then(|| "fade".into())), "JSR fade");
+        assert_eq!(disasm_65816(0x00_8000, 0xB7, &[0x10], &none), "LDA [$10],Y");
+        assert_eq!(disasm_65816(0x00_8000, 0x54, &[0x7E, 0x00], &none), "MVN $00,$7E");
+        assert_eq!(disasm_65816(0x00_8000, 0x7C, &[0xC7, 0x80], &none), "JMP ($80C7,X)");
     }
 
     #[test]

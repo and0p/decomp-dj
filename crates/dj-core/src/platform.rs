@@ -70,6 +70,17 @@ const MUPEN_N64: ConsoleProfile = ConsoleProfile {
     ..NONE
 };
 
+/// Mesen-S (SNES). Its RAM is the console's 128 KB of WRAM; Game Boy games, which it also
+/// plays, aren't SNES projects. RAM is filled with zeros at power-on (the connector forces
+/// it too), so runs are the same on every machine.
+const MESENS_SNES: ConsoleProfile = ConsoleProfile {
+    console: "SNES",
+    hide: &["L2", "R2", "L3", "R3"],
+    options: &[("mesen-s_ramstate", "All 0s")],
+    options_note: "RAM starts as zeros at power-on instead of random bytes, so every run hashes the same",
+    ..NONE
+};
+
 /// The profile for a core (a project's `[core] name`) playing this ROM, if dj has one.
 /// The ROM tells a Game Boy game from a GBA one on mGBA.
 pub fn for_core(core: &str, rom: Option<&[u8]>) -> Option<&'static ConsoleProfile> {
@@ -77,6 +88,7 @@ pub fn for_core(core: &str, rom: Option<&[u8]>) -> Option<&'static ConsoleProfil
     let p = match core {
         "mesen" => &MESEN_NES,
         "mgba" => &MGBA_GBA,
+        "mesen-s" => &MESENS_SNES,
         c if c.starts_with("mupen64plus") => &MUPEN_N64,
         _ => return None,
     };
@@ -84,8 +96,8 @@ pub fn for_core(core: &str, rom: Option<&[u8]>) -> Option<&'static ConsoleProfil
 }
 
 /// The console a ROM file is for, by its header, else by its file name's extension. Only
-/// the consoles `core_for` has a core for. `head` is the file's first bytes (0x200 is
-/// plenty).
+/// the consoles `core_for` has a core for. `head` is the file's first bytes (0x10200 is
+/// enough for a SNES header).
 pub fn detect(head: &[u8], path: &Path) -> Option<&'static str> {
     let at = |o: usize, bytes: &[u8]| head.get(o..o + bytes.len()) == Some(bytes);
     // iNES and NES 2.0.
@@ -100,8 +112,16 @@ pub fn detect(head: &[u8], path: &Path) -> Option<&'static str> {
     if at(4, &[0x24, 0xFF, 0xAE, 0x51]) && at(0xB2, &[0x96]) {
         return Some("GBA");
     }
+    // The SNES header (at $7FC0 for LoROM, $FFC0 for HiROM, 512 bytes on with a copier
+    // header): a map mode byte of $2x or $3x, and a checksum and its complement that add up
+    // to $FFFF.
+    let snes = |h: usize| head.get(h + 0x15).is_some_and(|m| (0x20..0x40).contains(m)) && head.get(h + 0x1C..h + 0x20).is_some_and(|c| u16::from_le_bytes([c[0], c[1]]) ^ u16::from_le_bytes([c[2], c[3]]) == 0xFFFF && c != [0xFF, 0xFF, 0, 0]);
+    if [0x7FC0, 0xFFC0, 0x81C0, 0x101C0].into_iter().any(snes) {
+        return Some("SNES");
+    }
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "nes" => Some("NES"),
+        "sfc" | "smc" => Some("SNES"),
         "z64" | "v64" | "n64" => Some("N64"),
         "gba" => Some("GBA"),
         _ => None,
@@ -125,6 +145,7 @@ pub fn core_for(console: &str) -> Option<CoreChoice> {
         "NES" => CoreChoice { title: "Mesen", library: "mesen_libretro", build: "connectors/mesen/build.sh" },
         "GBA" => CoreChoice { title: "mGBA", library: "mgba_libretro", build: "connectors/mgba/build.sh" },
         "N64" => CoreChoice { title: "Mupen64Plus-Next", library: "mupen64plus_next_libretro", build: "connectors/mupen64plus/build.sh" },
+        "SNES" => CoreChoice { title: "Mesen-S", library: "mesen-s_libretro", build: "connectors/mesen-s/build.sh" },
         _ => return None,
     })
 }
@@ -177,7 +198,7 @@ pub fn cores_in(dirs: &[PathBuf]) -> Vec<PathBuf> {
 /// the file's name without `_libretro` and its suffix.
 pub fn core_title(path: &Path) -> String {
     let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    for console in ["NES", "GBA", "N64"] {
+    for console in ["NES", "GBA", "N64", "SNES"] {
         if let Some(c) = core_for(console).filter(|c| c.library == stem) {
             return c.title.to_string();
         }
@@ -212,12 +233,20 @@ mod tests {
         assert_eq!(detect(b"rom", &p("game.v64")), Some("N64"));
         assert_eq!(detect(b"rom", &p("game.gba")), Some("GBA"));
         assert_eq!(detect(b"rom", &p("game.bin")), None);
+        // SNES: a LoROM header, and by extension.
+        let mut sfc = vec![0u8; 0x8000];
+        sfc[0x7FD5] = 0x20;
+        sfc[0x7FDC..0x7FE0].copy_from_slice(&[0x34, 0x12, 0xCB, 0xED]);
+        assert_eq!(detect(&sfc, &p("game.bin")), Some("SNES"));
+        assert_eq!(detect(b"rom", &p("game.sfc")), Some("SNES"));
+        assert_eq!(core_for("SNES").map(|c| c.library), Some("mesen-s_libretro"));
+        assert_eq!(for_core("mesen-s", None).map(|p| p.console), Some("SNES"));
         assert_eq!(detect(b"", &p("game")), None);
         // Every console detected has a core, and that core's profile is for the console.
-        for c in ["NES", "GBA", "N64"] {
+        for c in ["NES", "GBA", "N64", "SNES"] {
             assert!(core_for(c).is_some(), "{c}");
         }
-        assert_eq!(core_for("SNES"), None);
+        assert_eq!(core_for("Saturn"), None);
     }
 
     #[test]

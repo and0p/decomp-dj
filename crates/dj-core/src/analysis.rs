@@ -322,7 +322,8 @@ pub fn load_symbols(root: &Path, cfg: &crate::collection::SymbolsConfig, rom: Op
     let header = cfg.rom_header.unwrap_or_else(|| default_rom_header(&cfg.format, rom));
     let region = cfg.region.clone().unwrap_or_else(|| "PRG".into()).to_ascii_uppercase();
     let mut funcs = match cfg.format.as_str() {
-        "ca65-dbg" => load_ca65_dbg(&path, header)?,
+        // The map's code goes in the entry's region (PRG unless it says: ROM on the SNES).
+        "ca65-dbg" => load_ca65_dbg(&path, header)?.into_iter().map(|f| Function { region: region.clone(), ..f }).collect(),
         "csv" => load_csv(&path)?,
         "splat" => load_splat(&path, header, &region)?,
         "mesen-mlb" => load_mesen_mlb(&path, &region)?,
@@ -915,7 +916,7 @@ mod tests {
         assert_eq!(code_region(&[facts("RDRAM", Some("mips"), None), facts("ROM", Some("mips"), Some(0))]), "ROM");
         // The N64 connector: code runs from RDRAM; the ROM region has no CPU.
         assert_eq!(code_region(&[facts("RDRAM", Some("mips3"), None), facts("ROM", None, Some(0))]), "RDRAM");
-        assert!(has_decoder("6502") && !has_decoder("mips") && !has_decoder("65816"));
+        assert!(has_decoder("6502") && !has_decoder("mips") && has_decoder("65816") && !has_decoder("z80"));
     }
 
     #[test]

@@ -1,0 +1,67 @@
+format = 1
+dj = "0.1.0"
+name = "SNES test ROM"
+
+[rom]
+sha256 = "5ce87bd362d9003080b514d3922bf5a71f0f5927eb839058121ac29ba4727a73"
+file = "snes-test.sfc"
+
+[core]
+name = "mesen-s"
+build = "mesen-s@9e4fdeb9+dj.be980edc"
+sha256 = ""
+
+[core.options]
+mesen-s_aspect_ratio = "Auto"
+mesen-s_blend_high_res = "disabled"
+mesen-s_cubic_interpolation = "disabled"
+mesen-s_gbmodel = "Auto"
+mesen-s_hle_coprocessor = "disabled"
+mesen-s_ntsc_filter = "Disabled"
+mesen-s_overclock = "None"
+mesen-s_overclock_type = "Before NMI"
+mesen-s_overscan_horizontal = "None"
+mesen-s_overscan_vertical = "None"
+# Zeros at power-on instead of random bytes (the connector forces it too)
+mesen-s_ramstate = "All 0s"
+mesen-s_region = "Auto"
+mesen-s_sgb2 = "enabled"
+mesen-s_superfx_overclock = "100%"
+
+[[ports]]
+port = 1
+device = "JOYPAD"
+hide = [
+    "L2",
+    "R2",
+    "L3",
+    "R3",
+]
+
+[[ports]]
+port = 2
+device = "JOYPAD"
+hide = [
+    "L2",
+    "R2",
+    "L3",
+    "R3",
+]
+
+[hash]
+algorithm = "blake3"
+# RAM is the console's 128 KB of WRAM; SRAM the cartridge's 2 KB
+regions = [
+    "RAM",
+    "SRAM",
+]
+
+[tick]
+# reset::loop: the main loop runs JSR frame once per frame, after WAI
+exec = "ROM:0x36"
+
+[[symbols]]
+file = "build/snes-test.dbg"
+format = "ca65-dbg"
+# LoROM: the ROM file has no copier header, so .dbg file offsets are ROM offsets
+region = "ROM"

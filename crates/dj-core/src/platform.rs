@@ -262,9 +262,56 @@ pub fn find_core(library: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
     dirs.iter().map(|d| crate::libretro::library_path(&d.join(library))).find(|p| p.is_file())
 }
 
+/// Where a project's core `path` points (docs/config.md#core-paths). An absolute path is
+/// used as it is and a relative one is from the project's folder `root`. A name with no
+/// folder that isn't in the project is then looked for in `core_dirs`, so a project can say
+/// `mesen_libretro` and use the core that came with dj. When it is nowhere, this is the
+/// place in the project, for the error to name. The suffix is left for `library_path`.
+pub fn project_core(root: &Path, path: &Path) -> PathBuf {
+    project_core_in(root, path, &core_dirs())
+}
+
+fn project_core_in(root: &Path, path: &Path, dirs: &[PathBuf]) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    let in_project = root.join(path);
+    if path.components().count() != 1 || crate::libretro::library_path(&in_project).is_file() {
+        return in_project;
+    }
+    path.to_str().and_then(|name| find_core(name, dirs)).unwrap_or(in_project)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_core_named_without_a_folder() {
+        let tmp = std::env::temp_dir().join(format!("dj-project-core-{}", std::process::id()));
+        let (project, shipped) = (tmp.join("project"), tmp.join("cores"));
+        std::fs::create_dir_all(project.join("sub")).unwrap();
+        std::fs::create_dir_all(&shipped).unwrap();
+        let lib = |dir: &Path, name: &str| crate::libretro::library_path(&dir.join(name));
+        std::fs::write(lib(&shipped, "a_libretro"), b"").unwrap();
+        std::fs::write(lib(&shipped, "b_libretro"), b"").unwrap();
+        std::fs::write(lib(&project, "b_libretro"), b"").unwrap();
+        let dirs = [shipped.clone()];
+        let at = |path: &str| project_core_in(&project, Path::new(path), &dirs);
+        // Not in the project: the one in a folder dj looks in.
+        assert_eq!(at("a_libretro"), lib(&shipped, "a_libretro"));
+        assert_eq!(at(lib(Path::new(""), "a_libretro").to_str().unwrap()), lib(&shipped, "a_libretro"));
+        // The project's own comes first.
+        assert_eq!(at("b_libretro"), project.join("b_libretro"));
+        // Nowhere: the place in the project, which the error then names.
+        assert_eq!(at("c_libretro"), project.join("c_libretro"));
+        // A path with a folder, or an absolute one, is only that path.
+        assert_eq!(at("sub/a_libretro"), project.join("sub/a_libretro"));
+        assert_eq!(at("./a_libretro"), project.join("./a_libretro"));
+        let abs = tmp.join("elsewhere").join("a_libretro");
+        assert_eq!(at(abs.to_str().unwrap()), abs);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 
     #[test]
     fn consoles_from_rom_files() {

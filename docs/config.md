@@ -117,6 +117,8 @@ format = "ca65-dbg"
 
 A core library's `path` (in `[core]`, `core = "path"` in `local.toml`, `--core`, and `[[compare]]`) may leave out the platform's suffix, so one path works on every OS: `cores/mesen_libretro` is `cores/mesen_libretro.dylib` on macOS, `.so` on Linux and other Unixes and `.dll` on Windows. A path that ends in `.so`, `.dylib` or `.dll`, or names a file that exists as written, is used as it is. Any other path gets the suffix added to the whole name, so `cores/foo.v2` is `cores/foo.v2.dylib` on macOS. Nothing is added to the name itself (no `_libretro`). Errors name the file looked for.
 
+A relative path is from the project's folder, and an absolute path is used as written. A name with no folder in it (`mesen_libretro`, not `./mesen_libretro` or `cores/mesen_libretro`) that isn't in the project's folder is then looked for where dj keeps cores: `$DJ_CORES`, `cores/` next to the program, `build/cores/` of a source checkout, and `build/cores/` in the current folder. So a `config.toml` can name a core that comes with dj and work on every machine, and a path in `local.toml` still replaces it. A path with a folder is never looked for anywhere else.
+
 ### `[core.options]`
 
 Every option the core reads, as `key = "value"` strings. `dj init` records all of them (not only the ones you changed), so the setup stays pinned when a core's defaults change. Pass `--option KEY=VALUE` to `init` to set one up front.

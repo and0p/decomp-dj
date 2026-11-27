@@ -7,6 +7,7 @@ sha256 = "d5c94842796ee8bed137573b66c3fddf10b7289448837e00c26ed78b8a6a7d39"
 file = "gb-test.gbc"
 
 [core]
+path = "sameboy_libretro"
 name = "sameboy"
 build = "sameboy@90e28995+dj.d16b71e2"
 sha256 = ""

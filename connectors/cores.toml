@@ -1,0 +1,82 @@
+# The cores dj has a connector for, and how each is checked. `scripts/cores.py` reads this
+# file, and so does CI through it (.github/workflows/ci.yml): adding a core is adding a
+# [[core]] here, with no change to the workflow.
+#
+#   name      the connector's folder, connectors/<name>/ (its build.sh builds the core)
+#   library   the core's file in build/cores/, without its suffix
+#   example   the project in examples/ that is replayed with it; none: the core is only built
+#   rom       the example's ROM, relative to the example
+#   build_rom the command that builds that ROM from source, run in the example's folder
+#   after     commands run after the replay, from the top of the repository. {dj}, {rom} and
+#             {core} stand for the paths in use
+#   push      the systems checked on every push and pull request (default: linux). Every
+#             system in `systems` is checked when the connector or its example changes, on
+#             the weekly run, and on a run started by hand
+#   systems   the systems the core is built for in CI (default: linux and macos)
+#   apt, brew, pip
+#             packages the build or the ROM needs beyond a C toolchain, git, make, cmake and
+#             Python
+#   experimental
+#             true: a failure is reported but doesn't fail the run (not yet seen to pass on
+#             the runners)
+
+[[core]]
+name = "mesen"
+library = "mesen_libretro"
+example = "thwaite"
+rom = "build/thwaite.nes"
+build_rom = "bash build-rom.sh"
+pip = ["pillow"]
+# The decomp draws with OpenGL; dj gives it a context with no window (EGL on Linux, which
+# Mesa's software renderer provides on a runner with no GPU).
+apt = ["libegl1", "libegl-mesa0", "libgl1-mesa-dri"]
+push = ["linux", "macos"]
+after = [
+  "bash examples/thwaite/.decomp/build.sh",
+  "{dj} -C examples/thwaite parity check --compare decomp --rom {rom} --core {core}",
+]
+
+[[core]]
+name = "mgba"
+library = "mgba_libretro"
+example = "gba-test"
+rom = "build/gba-test.gba"
+build_rom = "bash build-rom.sh"
+# The ROM is built with clang for ARM, llvm-objcopy and an ELF linker.
+apt = ["clang", "lld", "llvm"]
+brew = ["llvm"]
+experimental = true
+
+[[core]]
+name = "mesen-s"
+library = "mesen-s_libretro"
+example = "snes-test"
+rom = "build/snes-test.sfc"
+build_rom = "bash build-rom.sh"
+experimental = true
+
+[[core]]
+name = "sameboy"
+library = "sameboy_libretro"
+example = "gb-test"
+rom = "build/gb-test.gbc"
+build_rom = "python3 build-rom.py"
+experimental = true
+
+[[core]]
+name = "genesis-plus-gx"
+library = "genesis_plus_gx_libretro"
+example = "genesis-test"
+rom = "build/genesis-test.bin"
+build_rom = "bash build-rom.sh"
+experimental = true
+
+# No example yet that can be shared (the N64 project in use is a commercial game), so the
+# core is only built, and only on the weekly run.
+[[core]]
+name = "mupen64plus"
+library = "mupen64plus_next_libretro"
+apt = ["pkg-config", "zlib1g-dev", "libpng-dev", "libgl1-mesa-dev"]
+brew = ["pkg-config", "libpng"]
+push = []
+experimental = true

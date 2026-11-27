@@ -36,7 +36,7 @@ Boot, skip the legal screen
 ../../connectors/mesen/build.sh                  # core with the coverage connector
 cargo build --release -p dj-cli
 E=../../target/release/dj
-$E check . --rom build/thwaite.nes --core ../../build/cores/mesen_libretro.so   # .so/.dylib/.dll
+$E check . --rom build/thwaite.nes               # the core is named in config.toml and found in build/cores/
 $E summary . --segments
 $E gaps . --csv gaps.csv
 ```

@@ -83,7 +83,7 @@ game. Its README walks through it; in short, from the repository root:
 
 ```sh
 (cd examples/thwaite && ./build-rom.sh)          # the ROM and symbols, into examples/thwaite/build/
-dj -C examples/thwaite check --rom examples/thwaite/build/thwaite.nes --core build/cores/mesen_libretro   # the .so/.dylib/.dll suffix is added
+dj -C examples/thwaite check --rom examples/thwaite/build/thwaite.nes   # the core is named in the project's config.toml and found in build/cores/
 dj -C examples/thwaite summary --segments
 target/release/dj-gui examples/thwaite
 ```

@@ -7,6 +7,7 @@ sha256 = "b8475cd43021166fecc63da8118627d0e0274a4286c7a9f9f8f93acc9dea04b3"
 file = "genesis-test.bin"
 
 [core]
+path = "genesis_plus_gx_libretro"
 name = "genesis plus gx"
 build = "genesis-plus-gx@51348f65+dj.fb8782cb"
 sha256 = ""

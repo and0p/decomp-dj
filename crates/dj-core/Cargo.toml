@@ -24,5 +24,8 @@ uuid.workspace = true
 zip = { version = "2", default-features = false, features = ["deflate"] }
 zstd = "0.13"
 
+[build-dependencies]
+cc = "1"
+
 [target."cfg(unix)".dependencies]
 libc.workspace = true

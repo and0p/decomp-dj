@@ -29,13 +29,14 @@ HiROM mapping; the project plays the LoROM one.
 Then play it, from this folder:
 
 ```sh
-dj check --rom build/snes-test.sfc --core ../../build/cores/mesen-s_libretro
+dj check --rom build/snes-test.sfc
 dj check --from-power-on --strict
 dj connector-check
 dj summary --segments
 ```
 
-(`--rom` and `--core` are saved in `.local/local.toml`, so later commands don't need them.)
+(`--rom` is saved in `.local/local.toml`, so later commands don't need it. The core needs no
+flag: `config.toml` names it, `mesen-s_libretro`, and dj finds it in `build/cores/`.)
 
 ## The project
 

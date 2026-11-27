@@ -96,18 +96,18 @@ pub(super) fn parse_option_values(v: &str) -> (String, Vec<String>) {
     (values.first().cloned().unwrap_or_default(), values)
 }
 
-/// `retro_log_printf_t`, without the variadic part: stable Rust can't define a C variadic
-/// function, but the fixed arguments arrive the same way (registers on arm64 and x86-64), so
-/// this reads the level and the format string and ignores the rest. Info, warnings and errors
-/// go to the console log, warnings and errors also to stderr, with the format unexpanded. Some cores call the log callback without checking
-/// it (mupen64plus-libretro-nx does in `update_variables`), so offering one also keeps them
-/// from crashing.
-pub(super) unsafe extern "C" fn core_log(level: u32, fmt: *const c_char) {
-    if fmt.is_null() || level == 0 {
-        return; // debug messages: too many
-    }
-    let text = CStr::from_ptr(fmt).to_string_lossy();
-    // Info and up go to the console (View > Debug console in dj-gui); warnings and errors to stderr too.
+extern "C" {
+    /// `retro_log_printf_t`, in log.c: it fills in the format and calls `dj_core_log_text`.
+    /// Some cores call the log callback without checking it (mupen64plus-libretro-nx does in
+    /// `update_variables`), so offering one also keeps them from crashing.
+    pub(super) fn dj_core_log(level: u32, fmt: *const c_char, ...);
+}
+
+/// One message from the core, its format filled in. Info, warnings and errors go to the
+/// console log (View > Debug console in dj-gui), warnings and errors also to stderr.
+#[no_mangle]
+unsafe extern "C" fn dj_core_log_text(level: u32, text: *const c_char) {
+    let text = CStr::from_ptr(text).to_string_lossy();
     let lvl = match level {
         1 => crate::console::Level::Info,
         2 => crate::console::Level::Warn,
@@ -125,7 +125,7 @@ pub(super) unsafe extern "C" fn core_log(level: u32, fmt: *const c_char) {
 pub(super) unsafe extern "C" fn env_cb<const S: usize>(cmd: u32, data: *mut c_void) -> bool {
     match cmd {
         ENV_GET_LOG_INTERFACE => {
-            *(data as *mut unsafe extern "C" fn(u32, *const c_char)) = core_log;
+            *(data as *mut unsafe extern "C" fn(u32, *const c_char, ...)) = dj_core_log;
             true
         }
         ENV_GET_CAN_DUPE => {

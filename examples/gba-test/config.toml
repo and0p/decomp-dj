@@ -7,6 +7,7 @@ sha256 = "455be507ae7da205035e3f0662bc030b546356be8cdf0d41cdb8cd2d40830a54"
 file = "gba-test.gba"
 
 [core]
+path = "mgba_libretro"
 name = "mgba"
 build = "mgba@7a12d6d4+dj.05377d59"
 sha256 = ""

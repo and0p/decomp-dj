@@ -27,12 +27,14 @@ of battery RAM, Color compatible). It always gives the same bytes, so `[rom] sha
 every machine. `--mapper mbc1|mbc3` and `--dmg` (with `--out`) make variants of the same
 program, for trying other mappers and the original Game Boy by hand.
 
-Then set the ROM and the core in `.local/local.toml` (relative to this folder):
+Then set the ROM in `.local/local.toml` (relative to this folder):
 
 ```toml
-core = "../../build/cores/sameboy_libretro"
 rom = "build/gb-test.gbc"
 ```
+
+The core needs no setting: `config.toml` names it (`sameboy_libretro`), and dj finds it in
+`build/cores/`.
 
 and play it: `dj -C examples/gb-test check --from-power-on --strict`, `dj -C examples/gb-test summary`.
 

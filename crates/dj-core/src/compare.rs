@@ -723,7 +723,7 @@ impl OpenSpec {
     pub fn resolve(col: &Collection, name: &str, baseline_core: &Path, rom: Option<&Path>) -> Result<OpenSpec> {
         let cfg = col.config.compare.iter().find(|c| c.name == name).ok_or_else(|| anyhow!("no [[compare]] entry is named \"{name}\""))?;
         let path = cfg.path.as_ref().ok_or_else(|| anyhow!("[[compare]] \"{name}\" has no path: set `path` (in config.toml, or in .local/local.toml for this machine)"))?;
-        let path = crate::libretro::library_path(&if path.is_relative() { col.root.join(path) } else { path.clone() });
+        let path = crate::libretro::library_path(&crate::platform::project_core(&col.root, path));
         if !path.is_file() {
             bail!("the core library {} doesn't exist", path.display());
         }

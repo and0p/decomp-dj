@@ -241,8 +241,7 @@ Once the ROM and the core are chosen, dj-gui loads the core with the ROM and sho
 **View > Debug console** (off when the app starts) opens a log at the bottom of the sidebar, below
 the coverage map: what dj says while it runs. It holds the warnings and notes dj prints (a
 core option the core doesn't declare, a core build other than the project's), the cores' own
-log messages (libretro's log interface: info, warnings and errors, their format strings not
-filled in), what decoder plugins print in their worker processes, and
+log messages (libretro's log interface: info, warnings and errors), what decoder plugins print in their worker processes, and
 the status bar's messages. Lines show the seconds since the app started and where they came
 from (`dj`, `core`, `compare`, `decode`, `dj-gui`). Filter by text, show or hide Info, Warn
 and Error, **Copy** the lines shown (for a bug report) or **Clear** them. Drag its top edge to

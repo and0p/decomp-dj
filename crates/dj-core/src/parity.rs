@@ -252,7 +252,7 @@ pub fn current_build(col: &Collection, name: &str) -> Result<String> {
     let spec_lib = {
         let cfg = col.config.compare.iter().find(|c| c.name == name).ok_or_else(|| anyhow::anyhow!("no [[compare]] entry is named \"{name}\""))?;
         let path = cfg.path.as_ref().ok_or_else(|| anyhow::anyhow!("[[compare]] \"{name}\" has no path on this machine"))?;
-        crate::libretro::library_path(&if path.is_relative() { col.root.join(path) } else { path.clone() })
+        crate::libretro::library_path(&crate::platform::project_core(&col.root, path))
     };
     let m = std::fs::metadata(&spec_lib).map_err(|e| anyhow::anyhow!("the comparison core {}: {e}", spec_lib.display()))?;
     let stamp = (m.modified()?, m.len());

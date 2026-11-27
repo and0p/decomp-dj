@@ -7,6 +7,7 @@ sha256 = "5ce87bd362d9003080b514d3922bf5a71f0f5927eb839058121ac29ba4727a73"
 file = "snes-test.sfc"
 
 [core]
+path = "mesen-s_libretro"
 name = "mesen-s"
 build = "mesen-s@9e4fdeb9+dj.be980edc"
 sha256 = ""

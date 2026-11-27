@@ -24,12 +24,14 @@ button runs different code:
 `build-rom.sh` needs LLVM's `clang` and `llvm-objcopy` (Homebrew's `llvm`) and an ELF linker
 for ARM: `ld.lld`, or the `rust-lld` that comes with Rust. No GBA toolchain is needed.
 
-Then set the ROM and the core in `.local/local.toml` (relative to this folder):
+Then set the ROM in `.local/local.toml` (relative to this folder):
 
 ```toml
-core = "../../build/cores/mgba_libretro"
 rom = "build/gba-test.gba"
 ```
+
+The core needs no setting: `config.toml` names it (`mgba_libretro`), and dj finds it in
+`build/cores/`.
 
 and play it: `dj -C examples/gba-test check`, `dj -C examples/gba-test summary`.
 

@@ -33,7 +33,7 @@ goes back to the game type screen, not to the level grid.
 
 ```sh
 cd examples/tetris
-../../target/release/dj check --rom build/tetris_usa.nes --core ../../build/cores/mesen_libretro.dylib
+../../target/release/dj check --rom build/tetris_usa.nes   # the core is named in config.toml and found in build/cores/
 ../../target/release/dj-gui .
 ```
 

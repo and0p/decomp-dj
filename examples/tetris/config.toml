@@ -7,6 +7,7 @@ sha256 = "ddb876c302cfd4ee19fabff8e3ede0b6801ded70c49980d1682a32d352953082"
 file = "tetris_usa.nes"
 
 [core]
+path = "mesen_libretro"
 name = "mesen"
 build = "mesen@0102910c+dj.6b25b84c"
 sha256 = ""

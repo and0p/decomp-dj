@@ -9,6 +9,7 @@ file = "thwaite.nes"
 shareable = true
 
 [core]
+path = "mesen_libretro"
 name = "mesen"
 build = "mesen@0102910c+dj.6b25b84c"
 sha256 = ""

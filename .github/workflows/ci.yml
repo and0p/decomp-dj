@@ -1,10 +1,18 @@
 # Builds, tests and packages decomp-dj on Linux, macOS and Windows on every push to main and
-# every pull request; the portable ZIPs are kept as artifacts of the run. Also replays the
-# Thwaite example from power-on with the Mesen core (Linux and macOS), so a change that makes
-# playback differ shows up, and checks the Thwaite decomp (examples/thwaite/.decomp) against
-# the original with `dj parity`, so a change to dj's comparison cores or to the decomp that
-# breaks parity shows up. Windows is allowed to fail until it has been tried by hand
-# (.agents/RELEASE_PLAN.md).
+# every pull request; the portable ZIPs are kept as artifacts of the run. Windows is allowed
+# to fail until it has been tried by hand (.agents/RELEASE_PLAN.md).
+#
+# Also checks every core dj has a connector for. The cores are listed in
+# connectors/cores.toml, and scripts/cores.py turns that list into the `cores` job's matrix,
+# so a new core needs a line there and nothing here. For each core: its connector's build.sh
+# (kept in a cache until the connector changes), the example's ROM built from source, a
+# replay of the example from power-on with every recorded hash compared, and
+# `dj connector-check`. Thwaite (Mesen) is also checked against its decomp with `dj parity`.
+#
+# - Every push: each core on Linux, from the cache (seconds a core). Thwaite on macOS too.
+# - A change to a connector or its example: that core on every system it supports.
+# - Weekly, and a run started by hand: every core on every system, built anew with no
+#   cache, since the pinned sources don't change but the runners' toolchains do.
 name: CI
 
 on:
@@ -12,6 +20,9 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  schedule:
+    # Mondays, 06:17 UTC.
+    - cron: "17 6 * * 1"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -66,8 +77,8 @@ jobs:
           path: dist/*.zip
           if-no-files-found: error
 
-  replay:
-    name: Replay Thwaite, check its decomp (${{ matrix.name }})
+  dj:
+    name: dj for the core checks (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -85,55 +96,82 @@ jobs:
       - name: Build dj
         run: cargo build --release --locked -p dj-cli
 
-      # The Mesen core and the Thwaite ROM are built from pinned sources, so they're cached
-      # by the scripts and patch that pin them.
-      - uses: actions/cache@v5
-        id: mesen
+      - uses: actions/upload-artifact@v5
         with:
-          path: build/cores
-          key: mesen-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('connectors/mesen/build.sh', 'connectors/mesen/dj-mesen.patch', 'connectors/mesen/src/**') }}
+          name: dj-${{ matrix.name }}
+          path: target/release/dj
+          if-no-files-found: error
+          retention-days: 3
 
-      - name: Build the Mesen core
-        if: steps.mesen.outputs.cache-hit != 'true'
-        run: bash connectors/mesen/build.sh
-
-      - uses: actions/cache@v5
-        id: thwaite
+  plan:
+    name: Which cores to check
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
         with:
-          path: examples/thwaite/build
-          key: thwaite-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('examples/thwaite/build-rom.sh') }}
+          # The history, to see which connectors this push or pull request changed.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v6
-        if: steps.thwaite.outputs.cache-hit != 'true'
         with:
           python-version: "3.12"
 
-      - name: Build the Thwaite ROM
-        if: steps.thwaite.outputs.cache-hit != 'true'
-        run: |
-          python -m pip install pillow
-          cd examples/thwaite && bash build-rom.sh
+      - id: matrix
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
+        run: python scripts/cores.py matrix --event "${{ github.event_name }}" --base "$BASE" >> "$GITHUB_OUTPUT"
 
-      - name: Replay every segment from power-on
-        # Checks every recorded hash; fails if any segment plays differently here.
-        run: |
-          core=build/cores/mesen_libretro
-          target/release/dj -C examples/thwaite check --from-power-on --strict --rom examples/thwaite/build/thwaite.nes --core "$core"
+  cores:
+    name: ${{ matrix.core }} (${{ matrix.system }})
+    needs: [dj, plan]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
 
-      - name: OpenGL without a display
-        # The decomp draws with OpenGL. dj gives it a context with no window: EGL on Linux,
-        # which Mesa's software renderer provides on a runner with no GPU.
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libegl1 libegl-mesa0 libgl1-mesa-dri
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
 
-      - name: Build the Thwaite decomp
-        run: bash examples/thwaite/.decomp/build.sh
+      - uses: actions/download-artifact@v5
+        with:
+          name: dj-${{ matrix.system }}
+          path: target/release
 
-      - name: Check the decomp's parity with the original
-        # Every frame of every segment; fails if one differs. Results are kept per build of
-        # the decomp, and each run builds it anew, so every segment is checked.
-        run: |
-          target/release/dj -C examples/thwaite parity check --compare decomp \
-            --rom examples/thwaite/build/thwaite.nes --core build/cores/mesen_libretro
+      - run: chmod +x target/release/dj
+
+      - name: Packages the core and its ROM need
+        run: python scripts/cores.py deps ${{ matrix.core }}
+
+      # A core is built from a pinned commit and the connector's own files, so it is kept
+      # until one of those changes. The weekly run builds it anew.
+      - uses: actions/cache@v5
+        id: core
+        if: ${{ !matrix.fresh }}
+        with:
+          path: build/cores
+          key: core-${{ matrix.core }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(format('connectors/{0}/**', matrix.core), 'include/**') }}
+
+      - name: Build the core
+        if: steps.core.outputs.cache-hit != 'true'
+        run: python scripts/cores.py build ${{ matrix.core }}
+
+      - uses: actions/cache@v5
+        id: rom
+        if: ${{ matrix.example != '' && !matrix.fresh }}
+        with:
+          path: examples/${{ matrix.example }}/build
+          key: rom-${{ matrix.example }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(format('examples/{0}/build-rom.*', matrix.example), format('examples/{0}/src/**', matrix.example), format('examples/{0}/tools/**', matrix.example)) }}
+
+      - name: Build the example's ROM
+        if: matrix.example != '' && steps.rom.outputs.cache-hit != 'true'
+        run: python scripts/cores.py rom ${{ matrix.core }}
+
+      - name: Replay the example and check the connector
+        # Every recorded hash, from power-on: fails if a segment plays differently here.
+        run: python scripts/cores.py check ${{ matrix.core }}

@@ -526,10 +526,11 @@ impl Collection {
     /// them). A relative path in them is from the working directory.
     pub fn settings(&self) -> Result<LocalConfig> {
         let mut s: LocalConfig = toml::Value::Table(layered_table(&self.root)?).try_into().context("reading the settings in config.toml and .local/local.toml")?;
-        for p in [&mut s.rom, &mut s.core].into_iter().flatten() {
-            if p.is_relative() {
-                *p = self.root.join(&*p);
-            }
+        if let Some(p) = s.rom.as_mut().filter(|p| p.is_relative()) {
+            *p = self.root.join(&*p);
+        }
+        if let Some(p) = s.core.as_mut() {
+            *p = crate::platform::project_core(&self.root, p);
         }
         for (var, slot) in [(ROM_ENV, &mut s.rom), (CORE_ENV, &mut s.core)] {
             if let Some(v) = std::env::var_os(var).filter(|v| !v.is_empty()) {

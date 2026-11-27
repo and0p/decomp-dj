@@ -112,8 +112,8 @@ Regions, in index order (connector API version 3), all `cpu` `sm83`:
   Boys in one core) reports only the first.
 - **Linux** hasn't been tried yet; the build needs nothing macOS-specific.
 
-- **Log lines.** SameBoy logs two errors when it loads (no boot ROM in the system
-  directory, so it uses its own); dj prints them unexpanded, as `core error: %s`.
+- **Log lines.** SameBoy logs `Could not open boot ROM` twice when it loads: it looks for
+  one in the system directory first, finds none, and uses the one built into the core.
 
 ## Checked
 

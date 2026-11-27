@@ -614,6 +614,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "cc",
  "crc32fast",
  "dj-decoder",
  "libc",

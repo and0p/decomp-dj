@@ -49,3 +49,16 @@ void     dj_set_breakpoints(const struct dj_break *list, size_t n, dj_break_fn f
 | [mesen-s](mesen-s/) | Super Nintendo | libretro/Mesen-S | API 3: the main 65816's ROM (LoROM, HiROM and the rest), WRAM and SRAM, register-width mode bits, breakpoints, traces; no coprocessors |
 | [sameboy](sameboy/) | Game Boy, Game Boy Color | LIJI32/SameBoy | API 3: ROM through every mapper's banks, WRAM, HRAM, boot ROM and cartridge RAM, breakpoints, trace hook |
 | [genesis-plus-gx](genesis-plus-gx/) | Mega Drive / Genesis | libretro/Genesis-Plus-GX | API 3: ROM and RAM of the 68000, breakpoints, trace hook; not the Z80, Mega CD or 32X. Non-commercial licence |
+
+## Checking them
+
+[cores.toml](cores.toml) lists every core here with the example project that is replayed
+with it. To build what is missing and check them all, from the top of the repository:
+
+```
+scripts/cores.py run            # or: scripts/cores.py run mesen-s
+```
+
+For each core that is: its `build.sh`, the example's ROM built from source, a replay of the
+example from power-on with every recorded hash compared, and `dj connector-check`. CI runs
+the same list (`.github/workflows/ci.yml`).

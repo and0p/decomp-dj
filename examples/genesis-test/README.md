@@ -26,12 +26,14 @@ changes; each button runs different code:
 68000 assembler, with just the instructions [src/main.s](src/main.s) uses, so no Mega Drive
 toolchain is needed. It writes the symbol map too, a csv with one line per `.func` block.
 
-Then set the ROM and the core in `.local/local.toml` (relative to this folder):
+Then set the ROM in `.local/local.toml` (relative to this folder):
 
 ```toml
-core = "../../build/cores/genesis_plus_gx_libretro"
 rom = "build/genesis-test.bin"
 ```
+
+The core needs no setting: `config.toml` names it (`genesis_plus_gx_libretro`), and dj finds it in
+`build/cores/`.
 
 and play it: `dj -C examples/genesis-test check`, `dj -C examples/genesis-test summary`.
 

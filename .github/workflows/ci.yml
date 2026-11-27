@@ -155,7 +155,7 @@ jobs:
         if: ${{ !matrix.fresh }}
         with:
           path: build/cores
-          key: core-${{ matrix.core }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(format('connectors/{0}/**', matrix.core), 'include/**') }}
+          key: core-${{ matrix.core }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles(format('connectors/{0}/**', matrix.core), 'connectors/build-core.sh', 'include/**') }}
 
       - name: Build the core
         if: steps.core.outputs.cache-hit != 'true'

@@ -1,5 +1,7 @@
 # Builds the portable ZIPs for Linux, macOS and Windows and puts them, with their SHA-256
-# sums, on a draft GitHub release, to check and publish by hand. Runs when a version tag
+# sums, on a draft GitHub release, to check and publish by hand. The Linux and macOS ZIPs
+# carry the cores connectors/cores.toml lists for bundling, built here from the connectors;
+# each core's source goes on the release as a tarball. (Windows has no cores yet.) Runs when a version tag
 # (v0.1.0) is pushed, or by hand from the Actions tab (which builds the ZIPs as artifacts
 # without a release).
 name: Release
@@ -37,13 +39,33 @@ jobs:
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
           [ "v$version" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} but Cargo.toml says $version"; exit 1; }
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: What the cores need
+        if: runner.os != 'Windows'
+        run: python scripts/cores.py deps --bundled
+
+      - name: Build and package, with the cores
+        if: runner.os != 'Windows'
+        run: bash scripts/package.sh --build --cores
+
       - name: Build and package
+        if: runner.os == 'Windows'
         run: bash scripts/package.sh --build
+
+      # The cores' source is the same on every system: made once.
+      - name: The cores' source
+        if: runner.os == 'Linux'
+        run: python scripts/cores.py sources dist
 
       - uses: actions/upload-artifact@v5
         with:
           name: decomp-dj-${{ matrix.name }}
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
           if-no-files-found: error
 
   release:
@@ -60,7 +82,7 @@ jobs:
           merge-multiple: true
 
       - name: Checksums
-        run: cd dist && sha256sum *.zip > SHA256SUMS && cat SHA256SUMS
+        run: cd dist && sha256sum *.zip *.tar.gz > SHA256SUMS && cat SHA256SUMS
 
       - uses: softprops/action-gh-release@v2
         with:
@@ -68,9 +90,11 @@ jobs:
           name: decomp-dj ${{ github.ref_name }}
           files: |
             dist/*.zip
+            dist/*.tar.gz
             dist/SHA256SUMS
           body: |
-            Portable builds: unzip and run `dj` (the command line) or `dj-gui` (`decomp-dj.app` on macOS). Nothing to install; cores aren't included (see `connectors/README.md` to build one).
+            Portable builds: unzip and run `dj` (the command line) or `dj-gui` (`decomp-dj.app` on macOS). Nothing to install.
+            The Linux and macOS ZIPs include libretro cores built with decomp-dj's connectors, in `cores/`; the Windows ZIP has none yet (see `connectors/README.md` to build one).
             macOS: the app isn't signed with a Developer ID; after unzipping, run `xattr -dr com.apple.quarantine decomp-dj-*` once, or right-click the app and choose Open.
             Check a download against `SHA256SUMS`.
-            decomp-dj is GPL-3.0-or-later (`LICENSE.txt` in each ZIP); the source for this release is the `${{ github.ref_name }}` tag of this repository.
+            decomp-dj is MIT (`LICENSE.txt` in each ZIP); its source for this release is the `${{ github.ref_name }}` tag of this repository. The cores are separate programs under their own licences (`cores/<core>.LICENSE.txt`), and each core's complete source as built is a `*-source.tar.gz` file on this release (`cores/README.txt` says which).

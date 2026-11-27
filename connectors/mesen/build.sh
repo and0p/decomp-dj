@@ -4,46 +4,14 @@
 # Needs git, make and a C++11 compiler. On Windows, run it from MSYS2.
 set -euo pipefail
 
-MESEN_REPO="https://github.com/libretro/Mesen.git"
-MESEN_COMMIT="0102910c39ad1a62bc3f784466f3f67ca9eae335"
+REPO="https://github.com/libretro/Mesen.git"
+COMMIT="0102910c39ad1a62bc3f784466f3f67ca9eae335"
+CLEAN="Core Libretro"
+ID_HEADER="Core/DjBuildId.h"
+BUILT="Libretro/mesen_libretro"
 
-here="$(cd "$(dirname "$0")" && pwd)"
-out="${1:-$here/../../build/cores}"
-work="$here/../../build/mesen-src"
+compile() {
+  make -C Libretro -j"$jobs"
+}
 
-mkdir -p "$out"
-if [ ! -d "$work/.git" ]; then
-  git clone "$MESEN_REPO" "$work"
-fi
-cd "$work"
-git fetch --depth 1 origin "$MESEN_COMMIT" 2>/dev/null || true
-git checkout -q --force "$MESEN_COMMIT"
-git clean -qfd Core Libretro
-git apply "$here/dj-mesen.patch"
-# decomp-dj's own files (MIT, src/LICENSE.txt), laid out as in the core's tree. The patch
-# above only hooks them into the core's files.
-own="$(cd "$here/src" && find . -type f ! -name LICENSE.txt | LC_ALL=C sort)"
-for f in $own; do
-  mkdir -p "$(dirname "$f")"
-  cp "$here/src/$f" "$f"
-done
-
-# The build id the connector reports (dj_build_id): the upstream commit, then the patch and
-# the files under src/ in that order, line endings aside, so the same source gives the same
-# id on every platform.
-patch_id="$({ cat "$here/dj-mesen.patch"; for f in $own; do cat "$here/src/$f"; done; } | tr -d '\r' | { shasum -a 256 2>/dev/null || sha256sum; } | cut -c1-8)"
-printf '#define DJ_BUILD_ID "mesen@%s+dj.%s"\n' "${MESEN_COMMIT:0:8}" "$patch_id" > Core/DjBuildId.h
-
-jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
-make -C Libretro -j"$jobs"
-
-for f in Libretro/mesen_libretro.so Libretro/mesen_libretro.dylib Libretro/mesen_libretro.dll; do
-  if [ -f "$f" ]; then
-    # Copy to a new file and move it into place. Overwriting the old file in place
-    # keeps its inode, and macOS then kills any process that loads it (Code Signature
-    # Invalid), because it cached the old file's signature.
-    cp "$f" "$out/.$(basename "$f").new"
-    mv -f "$out/.$(basename "$f").new" "$out/$(basename "$f")"
-    echo "built $out/$(basename "$f")"
-  fi
-done
+. "$(dirname "$0")/../build-core.sh"

@@ -3,8 +3,12 @@
 #   dist/decomp-dj-<version>-<os>-<arch>/   and   dist/decomp-dj-<version>-<os>-<arch>.zip
 # Nothing to install: unzip and run. Used by CI (.github/workflows) and locally.
 #
-# Usage: scripts/package.sh [--build]     --build: cargo build --release first
-# Needs bash (Git Bash on Windows) and zip, 7z or PowerShell.
+# Usage: scripts/package.sh [--build] [--cores]
+#   --build   cargo build --release first
+#   --cores   build the cores that go in the ZIP and aren't in build/cores/ yet. Without it,
+#             the ZIP carries the ones already built there, and says which are missing
+# Needs bash (Git Bash on Windows), Python 3.11 or later for the list of cores, and zip, 7z
+# or PowerShell.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -25,9 +29,15 @@ exe=""; lib="libdj_reference_decoders.so"
 [ "$os" = windows ] && { exe=".exe"; lib="dj_reference_decoders.dll"; }
 [ "$os" = macos ] && lib="libdj_reference_decoders.dylib"
 
-if [ "${1:-}" = "--build" ]; then
-  cargo build --release --locked
-fi
+build_cores=""
+for arg in "$@"; do
+  case "$arg" in
+    --build) cargo build --release --locked ;;
+    --cores) build_cores="--build" ;;
+    *) echo "unknown option $arg"; exit 1 ;;
+  esac
+done
+python="$(command -v python3 || command -v python)"
 
 name="decomp-dj-$version-$os-$arch"
 out="dist/$name"
@@ -48,8 +58,32 @@ fi
 mkdir -p "$out/decoders"
 cp "target/release/$lib" "$out/decoders/"
 
-# Connectors: the patches and build scripts that make a core report coverage. Cores aren't
-# shipped; connectors/README.md says how to build one.
+# Cores: the ones connectors/cores.toml lists for bundling, built from the connectors below.
+# dj looks for a core named without a folder here, next to itself (docs/config.md). Each
+# has its licence text beside it, and its source is a tarball on the same release
+# (scripts/cores.py sources).
+mkdir -p "$out/cores"
+cat > "$out/cores/README.txt" <<NOTE
+libretro cores built with decomp-dj's connectors (../connectors/), which make a core report
+the code it runs. dj finds a core named without a folder here: \`mesen_libretro\` in a
+project's config.toml, or \`dj init --core mesen_libretro\`.
+
+These are separate programs from decomp-dj, each under its own licence: the file
+<core>.LICENSE.txt beside it. Each core's complete source, as built, is on the release this
+ZIP came from, in the file named below; ../connectors/<name>/build.sh builds it from the
+same commit.
+
+NOTE
+"$python" scripts/cores.py bundle $build_cores | while read -r cname clib cid; do
+  for f in "build/cores/$clib".so "build/cores/$clib".dylib "build/cores/$clib".dll; do
+    [ -f "$f" ] && cp "$f" "$out/cores/"
+  done
+  cp "connectors/$cname/LICENSE.txt" "$out/cores/$clib.LICENSE.txt"
+  printf '%s\n  build   %s\n  source  %s-source.tar.gz\n' "$clib" "$cid" "$(echo "$cid" | sed 's/@/-/; s/+/-/')" >> "$out/cores/README.txt"
+done
+
+# Connectors: the patches and build scripts that make a core report coverage, for building
+# a core yourself; connectors/README.md says how.
 mkdir -p "$out/connectors"
 for d in connectors/*/; do
   mkdir -p "$out/$d"
@@ -57,7 +91,7 @@ for d in connectors/*/; do
   # The connector's own files (MIT), which build.sh copies into the core.
   if [ -d "${d}src" ]; then cp -R "${d}src" "$out/$d"; fi
 done
-cp connectors/README.md "$out/connectors/"
+cp connectors/README.md connectors/build-core.sh "$out/connectors/"
 # The C headers: decoder plugins, connectors and comparison cores.
 mkdir -p "$out/include"
 cp include/*.h "$out/include/"

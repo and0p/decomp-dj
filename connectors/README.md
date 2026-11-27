@@ -62,3 +62,20 @@ scripts/cores.py run            # or: scripts/cores.py run mesen-s
 For each core that is: its `build.sh`, the example's ROM built from source, a replay of the
 example from power-on with every recorded hash compared, and `dj connector-check`. CI runs
 the same list (`.github/workflows/ci.yml`).
+
+## Building and shipping them
+
+Each folder's `build.sh` builds its core into `build/cores/`. They share
+[build-core.sh](build-core.sh), which fetches the core's source at the pinned commit, applies
+the patch, copies the connector's own files in and writes the build id.
+
+```
+connectors/mesen/build.sh                 # build it
+connectors/mesen/build.sh --id            # print its build id
+connectors/mesen/build.sh --source DIR    # write the source it is built from, as a tarball
+```
+
+A release's Linux and macOS ZIPs carry the built cores in `cores/`, each with its licence
+text, and the release carries each one's source tarball (`scripts/package.sh --cores`,
+`scripts/cores.py sources DIR`). A core with `bundle = false` in [cores.toml](cores.toml) is
+left out: Genesis Plus GX for now, whose licence allows only non-commercial redistribution.

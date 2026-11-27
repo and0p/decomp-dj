@@ -10,6 +10,12 @@ the example's ROM, and a replay of the example from power-on with every hash com
   scripts/cores.py check CORE           replay the example and check the connector's flags
   scripts/cores.py deps CORE            install the packages the core and its ROM need
                                         (apt on Linux, Homebrew on macOS, pip)
+  scripts/cores.py deps --bundled       the same for every core a release's ZIP carries
+  scripts/cores.py bundle [--build]     the cores a release's ZIP carries, one per line as
+                                        `name library build-id`; --build builds the
+                                        ones that are missing first
+  scripts/cores.py sources DIR          write each of those cores' source into DIR, as
+                                        its build.sh --source does
   scripts/cores.py matrix [--event E] [--base SHA]
                                         the job matrix for CI, as `matrix=<json>`
 
@@ -29,7 +35,7 @@ MANIFEST = os.path.join(ROOT, "connectors", "cores.toml")
 # A system's name in the manifest, the runner CI uses for it, and the name CI shows.
 SYSTEMS = {"linux": ("ubuntu-22.04", "linux-x86_64"), "macos": ("macos-15", "macos-arm64")}
 # A change to one of these is a change to every core's check.
-SHARED = ("connectors/cores.toml", "scripts/cores.py", ".github/workflows/ci.yml", "include/")
+SHARED = ("connectors/cores.toml", "connectors/build-core.sh", "scripts/cores.py", ".github/workflows/ci.yml", "include/")
 
 
 def cores():
@@ -93,6 +99,17 @@ def build(c):
     run(["bash", os.path.join("connectors", c["name"], "build.sh")])
     if not built(c):
         sys.exit(f"connectors/{c['name']}/build.sh didn't make build/cores/{c['library']}")
+
+
+def build_id(c):
+    res = subprocess.run(["bash", os.path.join("connectors", c["name"], "build.sh"), "--id"], cwd=ROOT, capture_output=True, text=True)
+    if res.returncode != 0:
+        sys.exit(f"connectors/{c['name']}/build.sh --id: {res.stderr.strip()}")
+    return res.stdout.strip()
+
+
+def bundled():
+    return [c for c in cores() if c.get("bundle", True)]
 
 
 def build_rom(c):
@@ -167,8 +184,13 @@ def main():
     sub.add_parser("list")
     r = sub.add_parser("run")
     r.add_argument("cores", nargs="*")
-    for name in ("build", "rom", "check", "deps"):
+    for name in ("build", "rom", "check"):
         sub.add_parser(name).add_argument("core")
+    d = sub.add_parser("deps")
+    d.add_argument("core", nargs="?")
+    d.add_argument("--bundled", action="store_true")
+    sub.add_parser("bundle").add_argument("--build", action="store_true")
+    sub.add_parser("sources").add_argument("dir")
     m = sub.add_parser("matrix")
     m.add_argument("--event", default="push")
     m.add_argument("--base", default="")
@@ -195,7 +217,24 @@ def main():
     elif a.cmd == "check":
         check(core(a.core))
     elif a.cmd == "deps":
-        deps(core(a.core))
+        if not a.bundled and not a.core:
+            sys.exit("deps: name a core, or pass --bundled")
+        for c in bundled() if a.bundled else [core(a.core)]:
+            deps(c)
+    elif a.cmd == "bundle":
+        for c in bundled():
+            if a.build and not built(c):
+                # The build's own output goes to stderr: stdout is the list.
+                code = subprocess.run(["bash", os.path.join("connectors", c["name"], "build.sh")], cwd=ROOT, stdout=sys.stderr).returncode
+                if code != 0:
+                    sys.exit(code)
+            if built(c):
+                print(c["name"], c["library"], build_id(c), flush=True)
+            else:
+                print(f"{c['name']}: not built, so not bundled (connectors/{c['name']}/build.sh)", file=sys.stderr)
+    elif a.cmd == "sources":
+        for c in bundled():
+            run(["bash", os.path.join("connectors", c["name"], "build.sh"), "--source", os.path.abspath(a.dir)])
     elif a.cmd == "matrix":
         print("matrix=" + json.dumps(matrix(a.event, a.base), separators=(",", ":")))
 

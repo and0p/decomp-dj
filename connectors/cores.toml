@@ -16,6 +16,7 @@
 #   apt, brew, pip
 #             packages the build or the ROM needs beyond a C toolchain, git, make, cmake and
 #             Python
+#   bundle    false: the core isn't put in a release's ZIP (default: true)
 #   experimental
 #             true: a failure is reported but doesn't fail the run (not yet seen to pass on
 #             the runners)
@@ -70,6 +71,9 @@ example = "genesis-test"
 rom = "build/genesis-test.bin"
 build_rom = "bash build-rom.sh"
 experimental = true
+# Its licence allows non-commercial redistribution only (connectors/genesis-plus-gx/README.md).
+# Whether a release carries it is the developer's decision, not made yet: out until then.
+bundle = false
 
 # No example yet that can be shared (the N64 project in use is a commercial game), so the
 # core is only built, and only on the weekly run.

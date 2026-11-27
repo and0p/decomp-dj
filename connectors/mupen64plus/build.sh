@@ -6,45 +6,24 @@ set -euo pipefail
 
 REPO="https://github.com/libretro/mupen64plus-libretro-nx.git"
 COMMIT="15bada85906593376e8fd697f1b0b3af3a20f512"
+CLEAN="libretro mupen64plus-core"
+ID_HEADER="libretro/dj_build_id.h"
+BUILT="mupen64plus_next_libretro"
 
-here="$(cd "$(dirname "$0")" && pwd)"
-out="${1:-$here/../../build/cores}"
-work="$here/../../build/mupen64plus-src"
-
-mkdir -p "$out"
-if [ ! -d "$work/.git" ]; then
-  git clone "$REPO" "$work"
-fi
-cd "$work"
-git fetch --depth 1 origin "$COMMIT" 2>/dev/null || true
-git checkout -q --force "$COMMIT"
-git clean -qfd libretro mupen64plus-core
-git apply "$here/dj-mupen64plus.patch"
-# decomp-dj's own files (MIT, src/LICENSE.txt), laid out as in the core's tree. The patch
-# above only hooks them into the core's files.
-own="$(cd "$here/src" && find . -type f ! -name LICENSE.txt | LC_ALL=C sort)"
-for f in $own; do
-  mkdir -p "$(dirname "$f")"
-  cp "$here/src/$f" "$f"
-done
-
-# The build id the connector reports (dj_build_id): the upstream commit, then the patch and
-# the files under src/ in that order, line endings aside, so the same source gives the same
-# id on every platform.
-patch_id="$({ cat "$here/dj-mupen64plus.patch"; for f in $own; do cat "$here/src/$f"; done; } | tr -d '\r' | { shasum -a 256 2>/dev/null || sha256sum; } | cut -c1-8)"
-printf '#define DJ_BUILD_ID "mupen64plus@%s+dj.%s"\n' "${COMMIT:0:8}" "$patch_id" > libretro/dj_build_id.h
-
-# The bundled zlib and libpng take macOS for classic Mac OS (fp.h, fdopen), so build
-# against the system's copies.
-jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
-make -j"$jobs" SYSTEM_ZLIB=1 SYSTEM_LIBPNG=1
-
-for f in mupen64plus_next_libretro.so mupen64plus_next_libretro.dylib mupen64plus_next_libretro.dll; do
-  if [ -f "$f" ]; then
-    # Copy to a new file and move it into place (macOS kills processes that load a library
-    # overwritten in place, see connectors/mesen/build.sh).
-    cp "$f" "$out/.$(basename "$f").new"
-    mv -f "$out/.$(basename "$f").new" "$out/$(basename "$f")"
-    echo "built $out/$(basename "$f")"
+compile() {
+  # The bundled zlib and libpng take macOS for classic Mac OS (fp.h, fdopen), so build
+  # against the system's copies.
+  if [ "$(uname -s)" = Darwin ]; then
+    # macOS has zlib but no libpng, and Homebrew's is not on every Mac: link its static
+    # library in, so the core loads anywhere. pkg-config is pointed at a libpng.pc that
+    # names the .a file, which is what the core's makefile asks.
+    mkdir -p dj-pkgconfig
+    printf 'Name: libpng\nDescription: libpng, linked statically\nVersion: %s\nCflags: %s\nLibs: %s/libpng16.a\n' \
+      "$(pkg-config --modversion libpng)" "$(pkg-config --cflags libpng)" "$(pkg-config --variable=libdir libpng)" > dj-pkgconfig/libpng.pc
+    export PKG_CONFIG_PATH="$PWD/dj-pkgconfig"
+    rm -f mupen64plus_next_libretro.dylib   # link again: make doesn't see changed flags
   fi
-done
+  make -j"$jobs" SYSTEM_ZLIB=1 SYSTEM_LIBPNG=1
+}
+
+. "$(dirname "$0")/../build-core.sh"

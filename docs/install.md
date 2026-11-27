@@ -10,7 +10,8 @@ Each release has a ZIP for Linux (x86_64), macOS (Apple silicon) and Windows (x8
 | `dj` (`dj.exe`) | The command line ([cli.md](cli.md)) |
 | `dj-gui` (`dj-gui.exe`); `decomp-dj.app` on macOS | The GUI ([gui.md](gui.md)) |
 | `decoders/` | Decoder plugins: an example plugin ([decoders.md](decoders.md)). A bare `[[decoders]]` path is looked for here |
-| `connectors/` | The patches, source files and scripts that build a core with a coverage connector. Cores aren't included |
+| `cores/` | Linux and macOS: libretro cores built with a coverage connector, ready to use: Mesen (NES), Mesen-S (SNES), SameBoy (Game Boy), mGBA (GBA) and Mupen64Plus-Next (N64). dj looks here for a core named without a folder, so `dj init` finds the one for your ROM and a project's `config.toml` can say `mesen_libretro` ([config.md](config.md#core-paths)). Each core is a separate program under its own licence, in `<core>.LICENSE.txt` beside it; `README.txt` names each one's build and the file on the release that holds its source |
+| `connectors/` | The patches, source files and scripts those cores were built with, to build one yourself or for a system whose ZIP has none (Windows, for now) |
 | `include/` | The C headers for decoder plugins, connectors and comparison cores (MIT) |
 | `linux/` | Linux: `install-desktop-entry.sh`, so launchers and Wayland desktops show dj-gui's icon |
 | `docs/`, `LICENSE.txt` | These docs, and the licence (MIT; each connector's patch has its core's licence, in the connector's own `LICENSE.txt`) |
@@ -21,7 +22,8 @@ Each release has a ZIP for Linux (x86_64), macOS (Apple silicon) and Windows (x8
 - **Windows:** SmartScreen may warn about an unrecognised app: More info > Run anyway.
   `dj-gui.exe` opens no console window; what it would print there doesn't show (a debug
   build from source, `cargo run` without `--release`, keeps its console for that).
-- `scripts/package.sh --build` builds the same folder and ZIP from source, into `dist/`.
+- `scripts/package.sh --build --cores` builds the same folder and ZIP from source, into `dist/`. Without `--cores` it packs the cores already in `build/cores/` and builds none. The Genesis Plus GX core isn't put in a ZIP (`bundle = false` in `connectors/cores.toml`): its licence allows only non-commercial redistribution.
+- `scripts/cores.py sources DIR` writes each bundled core's source as a tarball, as a release carries them (`connectors/<core>/build.sh --source DIR` for one).
 
 ## Building from source
 
@@ -33,8 +35,9 @@ cargo build --release -p dj-cli           # only the command line (Rust 1.79+)
 connectors/mesen/build.sh                 # git, make, a C++11 compiler; output in build/cores/
 ```
 
-The core is Mesen (NES), patched as described in
-[connectors/mesen/README.md](../connectors/mesen/README.md). Any other libretro core plays
+The core here is Mesen (NES), patched as described in
+[connectors/mesen/README.md](../connectors/mesen/README.md); each folder in
+[connectors/](../connectors/) has a `build.sh` for its core. Any other libretro core plays
 segments too, but records no coverage until it has a [connector](connectors.md).
 
 ## Icons

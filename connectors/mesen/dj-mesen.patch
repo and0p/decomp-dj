@@ -56,6 +56,22 @@ index da527968..229babf8 100644
  	EndCpuCycle(true);
  	return value;
  #endif
+diff --git a/Core/ControlManager.cpp b/Core/ControlManager.cpp
+index 418f611e..1a87a980 100644
+--- a/Core/ControlManager.cpp
++++ b/Core/ControlManager.cpp
+@@ -332,7 +332,10 @@ void ControlManager::StreamState(bool saving)
+ 	}
+ 
+ 	ArrayInfo<ControllerType> types = { controllerTypes, 4 };
+-	Stream(nesModel, expansionDevice, consoleType, types, hasFourScore, useNes101Hvc101Behavior, zapperDetectionRadius, _lagCounter, _pollCounter);
++	// decomp-dj: _isLagging too. It decides whether the next input poll counts as lag, so
++	// without it the lag counter after a load depends on the last frame this process ran.
++	// (Last, so a state from before this loads with the flag clear.)
++	Stream(nesModel, expansionDevice, consoleType, types, hasFourScore, useNes101Hvc101Behavior, zapperDetectionRadius, _lagCounter, _pollCounter, _isLagging);
+ 
+ 	if(!saving) {
+ 		settings->SetNesModel(nesModel);
 diff --git a/Libretro/Makefile b/Libretro/Makefile
 index 02db726e..fe5b8cda 100644
 --- a/Libretro/Makefile

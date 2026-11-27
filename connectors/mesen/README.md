@@ -39,6 +39,12 @@ debugger, so the patch adds a small hook instead of reusing it.
   sets Mesen's `AllowInvalidInput` flag, so the game sees Left+Right or Up+Down held at
   once, as on a real NES. The libretro core had no way to turn it on, and TAS movies rely
   on it ([docs/tas.md](../../docs/tas.md#sync)).
+- `ControlManager::StreamState` also saves `_isLagging`, the flag that decides whether the
+  next input poll counts as lag. Mesen leaves it out, so its lag counter after a load
+  depended on the last frame the process had run, and two save states of the same frame
+  could differ by one byte. The game can't read the counter; this only makes save states
+  the same however a frame was reached. A state from a core without this change still
+  loads, with the flag clear.
 
 Regions, in index order: `RAM` (2 KB internal), `PRG` (PRG ROM), `WRAM`, `SRAM`, all
 with `cpu` `"6502"` (connector API version 3). `PRG` hands out the mapper's PRG ROM as

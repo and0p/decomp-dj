@@ -11,7 +11,7 @@ shareable = true
 [core]
 path = "mesen_libretro"
 name = "mesen"
-build = "mesen@0102910c+dj.6b25b84c"
+build = "mesen@0102910c+dj.f977b8b1"
 sha256 = ""
 
 [core.options]

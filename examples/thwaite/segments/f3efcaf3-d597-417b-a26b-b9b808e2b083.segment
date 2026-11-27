@@ -3,7 +3,7 @@ id: f3efcaf3-d597-417b-a26b-b9b808e2b083
 parent: none
 title: Snapshot root: the game's first seconds, from a save state
 frames: 300
-snapshot: 0d182a7dde0c05dfb0ce11a8c3e941ca
+snapshot: e13ac4dcc9c172fea918f5abdc34e486
 start-frame: 820
 start-hash: 9e3bcaeec25c47d872140e0eabc37691
 end-hash: 24718b4824e2c303c0e3b53c55aff05d

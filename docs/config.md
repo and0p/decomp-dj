@@ -15,12 +15,12 @@ A project has two settings files:
 
 | Core | Console | `[hash] regions` | `[cache] preset` | `[[ports]]` | `[core.options]` |
 | --- | --- | --- | --- | --- | --- |
-| Mesen | NES | `RAM`, and `SRAM` when the game has it | `nes-sparse` | Two joypads; `hide`: the buttons a NES pad doesn't have | as the core has them |
-| mGBA, a GBA game | GBA | IWRAM and EWRAM through the memory maps (`BUS:0x03000000-0x03007FFF`, `BUS:0x02000000-0x0203FFFF`), and `SRAM`: mGBA's `RAM` is only the first 32 KB of EWRAM | none (so `nes-sparse`) | One joypad; `hide`: the buttons a GBA doesn't have | as the core has them |
-| Mesen-S | SNES | `RAM` (its 128 KB of WRAM), and `SRAM` | none (so `nes-sparse`) | Two joypads; `hide`: the buttons a SNES pad doesn't have | `mesen-s_ramstate = "All 0s"`: RAM starts as zeros, not random bytes |
-| Mupen64Plus-Next | N64 | `RAM`, and `SRAM` | `n64-sparse` | Four joypads; `hide` and `labels`: the N64's names for the buttons, the stick and the C buttons | as the core has them |
-| SameBoy | Game Boy, Game Boy Color | `RAM` (WRAM, every bank), HRAM through the memory maps (`BUS:0x0000FF80-0x0000FFFE`), and `SRAM` when the game has a battery | none (so `nes-sparse`) | One joypad, with only the Game Boy's buttons | as the core has them; its connector forces `sameboy_rtc = "accurate"` ([connectors/sameboy](../connectors/sameboy/README.md)) |
-| Genesis Plus GX, a Mega Drive game | Genesis | `RAM` (the 68000's 64 KB, in the host's byte order: [connectors/genesis-plus-gx](../connectors/genesis-plus-gx/README.md#for-a-project)), and `SRAM` when the game has it | none (so `nes-sparse`) | Two joypads, not the eight the core names for multitap adapters; `labels`: the pad's A, B, C, X, Y, Z and Mode | as the core has them |
+| Mesen | NES | `RAM`, and `SRAM` when the game has it | `small` | Two joypads; `hide`: the buttons a NES pad doesn't have | as the core has them |
+| mGBA, a GBA game | GBA | IWRAM and EWRAM through the memory maps (`BUS:0x03000000-0x03007FFF`, `BUS:0x02000000-0x0203FFFF`), and `SRAM`: mGBA's `RAM` is only the first 32 KB of EWRAM | none (so `small`) | One joypad; `hide`: the buttons a GBA doesn't have | as the core has them |
+| Mesen-S | SNES | `RAM` (its 128 KB of WRAM), and `SRAM` | none (so `small`) | Two joypads; `hide`: the buttons a SNES pad doesn't have | `mesen-s_ramstate = "All 0s"`: RAM starts as zeros, not random bytes |
+| Mupen64Plus-Next | N64 | `RAM`, and `SRAM` | `large` | Four joypads; `hide` and `labels`: the N64's names for the buttons, the stick and the C buttons | as the core has them |
+| SameBoy | Game Boy, Game Boy Color | `RAM` (WRAM, every bank), HRAM through the memory maps (`BUS:0x0000FF80-0x0000FFFE`), and `SRAM` when the game has a battery | none (so `small`) | One joypad, with only the Game Boy's buttons | as the core has them; its connector forces `sameboy_rtc = "accurate"` ([connectors/sameboy](../connectors/sameboy/README.md)) |
+| Genesis Plus GX, a Mega Drive game | Genesis | `RAM` (the 68000's 64 KB, in the host's byte order: [connectors/genesis-plus-gx](../connectors/genesis-plus-gx/README.md#for-a-project)), and `SRAM` when the game has it | none (so `small`) | Two joypads, not the eight the core names for multitap adapters; `labels`: the pad's A, B, C, X, Y, Z and Mode | as the core has them |
 
 - **The N64 keeps the core's own options**, the ones most games work with. With them the GPU copies its picture into the RAM dj hashes (`mupen64plus-EnableCopyColorToRDRAM`, `mupen64plus-EnableCopyDepthToRDRAM`), and that copy isn't the same after a jump as from power-on. If a segment's hash differs after a jump, leave the game's framebuffers out with [`[hash] exclude`](#hash) and [`[cache] exclude`](#cache-exclude); where they are depends on the game. Turning both options `Off` (`--option`, or `[core.options]`) also does it, for a game that doesn't read its framebuffers back. `dj init` prints this.
 - **A joypad for every port the core names inputs on**, each with the same `hide` and `labels`, so the second NES pad is trimmed like the first. `dj init` says what that comes to ("2 joypads, 8 buttons each").
@@ -44,7 +44,7 @@ build = "…"
 path = "cores/mesen_libretro.so"
 ```
 
-Another can commit only the pinned setup and the segments, and leave paths and anything else personal to each `local.toml`. In `local.toml`, `rom = "path"` and `core = "path"` are short for `path` in the `[rom]` and `[core]` tables.
+Another can commit only the pinned setup and the segments, and leave paths and anything else personal to each `local.toml`. A path is spelled the same in both files: `path` in the `[rom]` or `[core]` table.
 
 Settings the tools write (Set ROM…, Set core…, `--rom`, `--core`, the GUI's toggles, key bindings) always go to `local.toml`, and writing them keeps whatever else is there.
 
@@ -64,7 +64,6 @@ file = "thwaite.nes"
 [core]
 name = "mesen"
 build = "mesen@0102910c+dj.34266c1a"
-sha256 = ""
 
 [core.options]
 mesen_ramstate = "All 0s"
@@ -76,7 +75,6 @@ port = 1
 device = "JOYPAD"
 
 [hash]
-algorithm = "blake3"
 regions = ["RAM"]
 
 [tick]
@@ -110,12 +108,11 @@ format = "ca65-dbg"
 | --- | --- | --- |
 | `name` | yes | The libretro core's name, for example `mesen`. |
 | `build` | yes | Which build of the core the segments' hashes were recorded with. A core with a connector reports it (`dj_build_id`): the upstream commit and the connector patch, such as `mesen@0102910c+dj.34266c1a`, the same on every platform; other cores, their name and version (`Mesen 0.9.9`). `dj init` writes it. A core reporting another build plays, with a warning: hashes may not match. After rebuilding or updating the core, `dj repin` plays every segment from power-on with it and, if all still match, records the new build. |
-| `sha256` | no | Pins one exact library file: a different file doesn't load. A build for another OS is another file, so this suits a project used on one machine; `build` is the portable pin. `dj repin` updates it when it's set. |
 | `path` | no | Where the core library is, usually set in `.local/local.toml` ([layering](#layering)). It may leave out the suffix ([core paths](#core-paths)). |
 
 #### Core paths
 
-A core library's `path` (in `[core]`, `core = "path"` in `local.toml`, `--core`, and `[[compare]]`) may leave out the platform's suffix, so one path works on every OS: `cores/mesen_libretro` is `cores/mesen_libretro.dylib` on macOS, `.so` on Linux and other Unixes and `.dll` on Windows. A path that ends in `.so`, `.dylib` or `.dll`, or names a file that exists as written, is used as it is. Any other path gets the suffix added to the whole name, so `cores/foo.v2` is `cores/foo.v2.dylib` on macOS. Nothing is added to the name itself (no `_libretro`). Errors name the file looked for.
+A core library's `path` (in `[core]`, `--core`, and `[[compare]]`) may leave out the platform's suffix, so one path works on every OS: `cores/mesen_libretro` is `cores/mesen_libretro.dylib` on macOS, `.so` on Linux and other Unixes and `.dll` on Windows. A path that ends in `.so`, `.dylib` or `.dll`, or names a file that exists as written, is used as it is. Any other path gets the suffix added to the whole name, so `cores/foo.v2` is `cores/foo.v2.dylib` on macOS. Nothing is added to the name itself (no `_libretro`). Errors name the file looked for.
 
 A relative path is from the project's folder, and an absolute path is used as written. A name with no folder in it (`mesen_libretro`, not `./mesen_libretro` or `cores/mesen_libretro`) that isn't in the project's folder is then looked for where dj keeps cores: `$DJ_CORES`, `cores/` next to the program, `build/cores/` of a source checkout, and `build/cores/` in the current folder. So a `config.toml` can name a core that comes with dj and work on every machine, and a path in `local.toml` still replaces it. A path with a folder is never looked for anywhere else.
 
@@ -185,7 +182,6 @@ What a state hash covers ([playback.md](playback.md#state-hashes)).
 
 | Key | Meaning |
 | --- | --- |
-| `algorithm` | `blake3`. The only value in format 1. |
 | `regions` | Memory to hash, in order. Named regions are `RAM`, `SRAM`, `VRAM` and `RTC` (whatever the core exposes through `retro_get_memory_data`). `BUS:0x0000-0x07FF` hashes a range of the CPU bus through the core's memory maps. |
 
 | `exclude` | Optional. Parts of the regions above to leave out, as `REGION:0xSTART-0xEND` (offsets into the region, both ends included) or `REGION:0xOFFSET` for one byte. For memory that isn't game state, such as a framebuffer an emulator's GPU writes into RAM. |
@@ -194,7 +190,6 @@ What a state hash covers ([playback.md](playback.md#state-hashes)).
 
 ```toml
 [hash]
-algorithm = "blake3"
 regions = ["RAM", "SRAM"]
 exclude = [
     "RAM:0x38F800-0x3FFFFF",   # WWF No Mercy: three 320x240 framebuffers
@@ -214,7 +209,6 @@ What counts as one game logic tick ([playback.md](playback.md#logic-ticks-draft)
 | Key | Meaning |
 | --- | --- |
 | `exec` | A ROM location, such as `PRG:0x197`. Each time it runs is one tick. Needs a coverage connector. |
-| `write` | Reserved: each write to a RAM address. Not implemented. |
 
 ### `[[symbols]]` (optional, repeatable)
 
@@ -257,7 +251,7 @@ mesen_ntsc_filter = "Composite"
 | `name` | yes | What the menu shows, and the key entries merge by. |
 | `path` | yes, on each machine | The core library. Relative paths are from the project folder. It may leave out the suffix ([core paths](#core-paths)). It may be the baseline's own library: it is then loaded from a private copy in `.local/compare/`, so the two don't share globals. |
 | `build` | no | A free-form id of the build, for people. |
-| `sha256` | no | Pins the library, like `[core] sha256`: a different file doesn't load. |
+| `sha256` | no | Pins the library: a different file doesn't load. |
 | `sync` | no | How the core follows the baseline. `"events"` (the default) is a core that takes events: it has `dj_handle_event` ([connectors.md](connectors.md#comparison-cores)), copies what it needs from the baseline itself and runs itself; a core without the function doesn't load. `"state"` loads the baseline's save state: only for the same emulator (or one with the same state format), to compare builds or options. |
 | `preroll` | no | For a core that takes events: how many frames dj plays before a place it jumps to for a parity check, so the core has copied the baseline by then ([connectors.md](connectors.md#pre-roll)). Default 0. A core that copies the baseline between frames needs none; one that copies at a breakpoint inside the frame needs enough frames to be sure of reaching it, such as one full logic tick. |
 | `content` | no | What the core loads: `true` (the default) is the project's ROM, which a decomp may need for its assets or may ignore; `false` loads nothing; a path loads that file. |
@@ -280,7 +274,7 @@ Defaults for the local database (`.local/cache.db`) that everyone on the project
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `preset` | `nes-sparse` | Starting values for the keys below. |
+| `preset` | `small` | Starting values for the keys below. |
 | `page_kb` | from preset | Split snapshots into pages of this many KB, each stored once by hash. Missing, or the snapshot size or more, keeps snapshots whole. |
 | `diff_every` | from preset | Also store a snapshot every N frames. `0` means only at frame 0, markers and segment ends with children. |
 | `diff_at_markers` | `true` | Store a snapshot at each marker. |
@@ -293,14 +287,16 @@ The presets:
 
 | Preset | `page_kb` | `diff_every` | `previews` | For |
 | --- | --- | --- | --- | --- |
-| `nes-sparse` | whole | 0 | `thumb` | Small states; the default. |
-| `nes-aggressive` | whole | 60 | `full` | Fast seeking anywhere in a segment. |
-| `n64-sparse` | 64 | 18000 | `thumb` | Large states, few snapshots. |
-| `n64-aggressive` | 64 | 1800 | `thumb` | Large states, faster seeking. |
+| `small` | whole | 0 | `thumb` | Save states up to about 1 MB (NES, SNES, Game Boy, GBA, Genesis); the default. |
+| `small-dense` | whole | 60 | `full` | The same, with a snapshot about every second: fast seeking anywhere in a segment, a larger database. |
+| `large` | 64 | 18000 | `thumb` | Save states of several MB (N64): stored in pages, a snapshot about every five minutes. |
+| `large-dense` | 64 | 1800 | `thumb` | The same, with a snapshot about every 30 seconds. |
+
+A preset is named for the size of the core's save state, not for a console. The names these had before 0.1.0 (`nes-sparse`, `nes-aggressive`, `n64-sparse`, `n64-aggressive`) are still read.
 
 All presets set `diff_at_markers = true` and `preview_at = ["start", "marker"]`.
 
-Values are resolved in this order, later winning: the preset (from `local.toml` if it names one, else `config.toml`, else `nes-sparse`), then each key set in `config.toml`, then each key set in `local.toml`.
+Values are resolved in this order, later winning: the preset (from `local.toml` if it names one, else `config.toml`, else `small`), then each key set in `config.toml`, then each key set in `local.toml`.
 
 #### Cache exclude
 
@@ -352,10 +348,14 @@ without it and 35.4 MB with it. The 2 KB make little difference to that.
 Never committed. When the project has no `.gitignore`, the tools create one that lists `.local/`.
 
 ```toml
-rom = "/Users/me/roms/thwaite.nes"
-core = "/Users/me/cores/mesen_libretro.dylib"
 database = true
 max_memory_mb = 512
+
+[rom]
+path = "/Users/me/roms/thwaite.nes"
+
+[core]
+path = "/Users/me/cores/mesen_libretro.dylib"
 
 [cache]
 diff_every = 300
@@ -363,8 +363,8 @@ diff_every = 300
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `rom` | none | Path to the ROM (short for `[rom] path`). Set by `--rom`, remembered after the first use. |
-| `core` | none | Path to the core library (short for `[core] path`). Set by `--core`, remembered after the first use. |
+| `[rom] path` | none | Path to the ROM. Set by `--rom`, remembered after the first use. |
+| `[core] path` | none | Path to the core library. Set by `--core`, remembered after the first use. Not needed when `config.toml` names a core dj can find ([core paths](#core-paths)). |
 | `database` | `true` | `false` plays without the local database, like `--no-db` on the commands that take it. The GUI's Project > Use the local database writes it. |
 | `max_memory_mb` | `512` | How much memory the GUI's in-memory snapshots for the current segment may use (Emulation > Snapshot memory). |
 | `[cache]` | none | Any key from `config.toml`'s `[cache]`, overriding it on this machine only. |

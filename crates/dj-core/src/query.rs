@@ -888,7 +888,7 @@ mod tests {
             rom.resize(16 + 0x8000, 0xFF);
             std::fs::write(&rom_path, rom).unwrap();
         }
-        std::fs::write(dir.join(".local").join("local.toml"), format!("rom = {:?}\n", rom_path.display().to_string())).unwrap();
+        std::fs::write(dir.join(".local").join("local.toml"), format!("[rom]\npath = {:?}\n", rom_path.display().to_string())).unwrap();
         let col = Project::open(&dir).unwrap();
         let body = cache::body_hash(&col.segments[id], &crate::player::devices_at_start(&col, id).unwrap()).unwrap();
         let key = cache::content_key("setup", "a", &body);

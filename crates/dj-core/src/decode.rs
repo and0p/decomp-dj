@@ -36,7 +36,7 @@ pub struct DecoderConfig {
     /// next to the dj executable; a relative path is from the project folder. The platform's
     /// suffix may be left out, as for cores.
     pub path: PathBuf,
-    /// Pins the library, like `[core] sha256`.
+    /// Pins the library: a different file stops the project from opening.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sha256: String,
     /// Optional: entries with a name merge with local.toml's by name.

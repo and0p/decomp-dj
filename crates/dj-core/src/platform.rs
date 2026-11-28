@@ -39,7 +39,7 @@ pub struct ConsoleProfile {
 pub const NONE: ConsoleProfile = ConsoleProfile { console: "", hash_bus: &[], hash_note: "", hash_also: &[], cache_preset: None, hide: &[], labels: &[], options: &[], options_note: "", advice: "", ports: 0 };
 
 /// Mesen also names turbo buttons and Famicom Disk System and VS System controls.
-const MESEN_NES: ConsoleProfile = ConsoleProfile { console: "NES", cache_preset: Some("nes-sparse"), hide: &["Y", "X", "L", "R", "L2", "R2", "L3"], ..NONE };
+const MESEN_NES: ConsoleProfile = ConsoleProfile { console: "NES", cache_preset: Some("small"), hide: &["Y", "X", "L", "R", "L2", "R2", "L3"], ..NONE };
 
 /// mGBA also names turbo buttons and the solar sensor.
 const MGBA_GBA: ConsoleProfile = ConsoleProfile {
@@ -65,7 +65,7 @@ const SAMEBOY_GB: ConsoleProfile = ConsoleProfile {
 /// held, which puts them on B, Y, A and X instead. Named as directions, they are button rows.
 const MUPEN_N64: ConsoleProfile = ConsoleProfile {
     console: "N64",
-    cache_preset: Some("n64-sparse"),
+    cache_preset: Some("large"),
     hide: &["A", "X", "R2"],
     labels: &[
         ("B", "A"),

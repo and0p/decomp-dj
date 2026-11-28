@@ -74,8 +74,6 @@ pub struct CoreConfig {
     pub name: String,
     pub build: String,
     #[serde(default)]
-    pub sha256: String,
-    #[serde(default)]
     pub options: BTreeMap<String, String>,
 }
 
@@ -94,7 +92,6 @@ pub struct PortConfig {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct HashConfig {
-    pub algorithm: String,
     pub regions: Vec<String>,
     /// Byte ranges of the regions above that state hashes leave out, as `REGION:0xA-0xB`
     /// (inclusive offsets into the region) or `REGION:0xA`: memory that isn't game state, such
@@ -198,10 +195,11 @@ pub struct SymbolsConfig {
 /// or `load_local` and `save_local` to change local.toml alone.
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct LocalConfig {
-    /// `rom = "path"`, or `path` in a `[rom]` table.
+    /// `path` in local.toml's `[rom]` table. (`rom = "path"`, as dj wrote it before
+    /// 2026-11-27, is still read, and becomes the table the next time the file is saved.)
     #[serde(default, deserialize_with = "path_or_table")]
     pub rom: Option<PathBuf>,
-    /// `core = "path"`, or `path` in a `[core]` table.
+    /// `path` in local.toml's `[core]` table (and the older `core = "path"`, likewise).
     #[serde(default, deserialize_with = "path_or_table")]
     pub core: Option<PathBuf>,
     /// false = run without the local database, as the tools did before it existed.
@@ -227,8 +225,8 @@ pub struct LocalConfig {
     pub gui: Option<GuiLocal>,
 }
 
-/// `rom` and `core` are a path in local.toml's short form, or a table with a `path` key
-/// (config.toml's `[rom]` and `[core]`, which hold other keys too).
+/// `rom` and `core` are a table with a `path` key (config.toml's `[rom]` and `[core]`, which
+/// hold other keys too), or a bare path, local.toml's older short form.
 fn path_or_table<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Option<PathBuf>, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
@@ -258,7 +256,7 @@ fn read_table(p: &Path) -> Result<toml::Table> {
     toml::from_str(&text).with_context(|| format!("parsing {}", p.display()))
 }
 
-/// local.toml's short `rom = "path"` and `core = "path"` as config.toml's tables.
+/// local.toml's older short `rom = "path"` and `core = "path"` as the tables they stand for.
 fn expand_paths(t: &mut toml::Table) {
     for k in ["rom", "core"] {
         if let Some(toml::Value::String(p)) = t.get(k) {
@@ -616,12 +614,21 @@ impl Project {
         let new = toml::Table::try_from(local)?;
         for k in LOCAL_KEYS {
             let v = new.get(k).cloned();
-            // A `[rom]` or `[core]` table in local.toml keeps its other keys.
-            if let (true, Some(toml::Value::Table(tab))) = (k == "rom" || k == "core", t.get_mut(k)) {
+            // The ROM and the core are `path` in a `[rom]` or `[core]` table, as in
+            // config.toml, and the table keeps its other keys. An older `rom = "path"`
+            // becomes the table here.
+            if k == "rom" || k == "core" {
+                let mut tab = match t.remove(k) {
+                    Some(toml::Value::Table(tab)) => tab,
+                    _ => toml::Table::new(),
+                };
                 match v {
                     Some(v) => tab.insert("path".into(), v),
                     None => tab.remove("path"),
                 };
+                if !tab.is_empty() {
+                    t.insert(k.into(), toml::Value::Table(tab));
+                }
                 continue;
             }
             match v {
@@ -835,9 +842,8 @@ impl Project {
         Ok(())
     }
 
-    /// Sets `[core] build` in config.toml (and `sha256`, when the project pins one): only those
-    /// lines change, the rest stays as written.
-    pub fn set_core_build(&mut self, build: &str, sha256: Option<&str>) -> Result<()> {
+    /// Sets `[core] build` in config.toml: only that line changes, the rest stays as written.
+    pub fn set_core_build(&mut self, build: &str) -> Result<()> {
         let path = self.root.join("config.toml");
         let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
         let mut out: Vec<String> = vec![];
@@ -858,12 +864,6 @@ impl Project {
                 wrote_build = true;
                 continue;
             }
-            if in_core && key == "sha256" {
-                if let Some(sha) = sha256.filter(|_| !self.config.core.sha256.is_empty()) {
-                    out.push(format!("sha256 = \"{sha}\""));
-                    continue;
-                }
-            }
             out.push(l.to_string());
         }
         if in_core && !wrote_build {
@@ -871,9 +871,6 @@ impl Project {
         }
         write_atomic(&path, &(out.join("\n") + "\n"))?;
         self.config.core.build = build.to_string();
-        if let Some(sha) = sha256.filter(|_| !self.config.core.sha256.is_empty()) {
-            self.config.core.sha256 = sha.to_string();
-        }
         self.note_writer()
     }
 
@@ -1223,6 +1220,10 @@ mod layering_tests {
         let s = again.settings().unwrap();
         assert_eq!(s.core, Some(dir.join("/other.so")));
         assert_eq!(s.database, Some(true));
+        // The older `rom = "path"` was read, and is written back as `path` in a `[rom]` table.
+        assert_eq!(s.rom, Some(dir.join("/mine/g.nes")));
+        let text = std::fs::read_to_string(dir.join(".local").join("local.toml")).unwrap();
+        assert!(text.contains("[rom]\npath = \"/mine/g.nes\"") && !text.contains("\nrom = ") && !text.starts_with("rom = "), "{text}");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

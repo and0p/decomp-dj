@@ -27,7 +27,8 @@ for ARM: `ld.lld`, or the `rust-lld` that comes with Rust. No GBA toolchain is n
 Then set the ROM in `.local/local.toml` (relative to this folder):
 
 ```toml
-rom = "build/gba-test.gba"
+[rom]
+path = "build/gba-test.gba"
 ```
 
 The core needs no setting: `config.toml` names it (`mgba_libretro`), and dj finds it in

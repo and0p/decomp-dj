@@ -177,7 +177,7 @@ fn projects_load_decoders_from_config_and_from_their_core() {
     let err = format!("{:#}", dj_core::project::Project::open(&dir).err().unwrap());
     assert!(err.contains("doesn't exist"), "{err}");
     // A core that exports dj_decoders: its decoders are used for CPUs nothing else decodes.
-    let dir = project("plugin-core", "", &format!("core = \"{path}\"\n"));
+    let dir = project("plugin-core", "", &format!("[core]\npath = \"{path}\"\n"));
     let col = dj_core::project::Project::open(&dir).unwrap();
     assert_eq!(col.decoders.get("toy8").map(|d| d.cpu()), Some("toy8"));
     assert!(col.decoders.get("z80").is_none());

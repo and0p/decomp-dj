@@ -10,7 +10,6 @@ file = "snes-test.sfc"
 path = "mesen-s_libretro"
 name = "mesen-s"
 build = "mesen-s@9e4fdeb9+dj.be980edc"
-sha256 = ""
 
 [core.options]
 mesen-s_aspect_ratio = "Auto"
@@ -50,7 +49,6 @@ hide = [
 ]
 
 [hash]
-algorithm = "blake3"
 # RAM is the console's 128 KB of WRAM; SRAM the cartridge's 2 KB
 regions = [
     "RAM",

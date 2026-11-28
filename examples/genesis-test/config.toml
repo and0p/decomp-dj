@@ -10,7 +10,6 @@ file = "genesis-test.bin"
 path = "genesis_plus_gx_libretro"
 name = "genesis plus gx"
 build = "genesis-plus-gx@51348f65+dj.fb8782cb"
-sha256 = ""
 
 [core.options]
 genesis_plus_gx_add_on = "auto"
@@ -114,7 +113,6 @@ X = "Y"
 Y = "A"
 
 [hash]
-algorithm = "blake3"
 regions = ["RAM"]
 
 [[symbols]]

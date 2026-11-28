@@ -10,7 +10,6 @@ file = "gb-test.gbc"
 path = "sameboy_libretro"
 name = "sameboy"
 build = "sameboy@90e28995+dj.d16b71e2"
-sha256 = ""
 
 [core.options]
 sameboy_audio_interference = "0"
@@ -49,7 +48,6 @@ device = "JOYPAD"
 
 [hash]
 # WRAM (every bank), HRAM through the memory maps, and the battery RAM
-algorithm = "blake3"
 regions = [
     "RAM",
     "BUS:0x0000FF80-0x0000FFFE",

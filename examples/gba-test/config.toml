@@ -10,7 +10,6 @@ file = "gba-test.gba"
 path = "mgba_libretro"
 name = "mgba"
 build = "mgba@7a12d6d4+dj.05377d59"
-sha256 = ""
 
 [core.options]
 mgba_allow_opposing_directions = "no"
@@ -38,7 +37,6 @@ device = "JOYPAD"
 hide = ["Y", "X", "L2", "R2", "L3", "R3"]
 
 [hash]
-algorithm = "blake3"
 # IWRAM and EWRAM through the memory maps (mGBA's RAM is only the first 32 KB of EWRAM)
 regions = [
     "BUS:0x03000000-0x03007FFF",

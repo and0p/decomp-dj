@@ -69,7 +69,6 @@ A project can declare what counts as one logic tick:
 ```toml
 [tick]
 exec = "PRG:0x1F3A"       # a tick is each execution of this ROM location
-# or (reserved): write = "RAM:0x0021"  # each write to this address
 ```
 
 dj counts ticks while the core runs: the location is a breakpoint in the coverage
@@ -77,8 +76,6 @@ connector, which calls dj each time it is reached. Tools report ticks
 next to frames (`frame 812, tick 790`), so events and parity checks can be
 lined up by tick. In the Thwaite example, the tick is `doStateAction`: menus
 run 0 ticks, and a 300-frame segment that pauses the game runs 130.
-
-Only `exec` is implemented in v1; `write` is **(reserved)**.
 
 Input lines stay keyed by frame in v1, because that is what a core consumes. Keying input by tick is **(reserved)** for a later version
 once it has been tried on a multithreaded game.

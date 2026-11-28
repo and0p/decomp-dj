@@ -151,16 +151,14 @@ pub(crate) fn repin(dir: &Path, local: &Local) -> Result<i32> {
         ));
     }
     let mut col = Project::open(dir)?;
-    let (_, core) = resolve_local(&col, local)?;
     let build = open_session(&col, local)?.build.clone();
-    let sha = sha256_file(&libretro::library_path(&core))?;
     if build == col.config.core.build {
         println!("every segment matches; [core] build is already \"{build}\"");
         return Ok(0);
     }
     let was = col.config.core.build.clone();
-    col.set_core_build(&build, Some(&sha))?;
-    println!("every segment matches: [core] build \"{was}\" -> \"{build}\" in config.toml{}", if col.config.core.sha256.is_empty() { "" } else { " (and its sha256)" });
+    col.set_core_build(&build)?;
+    println!("every segment matches: [core] build \"{was}\" -> \"{build}\" in config.toml");
     Ok(0)
 }
 

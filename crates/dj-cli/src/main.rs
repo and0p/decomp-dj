@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use dj_core::project::{sha256_file, Project, Status};
+use dj_core::project::{Project, Status};
 use dj_core::format::Segment;
 use dj_core::hydrate::Hydrator;
 use dj_core::player::{PlayOptions, SegmentResult, Session};

@@ -30,7 +30,8 @@ program, for trying other mappers and the original Game Boy by hand.
 Then set the ROM in `.local/local.toml` (relative to this folder):
 
 ```toml
-rom = "build/gb-test.gbc"
+[rom]
+path = "build/gb-test.gbc"
 ```
 
 The core needs no setting: `config.toml` names it (`sameboy_libretro`), and dj finds it in

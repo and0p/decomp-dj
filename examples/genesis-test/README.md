@@ -29,7 +29,8 @@ toolchain is needed. It writes the symbol map too, a csv with one line per `.fun
 Then set the ROM in `.local/local.toml` (relative to this folder):
 
 ```toml
-rom = "build/genesis-test.bin"
+[rom]
+path = "build/genesis-test.bin"
 ```
 
 The core needs no setting: `config.toml` names it (`genesis_plus_gx_libretro`), and dj finds it in

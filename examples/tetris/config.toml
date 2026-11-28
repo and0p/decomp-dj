@@ -10,7 +10,6 @@ file = "tetris_usa.nes"
 path = "mesen_libretro"
 name = "mesen"
 build = "mesen@0102910c+dj.f977b8b1"
-sha256 = ""
 
 [core.options]
 # Lets the game see Left+Right or Up+Down held at once, as a real NES does. TAS movies
@@ -48,7 +47,6 @@ device = "JOYPAD"
 hide = ["Y", "X", "L", "R", "L2", "R2", "L3"]
 
 [hash]
-algorithm = "blake3"
 regions = ["RAM"]
 
 [[compare]]

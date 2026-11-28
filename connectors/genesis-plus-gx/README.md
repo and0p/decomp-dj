@@ -135,7 +135,7 @@ branches, calls, returns and PC-relative literals.
   instructions decode as code; tables of data inside a function need `[[data]]` in
   annotations.toml unless the code reads them through `(d16,PC)`.
 - **Snapshots:** a save state is about 1 MB (`0xFD000` bytes), which the default
-  `nes-sparse` cache preset stores whole, only at markers and segment ends.
+  `small` cache preset stores whole, only at markers and segment ends.
 
 ## Checked
 

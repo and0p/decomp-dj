@@ -51,7 +51,7 @@ pub struct CompareConfig {
     /// A free-form id of the build, for people.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub build: String,
-    /// Pins the core library, like `[core] sha256`.
+    /// Pins the core library: a different file doesn't load.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sha256: String,
     #[serde(default)]

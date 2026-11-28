@@ -67,7 +67,7 @@ pub struct CacheSettings {
     pub budget_bytes: Option<u64>,
 }
 
-pub const PRESETS: &[&str] = &["nes-sparse", "nes-aggressive", "n64-sparse", "n64-aggressive"];
+pub const PRESETS: &[&str] = &["small", "small-dense", "large", "large-dense"];
 
 fn preset(name: &str) -> Result<CacheConfig> {
     let c = |page_kb: Option<u32>, diff_every: u64, previews: &str| CacheConfig {
@@ -81,19 +81,20 @@ fn preset(name: &str) -> Result<CacheConfig> {
         budget_gb: None,
     };
     Ok(match name {
-        "nes-sparse" => c(None, 0, "thumb"),
-        "nes-aggressive" => c(None, 60, "full"),
-        "n64-sparse" => c(Some(64), 18000, "thumb"),
-        "n64-aggressive" => c(Some(64), 1800, "thumb"),
+        // The second name of each is the one it had before 0.1.0.
+        "small" | "nes-sparse" => c(None, 0, "thumb"),
+        "small-dense" | "nes-aggressive" => c(None, 60, "full"),
+        "large" | "n64-sparse" => c(Some(64), 18000, "thumb"),
+        "large-dense" | "n64-aggressive" => c(Some(64), 1800, "thumb"),
         other => bail!("unknown cache preset {other} (known: {})", PRESETS.join(", ")),
     })
 }
 
 impl CacheSettings {
     /// config.toml's `[cache]`, then local.toml's `[cache]` on top. With neither,
-    /// the `nes-sparse` preset.
+    /// the `small` preset.
     pub fn resolve(project: Option<&CacheConfig>, local: Option<&CacheConfig>) -> Result<CacheSettings> {
-        let name = local.and_then(|c| c.preset.clone()).or_else(|| project.and_then(|c| c.preset.clone())).unwrap_or_else(|| "nes-sparse".into());
+        let name = local.and_then(|c| c.preset.clone()).or_else(|| project.and_then(|c| c.preset.clone())).unwrap_or_else(|| "small".into());
         let mut eff = preset(&name)?;
         for layer in [project, local].into_iter().flatten() {
             if layer.page_kb.is_some() {
@@ -676,6 +677,15 @@ pub fn exists(col: &Project) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_preset_resolves_and_the_older_names_mean_the_same() {
+        for (new, old) in PRESETS.iter().zip(["nes-sparse", "nes-aggressive", "n64-sparse", "n64-aggressive"]) {
+            let (a, b) = (preset(new).unwrap(), preset(old).unwrap());
+            assert_eq!((a.page_kb, a.diff_every, a.previews), (b.page_kb, b.diff_every, b.previews), "{new} / {old}");
+        }
+        assert!(preset("medium").is_err());
+    }
 
     fn project(name: &str) -> (PathBuf, Project) {
         let dir = std::env::temp_dir().join(format!("dj-cache-{name}-{}", std::process::id()));

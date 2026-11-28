@@ -431,7 +431,7 @@ pub(crate) const NEW_ROW_SYMBOLS: &str = "Symbols";
 pub(crate) const NEW_NO_CONSOLE_DEFAULTS: &str = "No defaults for this core: a plain joypad, RAM hashed";
 pub(crate) const NEW_NO_CONNECTOR: &str = "No: this core has no coverage connector";
 pub(crate) const NEW_COVERAGE_NO_CODE_REGION: &str = "The connector names no code region";
-pub(crate) const NEW_DEFAULT_PRESET: &str = "The default preset (nes-sparse)";
+pub(crate) const NEW_DEFAULT_PRESET: &str = "The default preset (small)";
 
 // ---- Keyboard mapping ----
 

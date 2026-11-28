@@ -107,7 +107,7 @@ hooked. A Super Game Boy cartridge keeps them (its BIOS runs on the 65816).
   `.sym`, asar, bass) aren't read yet; `csv` works for any of them.
 - **Snapshots:** a state is about 260 KB, handed out padded to 526 KB
   (`retro_serialize_size` is twice the first state's size), and the default `[cache]`
-  preset, `nes-sparse`, suits it. A preset tuned on real games is for later.
+  preset, `small`, suits it. A preset tuned on real games is for later.
 - **Ticks:** `[tick] exec = "ROM:0x…"` at an opcode that runs once per logic step.
 
 ## Checked

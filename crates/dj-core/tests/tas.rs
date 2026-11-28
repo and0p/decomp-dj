@@ -27,7 +27,7 @@ fn project(tmp: &Path) -> Project {
     std::fs::write(
         tmp.join("config.toml"),
         "format = 1\nname = \"Game\"\n[rom]\nsha256 = \"\"\npath = \"game.nes\"\n[core]\nname = \"mesen\"\nbuild = \"1\"\n\
-         [core.options]\nmesen_shift_buttons_clockwise = \"disabled\"\n[hash]\nalgorithm = \"blake3\"\nregions = [\"RAM\"]\n",
+         [core.options]\nmesen_shift_buttons_clockwise = \"disabled\"\n[hash]\nregions = [\"RAM\"]\n",
     )
     .unwrap();
     for text in [ROOT, CHILD, POKED] {

@@ -158,7 +158,7 @@ static TOY: ConsoleProfile = ConsoleProfile {
     hash_bus: &[(0x0, 0x3F)],
     hash_note: "hashed through the bus",
     hash_also: &[],
-    cache_preset: Some("n64-sparse"),
+    cache_preset: Some("large"),
     hide: &["X", "Y"],
     labels: &[("B", "Fire")],
     options: &[("testcore_sync", "fail"), ("testcore_missing", "1")],
@@ -180,7 +180,7 @@ fn console_defaults() {
     assert_eq!(plan.console, Some("TOY"));
     assert_eq!(c.ports[0].hide, ["X", "Y"]);
     assert_eq!(c.ports[0].labels.get("B").map(String::as_str), Some("Fire"));
-    assert_eq!(c.cache.as_ref().and_then(|c| c.preset.as_deref()), Some("n64-sparse"));
+    assert_eq!(c.cache.as_ref().and_then(|c| c.preset.as_deref()), Some("large"));
     // The option the core has is set and recorded, and said; the one it doesn't have isn't.
     assert_eq!(c.core.options.get("testcore_sync").map(String::as_str), Some("fail"));
     assert!(!c.core.options.contains_key("testcore_missing"));
@@ -197,7 +197,7 @@ fn console_defaults() {
     plan.write().unwrap();
     let col = Project::open(&tmp.join("proj")).unwrap();
     assert_eq!(col.config.ports[0].hide, ["X", "Y"]);
-    assert_eq!(col.config.cache.as_ref().and_then(|c| c.preset.as_deref()), Some("n64-sparse"));
+    assert_eq!(col.config.cache.as_ref().and_then(|c| c.preset.as_deref()), Some("large"));
 }
 
 fn the_core_for_the_roms_console() {

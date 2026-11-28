@@ -159,9 +159,6 @@ impl Session {
             bail!("the core library {} doesn't exist", core_path.display());
         }
         let core_sha = sha256_file(core_path)?;
-        if !col.config.core.sha256.is_empty() && core_sha != col.config.core.sha256 {
-            bail!("core {} has sha256 {core_sha}, but the project is pinned to {}", core_path.display(), col.config.core.sha256);
-        }
         let work = col.local_dir();
         let mut core = Core::load(core_path, &work, &col.config.core.options)?;
         core.load_game(rom)?;
@@ -941,7 +938,7 @@ mod hash_exclude_tests {
     use crate::project::HashConfig;
 
     fn cfg(regions: &[&str], exclude: &[&str]) -> HashConfig {
-        HashConfig { algorithm: "blake3".into(), regions: regions.iter().map(|s| s.to_string()).collect(), exclude: exclude.iter().map(|s| s.to_string()).collect() }
+        HashConfig { regions: regions.iter().map(|s| s.to_string()).collect(), exclude: exclude.iter().map(|s| s.to_string()).collect() }
     }
 
     #[test]

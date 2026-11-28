@@ -12,7 +12,6 @@ shareable = true
 path = "mesen_libretro"
 name = "mesen"
 build = "mesen@0102910c+dj.f977b8b1"
-sha256 = ""
 
 [core.options]
 mesen_aspect_ratio = "Auto"
@@ -47,7 +46,6 @@ device = "JOYPAD"
 hide = ["Y", "X", "L", "R", "L2", "R2", "L3"]
 
 [hash]
-algorithm = "blake3"
 regions = ["RAM"]
 
 [tick]

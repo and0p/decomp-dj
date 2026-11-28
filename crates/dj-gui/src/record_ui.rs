@@ -3,7 +3,7 @@
 use crate::strings as t;
 use crate::widgets::{KeepMenuOpen, icon_color};
 use crate::{App, egui_ctx, REC_HOLD_DELAY, REC_RED, record, RecState, SPEEDS};
-use dj_core::collection::Collection;
+use dj_core::project::Project;
 use dj_core::format::InputKey;
 use eframe::egui::{self, Color32};
 use std::collections::BTreeSet;
@@ -344,7 +344,7 @@ impl RecState {
     }
 
     /// Joypad controllers to record into: the project's, and always players 1 and 2.
-    pub(crate) fn ports(&self, col: Option<&Collection>) -> Vec<u32> {
+    pub(crate) fn ports(&self, col: Option<&Project>) -> Vec<u32> {
         let mut ports: BTreeSet<u32> = [0, 1].into_iter().collect();
         if let Some(col) = col {
             for p in &col.config.ports {

@@ -230,7 +230,7 @@ fn bar(ui: &mut egui::Ui, width: f32, covered: usize, live: usize, dirty: usize,
 
 impl CovState {
     /// Rebuilds the report from the local database.
-    fn rebuild(&mut self, app_col: &dj_core::collection::Collection, s: &dj_core::player::Session, unsaved: &std::collections::HashSet<String>) {
+    fn rebuild(&mut self, app_col: &dj_core::project::Project, s: &dj_core::player::Session, unsaved: &std::collections::HashSet<String>) {
         self.stale = false;
         self.hits = None;
         let Some(c) = &s.cache else {
@@ -567,7 +567,7 @@ impl App {
     fn live_pending(&self, id: &str) -> &'static str {
         let Some(col) = &self.col else { return t::NOT_COUNTED_YET };
         let unsaved = self.edited.contains(id) || col.is_draft(id);
-        let dirty = col.segments.contains_key(id) && col.tree_status(id) == dj_core::collection::Status::Dirty;
+        let dirty = col.segments.contains_key(id) && col.tree_status(id) == dj_core::project::Status::Dirty;
         let counted = self.cov.report.as_ref().is_some_and(|r| r.detail.per_segment_prg.contains_key(id));
         match (unsaved, dirty) {
             (true, false) => t::COUNTED_ONCE_SAVED,
@@ -1014,7 +1014,7 @@ impl App {
                         let col = self.col.as_ref();
                         let link = |ui: &mut egui::Ui, h: &FirstHit, lead: &str| -> bool {
                             let title = crate::widgets::col_title(col, &h.id);
-                            let dirty = if h.status == dj_core::collection::Status::Dirty { t::DIRTY } else { "" };
+                            let dirty = if h.status == dj_core::project::Status::Dirty { t::DIRTY } else { "" };
                             ui.link(RichText::new(format!("{lead}{title}, from frame {}{dirty}", h.frame)).small())
                                 .on_hover_text(format!("Go to the first frame of this segment where it runs (depth {} in the tree)", h.depth))
                                 .clicked()

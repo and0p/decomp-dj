@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use dj_core::cache;
-use dj_core::collection::Collection;
+use dj_core::project::Project;
 use dj_core::condition::{Env, Expr};
 use dj_core::coverage::FLAG_OPCODE;
 use dj_core::format::{parse_body_line, Command, Segment};
@@ -29,8 +29,8 @@ pub fn drafts_dir(root: &Path) -> PathBuf {
 }
 
 /// The project with every draft added, so chains through drafts resolve.
-pub fn load_with_drafts(dir: &Path) -> Result<Collection> {
-    let mut col = Collection::open(dir)?;
+pub fn load_with_drafts(dir: &Path) -> Result<Project> {
+    let mut col = Project::open(dir)?;
     col.load_drafts()?;
     Ok(col)
 }
@@ -47,7 +47,7 @@ struct Tape {
 
 struct Worker {
     dir: PathBuf,
-    col: Collection,
+    col: Project,
     s: Option<Session>,
     tape: Option<Tape>,
     /// PRG opcode flags already known: the project's coverage plus what this worker ran.
@@ -174,7 +174,7 @@ impl Worker {
         }
         for (id, (key, st)) in cache::current_keys(&conn, &self.col, &setup)? {
             let Some(k) = key else { continue };
-            if st == dj_core::collection::Status::Dirty || self.col.is_draft(&id) {
+            if st == dj_core::project::Status::Dirty || self.col.is_draft(&id) {
                 continue;
             }
             if let Some(p) = cache::coverage_of(&conn, &k)?.get("PRG") {
@@ -581,7 +581,7 @@ impl Worker {
         let save = arg_str(a, "start")? == "save";
         self.tape = None;
         // The project as it is saved: the new root must not pick up a draft.
-        self.col = Collection::open(&self.dir)?;
+        self.col = Project::open(&self.dir)?;
         self.session()?;
         let col = &mut self.col;
         let s = self.s.as_mut().unwrap();
@@ -599,7 +599,7 @@ impl Worker {
         }
         new.blob_name = match a.get("name").and_then(|n| n.as_str()) {
             Some(n) => n.to_string(),
-            None => dj_core::collection::blob_name(&format!("{src} frame {frame}")),
+            None => dj_core::project::blob_name(&format!("{src} frame {frame}")),
         };
         if let Some(t) = a.get("title").and_then(|t| t.as_str()) {
             new.title = t.to_string();

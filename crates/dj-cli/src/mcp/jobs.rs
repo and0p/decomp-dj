@@ -287,7 +287,7 @@ impl Server {
     /// A parity job: `dj parity` in a child process (so a crashing core is handled as on the
     /// command line), reporting each segment as a JSON line (`--events`).
     fn start_parity_job(&mut self, name: &str, a: &Args) -> Result<Value> {
-        let col = dj_core::collection::Collection::open(&self.dir)?;
+        let col = dj_core::project::Project::open(&self.dir)?;
         let compare = dj_core::parity::compare_name(&col, a.opt_str("compare")?.as_deref())?;
         let mut args: Vec<String> = vec!["-C".into(), self.dir.display().to_string(), "parity".into(), if name == "parity_check" { "check" } else { "rerun" }.into(), "--compare".into(), compare.clone(), "--events".into()];
         if name == "parity_check" {
@@ -367,7 +367,7 @@ impl Server {
 
     /// `parity_clear`: forgets failures, as `dj parity clear` does. No core runs.
     fn parity_clear(&mut self, a: &Args) -> Result<Value> {
-        let col = dj_core::collection::Collection::open(&self.dir)?;
+        let col = dj_core::project::Project::open(&self.dir)?;
         let compare = dj_core::parity::compare_name(&col, a.opt_str("compare")?.as_deref())?;
         let ids: Vec<i64> = a.u64s("ids")?.into_iter().map(|i| i as i64).collect();
         if ids.is_empty() {
@@ -386,7 +386,7 @@ impl Server {
 
     /// The `[[compare]]` entry a parity tool names (it may be left out when there is one).
     fn compare_of(&self, a: &Args) -> Result<String> {
-        let col = dj_core::collection::Collection::open(&self.dir)?;
+        let col = dj_core::project::Project::open(&self.dir)?;
         dj_core::parity::compare_name(&col, a.opt_str("compare")?.as_deref())
     }
 }
@@ -641,7 +641,7 @@ fn worker_loop(cfg: &Cfg, job: &Job, start: &str, seed: u64, deadline: Instant) 
     let mut w = WorkerProc::spawn(&cfg.dir)?;
     let opened = w.call("open", json!({"draft": start, "cursor": null, "base": cfg.base}))?;
     let origin = opened["frames"].as_u64().unwrap_or(0);
-    let names = dj_core::query::Project::open(&cfg.dir, None).ok();
+    let names = dj_core::query::ProjectQueries::open(&cfg.dir, None).ok();
     let mut rng = Rng(seed);
     let mut synced: HashSet<u64> = HashSet::new();
     let mut fails_here = 0u32;
@@ -725,7 +725,7 @@ fn worker_loop(cfg: &Cfg, job: &Job, start: &str, seed: u64, deadline: Instant) 
     }
 }
 
-fn describe(p: &Option<dj_core::query::Project>, offs: &[u64]) -> String {
+fn describe(p: &Option<dj_core::query::ProjectQueries>, offs: &[u64]) -> String {
     let mut by: BTreeMap<String, usize> = BTreeMap::new();
     for o in offs {
         let n = p.as_ref().and_then(|p| p.function_at("PRG", *o)).map(|f| f.name.clone()).unwrap_or_else(|| format!("PRG:{o:#x}"));
@@ -750,7 +750,7 @@ fn save_copy(cfg: &Cfg, tape: &str, title: &str, goal: bool, new: usize, job: &s
     }
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     r.set("draft-created", &t.to_string());
-    dj_core::collection::write_atomic(&dd.join(format!("{id}.segment")), &r.to_text())?;
+    dj_core::project::write_atomic(&dd.join(format!("{id}.segment")), &r.to_text())?;
     Ok(id)
 }
 

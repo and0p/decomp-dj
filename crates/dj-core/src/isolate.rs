@@ -285,7 +285,7 @@ fn batch_skip() -> &'static std::collections::HashSet<String> {
 
 /// Whether a batch child leaves segment `id` out: "crashed" (it crashed the core or hung in
 /// an earlier child), "blocked" (one above it did), or None.
-pub fn batch_skipped(col: &crate::collection::Collection, id: &str) -> Option<&'static str> {
+pub fn batch_skipped(col: &crate::project::Project, id: &str) -> Option<&'static str> {
     let skip = batch_skip();
     if skip.is_empty() {
         return None;
@@ -353,7 +353,7 @@ pub fn supervise(dir: &std::path::Path) -> Result<Option<i32>> {
     }
     let exe = worker_exe()?;
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    let titles = crate::collection::Collection::open(dir).ok();
+    let titles = crate::project::Project::open(dir).ok();
     let title = |id: &str| titles.as_ref().and_then(|c| c.segments.get(id)).map(|r| r.title().to_string()).unwrap_or_default();
     let mut skip: Vec<String> = vec![];
     let mut failures: Vec<(String, u64, String)> = vec![];

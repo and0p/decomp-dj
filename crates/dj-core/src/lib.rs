@@ -5,7 +5,7 @@ pub mod analysis;
 pub mod arm;
 pub mod annotations;
 pub mod cache;
-pub mod collection;
+pub mod project;
 pub mod compare;
 pub mod coverage;
 pub mod decode;

@@ -45,7 +45,7 @@ folder together: `dj` finds its cores and decoder plugins in the folders beside 
 ### The cores
 
 dj plays a game in a libretro core, and records coverage only with a core that has a
-[connector](connectors.md). The Linux and macOS ZIPs carry these, built from `connectors/`:
+[connector](connectors.md). The Linux and macOS ZIPs carry these six, built from `connectors/`:
 
 | Console | Core | Named in a project as |
 | --- | --- | --- |
@@ -54,6 +54,7 @@ dj plays a game in a libretro core, and records coverage only with a core that h
 | Game Boy, Game Boy Color | SameBoy | `sameboy_libretro` |
 | Game Boy Advance | mGBA | `mgba_libretro` |
 | Nintendo 64 | Mupen64Plus-Next | `mupen64plus_next_libretro` |
+| Mega Drive / Genesis | Genesis Plus GX | `genesis_plus_gx_libretro` |
 
 - **You don't point dj at them.** `dj init` picks the one for your ROM's console, and a
   project's `config.toml` names its core without a folder (`path = "mesen_libretro"`),
@@ -63,8 +64,10 @@ dj plays a game in a libretro core, and records coverage only with a core that h
 - **Each core is a separate program under its own licence,** not MIT: the text is in
   `cores/<core>.LICENSE.txt`. `cores/README.txt` names each core's exact build and the
   `*-source.tar.gz` file on the same release that holds its complete source.
-- **Mega Drive / Genesis** has a connector (Genesis Plus GX) but no core in the ZIP: its
-  licence allows only non-commercial redistribution. [Build it](#building-a-core) to use it.
+- **Genesis Plus GX's licence is not a free software licence:** it may be passed on, but
+  not sold or used in a commercial product (`cores/genesis_plus_gx_libretro.LICENSE.txt`).
+  The other cores are GPL (Mesen, Mesen-S, Mupen64Plus-Next), MPL (mGBA) and Expat
+  (SameBoy).
 - **Any other libretro core** plays segments and checks hashes too, given by its file
   (`--core path/to/core`), but records no coverage until it has a connector.
 
@@ -93,7 +96,7 @@ It then loads the core with the ROM, shows the project it would make, and asks `
 
 - **The ROM** is the one thing with no default. A path can be typed, pasted or dropped into the terminal (quotes, `\ ` and `~/` are understood).
 - **The folder** is `.dj` in the current folder unless you name another. dj finds a project in `.dj` from that folder and from any folder below it, as git finds a repository, so the project sits inside the decomp or port it is about. A project in `.dj` is named after the ROM file, one in a folder of its own after the folder.
-- **The core** suggested is the one for the ROM's console (NES, SNES, Game Boy, GBA, N64 and Genesis, told by the ROM's header or extension): `mesen_libretro`, `mesen-s_libretro`, `sameboy_libretro`, `mgba_libretro`, `mupen64plus_next_libretro` or `genesis_plus_gx_libretro`, looked for in `$DJ_CORES`, then `cores/` next to `dj` (where a release has them), then `build/cores/` of a source checkout (where the connectors' `build.sh` put them), then `build/cores/` in the current folder. If it isn't there (Genesis, and every core on Windows for now), dj says which script builds it and asks for a core's file. For another console, give any libretro core's file, or a name to look for in those folders.
+- **The core** suggested is the one for the ROM's console (NES, SNES, Game Boy, GBA, N64 and Genesis, told by the ROM's header or extension): `mesen_libretro`, `mesen-s_libretro`, `sameboy_libretro`, `mgba_libretro`, `mupen64plus_next_libretro` or `genesis_plus_gx_libretro`, looked for in `$DJ_CORES`, then `cores/` next to `dj` (where a release has them), then `build/cores/` of a source checkout (where the connectors' `build.sh` put them), then `build/cores/` in the current folder. If it isn't there (every core on Windows, for now), dj says which script builds it and asks for a core's file. For another console, give any libretro core's file, or a name to look for in those folders.
 - **The first segment** is a root segment of 60 frames from power-on, to record into (`dj new` makes more).
 
 What a flag says isn't asked: `dj init my-game --rom game.nes --name "My Game" --core mesen_libretro --symbols game.dbg --no-segment` asks only for the last yes. **`--yes` (`-y`) asks nothing** and takes the default for everything the flags don't say; so does a `dj init` whose input or output isn't a terminal (a script, CI, an agent). Both need `--rom`:

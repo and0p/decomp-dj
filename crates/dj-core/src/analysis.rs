@@ -317,7 +317,7 @@ pub fn default_rom_header(format: &str, rom: Option<&[u8]>) -> u64 {
 }
 
 /// Loads one `[[symbols]]` entry. `rom` is used only to tell whether it has an iNES header.
-pub fn load_symbols(root: &Path, cfg: &crate::collection::SymbolsConfig, rom: Option<&[u8]>) -> Result<Vec<Function>> {
+pub fn load_symbols(root: &Path, cfg: &crate::project::SymbolsConfig, rom: Option<&[u8]>) -> Result<Vec<Function>> {
     let path = root.join(&cfg.file);
     let header = cfg.rom_header.unwrap_or_else(|| default_rom_header(&cfg.format, rom));
     let region = cfg.region.clone().unwrap_or_else(|| "PRG".into()).to_ascii_uppercase();
@@ -348,13 +348,13 @@ pub fn load_symbols(root: &Path, cfg: &crate::collection::SymbolsConfig, rom: Op
 /// entries applied, each with where its region's bytes start in the ROM file (the
 /// connector's `file_offset` when recorded, else the map's `rom_header`). Where two maps describe
 /// the same bytes of a region, the first one listed wins.
-pub fn project_functions(col: &crate::collection::Collection, rom: Option<&[u8]>, ann: &crate::annotations::Annotations) -> Result<Vec<(Function, u64)>> {
+pub fn project_functions(col: &crate::project::Project, rom: Option<&[u8]>, ann: &crate::annotations::Annotations) -> Result<Vec<(Function, u64)>> {
     project_functions_with(col, rom, ann, &[])
 }
 
 /// `project_functions`, placing each map by where the connector says its region lies in the
 /// ROM file (`facts`); `rom_header` in the map's entry overrides that.
-pub fn project_functions_with(col: &crate::collection::Collection, rom: Option<&[u8]>, ann: &crate::annotations::Annotations, facts: &[RegionFacts]) -> Result<Vec<(Function, u64)>> {
+pub fn project_functions_with(col: &crate::project::Project, rom: Option<&[u8]>, ann: &crate::annotations::Annotations, facts: &[RegionFacts]) -> Result<Vec<(Function, u64)>> {
     let mut funcs: Vec<(Function, u64)> = vec![];
     for s in &col.config.symbols {
         let region = s.region.as_deref().unwrap_or("PRG");
@@ -365,7 +365,7 @@ pub fn project_functions_with(col: &crate::collection::Collection, rom: Option<&
         // ... and where the region's bytes are in the ROM file: as the connector says, when it
         // has said.
         let bytes_at = placed.unwrap_or(header);
-        let placed_cfg = crate::collection::SymbolsConfig { rom_header: Some(header), ..s.clone() };
+        let placed_cfg = crate::project::SymbolsConfig { rom_header: Some(header), ..s.clone() };
         for f in load_symbols(&col.root, &placed_cfg, rom)? {
             if !funcs.iter().any(|(g, _)| g.region == f.region && f.offset < g.offset + g.size && g.offset < f.offset + f.size) {
                 funcs.push((f, bytes_at));
@@ -626,7 +626,7 @@ pub fn load_elf_data(path: &Path, rom_header: u64) -> Result<Vec<(u64, u64)>> {
 
 /// Data inside code that the project's symbol maps mark (ARM ELF mapping symbols), in
 /// `region`, as inclusive region offsets.
-pub fn project_map_data(col: &crate::collection::Collection, rom: Option<&[u8]>, facts: &[RegionFacts], region: &str) -> Result<Vec<(u64, u64)>> {
+pub fn project_map_data(col: &crate::project::Project, rom: Option<&[u8]>, facts: &[RegionFacts], region: &str) -> Result<Vec<(u64, u64)>> {
     let mut out = vec![];
     for s in col.config.symbols.iter().filter(|s| s.format == "elf" && s.region.as_deref().unwrap_or("PRG").eq_ignore_ascii_case(region)) {
         let placed = facts.iter().find(|f| f.name == region).and_then(|f| f.file_offset);
@@ -687,7 +687,7 @@ pub struct RegionFacts {
 }
 
 /// Instruction sets the player decodes itself (split into instructions and blocks). A
-/// project's plugins can add others (`Collection::decoders`).
+/// project's plugins can add others (`Project::decoders`).
 pub fn has_decoder(cpu: &str) -> bool {
     crate::decode::decoder_for(cpu).is_some()
 }

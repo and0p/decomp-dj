@@ -1,7 +1,7 @@
 //! Comparison cores end to end, with the tiny libretro core in tests/testcore (built here
 //! with the system C compiler; the test is skipped when there is none).
 
-use dj_core::collection::Collection;
+use dj_core::project::Project;
 use dj_core::compare::{Comparison, SyncOutcome, Verdict};
 use dj_core::libretro::MEMORY_SYSTEM_RAM;
 use dj_core::parity::{check_span, Checker};
@@ -18,7 +18,7 @@ fn build(out: &Path, name: &str, defs: &[&str]) -> Option<PathBuf> {
 
 const SEGMENT: &str = "dj-segment 1\nid: seg\nparent: none\nframes: 20\n---\n2 P1 JOYPAD B 1\n6 P1 JOYPAD B 0\n8 P1 JOYPAD Y 1\n12 [WRITE] RAM 0x20 ab cd\n";
 
-fn project(dir: &Path, core: &Path, nodj: &Path) -> Collection {
+fn project(dir: &Path, core: &Path, nodj: &Path) -> Project {
     std::fs::create_dir_all(dir.join("segments")).unwrap();
     std::fs::create_dir_all(dir.join(".local")).unwrap();
     std::fs::write(dir.join("rom.bin"), b"rom").unwrap();
@@ -42,7 +42,7 @@ fn project(dir: &Path, core: &Path, nodj: &Path) -> Collection {
         ),
     )
     .unwrap();
-    Collection::open(dir).unwrap()
+    Project::open(dir).unwrap()
 }
 
 fn ram(core: &mut dj_core::libretro::Core) -> Vec<u8> {

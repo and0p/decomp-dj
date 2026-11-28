@@ -3,7 +3,7 @@
 use crate::strings as t;
 use crate::widgets::{fold_button, marker_list, nest_button, status_color, status_dot};
 use crate::{AGENT_OWNED, App, CHANGED, Clean, cov, DRAFT, roll, SideState, SideTab};
-use dj_core::collection::{Collection, Status};
+use dj_core::project::{Project, Status};
 use eframe::egui::{self, Color32, RichText};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -369,7 +369,7 @@ struct TreeEvents {
 }
 
 /// Under the project's name: how many segments are clean and dirty, changed endings, and agent drafts.
-fn summary(ui: &mut egui::Ui, col: &Collection, flagged: usize) {
+fn summary(ui: &mut egui::Ui, col: &Project, flagged: usize) {
     let (mut clean, mut dirty) = (0, 0);
     for id in col.segments.keys().filter(|id| !col.is_draft(id)) {
         match col.tree_status(id) {
@@ -393,7 +393,7 @@ fn summary(ui: &mut egui::Ui, col: &Collection, flagged: usize) {
 }
 
 /// Breadcrumbs while the tree is focused on `h`. Returns the new focus when one is clicked (None: the whole tree).
-fn crumbs(ui: &mut egui::Ui, col: &Collection, h: &str) -> Option<Option<String>> {
+fn crumbs(ui: &mut egui::Ui, col: &Project, h: &str) -> Option<Option<String>> {
     let mut new_hoist = None;
     let chain = col.chain(h).unwrap_or_default();
     ui.horizontal_wrapped(|ui| {
@@ -436,7 +436,7 @@ fn crumbs(ui: &mut egui::Ui, col: &Collection, h: &str) -> Option<Option<String>
 
 /// The row above the tree: the filter field, the tag menu, and the fold and indent buttons.
 /// Returns Some(true) for Collapse all and Some(false) for Expand all.
-fn filter_bar(ui: &mut egui::Ui, col: &Collection, side: &mut SideState) -> Option<bool> {
+fn filter_bar(ui: &mut egui::Ui, col: &Project, side: &mut SideState) -> Option<bool> {
     // Right to left, so the field takes exactly the width left over and never pushes the panel wider.
     let mut fold: Option<bool> = None;
     ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 22.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -519,7 +519,7 @@ struct RowMenu<'a> {
 }
 
 /// A row's right-click menu. Returns the item chosen, as `TreeEvents::context`.
-fn row_menu(ui: &mut egui::Ui, col: &Collection, id: &str, m: &RowMenu) -> Option<(String, &'static str)> {
+fn row_menu(ui: &mut egui::Ui, col: &Project, id: &str, m: &RowMenu) -> Option<(String, &'static str)> {
     let mut out = None;
     let r = &col.segments[id];
     let is_draft = col.is_draft(id);
@@ -626,7 +626,7 @@ fn new_root_row(ui: &mut egui::Ui) -> bool {
 /// or tag, the start of an id, or `#tag` for that tag exactly) at or below `hoist`, and the
 /// segments to show: the matches, the path down to each and, with `below`, everything
 /// under them.
-fn filter_tree<'a>(col: &'a Collection, needle: &str, hoist: Option<&'a str>, below: bool) -> (HashSet<&'a str>, HashSet<&'a str>) {
+fn filter_tree<'a>(col: &'a Project, needle: &str, hoist: Option<&'a str>, below: bool) -> (HashSet<&'a str>, HashSet<&'a str>) {
     let mut m = HashSet::new();
     let mut sh = HashSet::new();
     let tag = needle.strip_prefix('#');
@@ -659,7 +659,7 @@ struct Row<'a> {
     chained: bool,
 }
 #[allow(clippy::too_many_arguments)]
-fn walk<'a>(col: &'a Collection, id: &'a str, indent: usize, chained: bool, closed: &HashSet<String>, keep: Option<&HashSet<&str>>, indent_all: bool, rows: &mut Vec<Row<'a>>) {
+fn walk<'a>(col: &'a Project, id: &'a str, indent: usize, chained: bool, closed: &HashSet<String>, keep: Option<&HashSet<&str>>, indent_all: bool, rows: &mut Vec<Row<'a>>) {
     if keep.is_some_and(|k| !k.contains(id)) {
         return;
     }
@@ -676,7 +676,7 @@ fn walk<'a>(col: &'a Collection, id: &'a str, indent: usize, chained: bool, clos
 
 /// The tree's rows in order, from `hoist` (or every root) down. `keep`, while filtering:
 /// only these segments, whatever is collapsed.
-fn tree_rows<'a>(col: &'a Collection, hoist: Option<&'a str>, closed: &HashSet<String>, keep: Option<&HashSet<&str>>, indent_all: bool) -> Vec<Row<'a>> {
+fn tree_rows<'a>(col: &'a Project, hoist: Option<&'a str>, closed: &HashSet<String>, keep: Option<&HashSet<&str>>, indent_all: bool) -> Vec<Row<'a>> {
     let mut rows = vec![];
     let roots = match hoist {
         Some(h) => vec![h],

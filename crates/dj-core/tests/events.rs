@@ -8,7 +8,7 @@
 //! halves and no tick on every seventh frame. The comparison core is the same core built to
 //! take events. Skipped when there is no C compiler.
 
-use dj_core::collection::Collection;
+use dj_core::project::Project;
 use dj_core::compare::Comparison;
 use dj_core::coverage::FLAG_OPCODE;
 use dj_core::libretro::MEMORY_SYSTEM_RAM;
@@ -47,7 +47,7 @@ fn cores(what: &str) -> Option<Cores> {
 
 /// A project whose baseline is the connector core. `extra` goes into config.toml; `segments`
 /// are (id, body lines) added beside `seg`.
-fn project(c: &Cores, extra: &str, segments: &[(&str, &str)]) -> Collection {
+fn project(c: &Cores, extra: &str, segments: &[(&str, &str)]) -> Project {
     let dir = c.tmp.join("project");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("segments")).unwrap();
@@ -73,14 +73,14 @@ fn project(c: &Cores, extra: &str, segments: &[(&str, &str)]) -> Collection {
         entry("tick-no-write", &nw, "testcore_judge = \"tick\""),
     );
     std::fs::write(dir.join("config.toml"), config).unwrap();
-    Collection::open(&dir).unwrap()
+    Project::open(&dir).unwrap()
 }
 
-fn session(c: &Cores, col: &Collection) -> Session {
+fn session(c: &Cores, col: &Project) -> Session {
     Session::open_with(col, &col.root.join("rom.bin"), &c.base, false).unwrap()
 }
 
-fn open(c: &Cores, col: &Collection, name: &str) -> Comparison {
+fn open(c: &Cores, col: &Project, name: &str) -> Comparison {
     Comparison::open(col, name, &c.base, Some(&col.root.join("rom.bin"))).unwrap()
 }
 
@@ -95,7 +95,7 @@ fn sent(c: &Comparison) -> String {
 
 /// Checks all of segment `id` against comparison core `name`: the span, the frames left
 /// unjudged at the end, and what the core was sent.
-fn check(c: &Cores, col: &Collection, s: &mut Session, name: &str, id: &str) -> (Span, u64, String) {
+fn check(c: &Cores, col: &Project, s: &mut Session, name: &str, id: &str) -> (Span, u64, String) {
     s.enter_segment(col, id).unwrap();
     let mut cmp = open(c, col, name);
     let mut ck = Checker::default();
@@ -201,7 +201,7 @@ fn a_core_that_judges_at_a_tick() {
 }
 
 /// Runs frame `k` of `seg` on both cores, as a player does.
-fn frame(s: &mut Session, cmp: &mut Comparison, ck: &mut Checker, col: &Collection, k: u64) -> Checked {
+fn frame(s: &mut Session, cmp: &mut Comparison, ck: &mut Checker, col: &Project, k: u64) -> Checked {
     if !ck.in_step("seg", k) {
         ck.sync(cmp, &mut s.core, col, "seg", k, k).unwrap();
     }
@@ -486,7 +486,7 @@ fn pre_roll() {
     // frame from power-on: frame 1 of mid, and frame 5 of kid.
     std::fs::write(col.root.join("segments/mid.segment"), "dj-segment 1\nid: mid\nparent: seg\nframes: 3\n---\n").unwrap();
     std::fs::write(col.root.join("segments/kid.segment"), "dj-segment 1\nid: kid\nparent: mid\nframes: 20\n---\n3 P1 JOYPAD A 1\n").unwrap();
-    let col = Collection::open(&col.root).unwrap();
+    let col = Project::open(&col.root).unwrap();
     let mut s = session(&c, &col);
 
     // Where the pre-roll runs: back into the parent, and never before a root's start.

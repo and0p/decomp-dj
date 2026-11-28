@@ -1,7 +1,7 @@
 //! `scaffold::propose` and `InitPlan::write` (`dj init`), with the test core. Skipped when
 //! there is no C compiler.
 
-use dj_core::collection::Collection;
+use dj_core::project::Project;
 use dj_core::platform::ConsoleProfile;
 use dj_core::scaffold::{propose, propose_with, FirstSegment, InitRequest};
 use std::path::{Path, PathBuf};
@@ -64,7 +64,7 @@ fn a_project_from_a_rom_and_a_core() {
     let c = &plan.config;
     assert_eq!(c.name, "A Game");
     assert_eq!(c.rom.file, "My Game.bin");
-    assert_eq!(c.rom.sha256, dj_core::collection::sha256_file(&rom).unwrap());
+    assert_eq!(c.rom.sha256, dj_core::project::sha256_file(&rom).unwrap());
     assert_eq!(c.rom.shareable, None);
     assert_eq!(c.core.name, "testcore");
     assert!(!c.core.build.is_empty());
@@ -93,7 +93,7 @@ fn a_project_from_a_rom_and_a_core() {
     assert_eq!(std::fs::read_to_string(dir.join(".gitignore")).unwrap(), ".local/\n");
 
     // It opens, says what the plan said, and knows where the ROM and the core are.
-    let col = Collection::open(&dir).unwrap();
+    let col = Project::open(&dir).unwrap();
     assert_eq!(col.config.name, "A Game");
     assert_eq!(col.config.core.options, c.core.options);
     assert_eq!(col.config.core.build, c.core.build);
@@ -148,7 +148,7 @@ fn a_core_without_a_connector_and_with_save_ram() {
     assert!(plan.regions.is_empty());
     assert_eq!(plan.config.hash.regions, ["RAM", "SRAM"]);
     plan.write().unwrap();
-    assert!(Collection::open(&tmp.join("proj")).is_ok());
+    assert!(Project::open(&tmp.join("proj")).is_ok());
 }
 
 /// A console for the test core: an option it has, one it doesn't, and bus ranges it
@@ -195,7 +195,7 @@ fn console_defaults() {
 
     // The project it writes opens, with the preset and the controls read back.
     plan.write().unwrap();
-    let col = Collection::open(&tmp.join("proj")).unwrap();
+    let col = Project::open(&tmp.join("proj")).unwrap();
     assert_eq!(col.config.ports[0].hide, ["X", "Y"]);
     assert_eq!(col.config.cache.as_ref().and_then(|c| c.preset.as_deref()), Some("n64-sparse"));
 }
@@ -208,7 +208,7 @@ fn the_core_for_the_roms_console() {
     let mesen = cores.join("mesen_libretro").with_extension(std::env::consts::DLL_EXTENSION);
     std::fs::copy(&lib, &mesen).unwrap();
     std::env::set_var(dj_core::platform::CORES_ENV, &cores);
-    std::env::remove_var(dj_core::collection::CORE_ENV);
+    std::env::remove_var(dj_core::project::CORE_ENV);
     let nes = tmp.join("game.bin");
     std::fs::write(&nes, b"NES\x1A\x02\x01 and so on").unwrap();
     let req = InitRequest { dir: Some(tmp.join("proj")), rom: nes.clone(), ..Default::default() };
@@ -224,9 +224,9 @@ fn the_core_for_the_roms_console() {
     assert_eq!(plan.core_chosen_for, None);
 
     // $DJ_CORE is a core asked for.
-    std::env::set_var(dj_core::collection::CORE_ENV, &lib);
+    std::env::set_var(dj_core::project::CORE_ENV, &lib);
     assert_eq!(propose(&req).unwrap().core, lib);
-    std::env::remove_var(dj_core::collection::CORE_ENV);
+    std::env::remove_var(dj_core::project::CORE_ENV);
 
     // A console whose core isn't there: the error names the core, the folders and the script.
     let n64 = tmp.join("game.z64");
@@ -262,7 +262,7 @@ fn the_first_segment_and_gitignore() {
 
     let (id, file) = made.segment.unwrap();
     assert!(file.is_file() && file.starts_with(dir.join("segments")));
-    let col = Collection::open(&dir).unwrap();
+    let col = Project::open(&dir).unwrap();
     assert_eq!(col.segments.len(), 1);
     let seg = &col.segments[&id];
     assert_eq!((seg.title(), seg.frames().unwrap(), seg.parent()), ("Power-on", 60, None));

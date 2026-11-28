@@ -1,14 +1,14 @@
 //! `dj xref`, `summary`, `gaps`, `function` and `frontier`: text or JSON over `dj_core::query`.
 
 use anyhow::Result;
-use dj_core::query::{GapFilter, GapSort, Page, Project, SegmentHit};
+use dj_core::query::{GapFilter, GapSort, Page, ProjectQueries, SegmentHit};
 use serde::Serialize;
 use std::path::Path;
 
 use crate::QueryArgs;
 
-fn open(dir: &Path, q: &QueryArgs) -> Result<Project> {
-    Project::open(dir, q.rom.rom.as_deref())
+fn open(dir: &Path, q: &QueryArgs) -> Result<ProjectQueries> {
+    ProjectQueries::open(dir, q.rom.rom.as_deref())
 }
 
 fn json<T: Serialize>(v: &T) -> Result<()> {

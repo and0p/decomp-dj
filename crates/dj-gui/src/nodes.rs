@@ -334,7 +334,7 @@ impl App {
         let id = Self::new_id();
         // The blob goes into blobs/ now, as Properties does with a chosen file; the segment
         // is unsaved like any other new one.
-        let name = dj_core::collection::blob_name(&format!("{} frame {f}", col.segments[&src].title()));
+        let name = dj_core::project::blob_name(&format!("{} frame {f}", col.segments[&src].title()));
         let blob = col.write_blob(&state, "snapshot", &name).map_err(|e| anyhow!("writing the snapshot into blobs/: {e:#}"))?;
         let mut r = dj_core::edit::root_from_blobs(&id, &title, 600, Some(&blob), None, at, &lines)?;
         // The core is in that state now, so its hash is where the root starts.
@@ -372,7 +372,7 @@ impl App {
     pub(crate) fn export_save_ram(&mut self) {
         let res = (|| -> Result<()> {
             let (data, f, title) = self.save_ram_here()?;
-            let name = format!("{}.srm", dj_core::collection::blob_name(&format!("{title} frame {f}")));
+            let name = format!("{}.srm", dj_core::project::blob_name(&format!("{title} frame {f}")));
             let Some(path) = rfd::FileDialog::new().set_title(t::EXPORT_SAVE_RAM).set_file_name(name).add_filter("Save file", &["srm", "sav"]).save_file() else { return Ok(()) };
             std::fs::write(&path, &data).map_err(|e| anyhow!("writing {}: {e}", path.display()))?;
             self.info(format!("Wrote the save RAM after frame {} ({} bytes) to {}.", f.saturating_sub(1), data.len(), path.display()));
@@ -390,7 +390,7 @@ impl App {
         let res = (|| -> Result<()> {
             let (data, f, title) = self.save_ram_here()?;
             let Some(col) = &self.col else { return Ok(()) };
-            let name = dj_core::collection::blob_name(&format!("{title} frame {f}"));
+            let name = dj_core::project::blob_name(&format!("{title} frame {f}"));
             let blob = col.write_blob(&data, "sram", &name).map_err(|e| anyhow!("writing the save file into blobs/: {e:#}"))?;
             let id = Self::new_id();
             let r = dj_core::edit::root_from_blobs(&id, &format!("{title} save at frame {f}"), 600, None, Some(&blob), 0, &[])?;
@@ -569,7 +569,7 @@ impl App {
         let unchanged = d.title.trim() == r.title() && d.frames == old_frames && !start_changed && !tags_changed;
         for (field, blob, name) in &renames {
             let stem = col.rename_blob(blob, field, name)?;
-            self.message = Some((format!("Renamed the file in blobs/ to {stem}.{}.", dj_core::collection::blob_ext(field)), false));
+            self.message = Some((format!("Renamed the file in blobs/ to {stem}.{}.", dj_core::project::blob_ext(field)), false));
         }
         if unchanged {
             return Ok(());

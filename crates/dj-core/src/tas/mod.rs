@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::Path;
 
-use crate::collection::Collection;
+use crate::project::Project;
 use crate::format::{Command, InputKey, Segment};
 pub use profile::Profile;
 
@@ -95,7 +95,7 @@ pub fn check_ext(path: &Path) -> Result<()> {
 
 /// What import and export need from the project, beyond the movie.
 pub struct Ctx<'a> {
-    pub col: &'a Collection,
+    pub col: &'a Project,
     /// The project's ROM, to check a movie against and to name in one.
     pub rom: Option<&'a [u8]>,
 }
@@ -284,7 +284,7 @@ pub fn import(ctx: &Ctx, file: &Path, title: Option<&str>, strict: bool) -> Resu
         Start::PowerOn => {}
         Start::SaveRam(data) => {
             let stem = Path::new(&file_name).file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let blob = col.write_blob(data, "sram", &crate::collection::blob_name(&stem))?;
+            let blob = col.write_blob(data, "sram", &crate::project::blob_name(&stem))?;
             segment.set("sram", &blob);
         }
         Start::Savestate(_) => unreachable!("to_segment refuses it"),
@@ -432,7 +432,7 @@ pub fn export(ctx: &Ctx, end: ExportEnd, strict: bool, author: Option<&str>) -> 
 /// What a movie can't carry (a snapshot start, resets on GB and GBA, `[WRITE]`, `[RNG]`,
 /// `[DEVICE]`, inputs with no button) is left out, and summed up in one warning; `strict`
 /// refuses it.
-pub fn from_chain(col: &Collection, end: ExportEnd, rom: Option<&[u8]>, strict: bool) -> Result<(Movie, Vec<String>)> {
+pub fn from_chain(col: &Project, end: ExportEnd, rom: Option<&[u8]>, strict: bool) -> Result<(Movie, Vec<String>)> {
     let chain = col.chain(end.segment)?;
     let platform = profile::platform_of(&col.config.core.name, rom).ok_or_else(|| anyhow!("TAS movies aren't supported for the core `{}` yet", col.config.core.name))?;
     if !PLATFORMS.contains(&platform) {
@@ -463,7 +463,7 @@ pub fn from_chain(col: &Collection, end: ExportEnd, rom: Option<&[u8]>, strict: 
                 len = t + 1;
             }
         }
-        if col.status(id) != crate::collection::Status::Clean {
+        if col.status(id) != crate::project::Status::Clean {
             dirty += 1;
         }
         let base = frames.len() as u64;

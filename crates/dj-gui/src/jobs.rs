@@ -4,7 +4,7 @@ use crate::strings as t;
 use crate::widgets::col_title;
 use crate::{App, Clean, egui_ctx, Hydrating, Job, JOB_SLICE, PREROLL_KEEP, start_pass};
 use anyhow::Result;
-use dj_core::collection::Status;
+use dj_core::project::Status;
 use dj_core::hydrate::Hydrator;
 use dj_core::parity::Checked;
 use eframe::egui;

@@ -3,7 +3,7 @@
 use crate::strings as t;
 use crate::widgets::{child_list, col_title, icon_color, is_marker, paint_skip, status_color};
 use crate::{App, CHANGED, EndMode, SPEEDS};
-use dj_core::collection::Status;
+use dj_core::project::Status;
 use eframe::egui::{self, RichText};
 
 impl App {

@@ -68,7 +68,9 @@ console's memory, which can include the game's code and data, so it shouldn't be
 unless you have the right to share the game. A save file, memory writes (`[WRITE]` lines)
 or an in-game password get to most places without one. The warning is advice: dj never
 refuses to make a snapshot, and what a project publishes is its author's call
-([segments.md](segments.md#project-layout)).
+([segments.md](segments.md#project-layout)). For a game that may be shared (homebrew, open
+source, your own), `shareable = true` under `[rom]` in `config.toml` turns the warning off
+for everyone who uses the project ([config.md](config.md#rom)); `dj init` doesn't ask.
 
 - `dj new --snapshot` and `--from` print it as a note.
 - The GUI asks first, with Create and Cancel, and **Don't show this again** keeps your

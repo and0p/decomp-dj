@@ -1,7 +1,7 @@
 //! Small widgets and painting helpers the panels share.
 
 use crate::strings as t;
-use dj_core::collection::{Collection, Status};
+use dj_core::project::{Project, Status};
 use dj_core::format::Command;
 use eframe::egui::{self, Color32, RichText};
 use std::collections::HashSet;
@@ -29,7 +29,7 @@ pub(crate) fn status_color(s: Status) -> Color32 {
     }
 }
 
-pub(crate) fn col_title(col: Option<&Collection>, id: &str) -> String {
+pub(crate) fn col_title(col: Option<&Project>, id: &str) -> String {
     col.and_then(|c| c.segments.get(id)).map_or(String::new(), |r| r.title().to_string())
 }
 
@@ -65,7 +65,7 @@ pub(crate) fn fold_button(ui: &mut egui::Ui, collapse: bool) -> egui::Response {
 }
 
 /// `id` and every segment below it.
-/// One named marker in the collection, for the sidebar's marker list.
+/// One named marker in the project, for the sidebar's marker list.
 pub(crate) struct ListedMarker<'a> {
     id: &'a str,
     frame: u64,
@@ -76,10 +76,10 @@ pub(crate) struct ListedMarker<'a> {
 }
 
 /// The sidebar's Markers tab: every event (then writes, resets, device changes and RNG
-/// lines) in the collection, or only in `scope` and below it (the tree's Focus here),
+/// lines) in the project, or only in `scope` and below it (the tree's Focus here),
 /// alphabetically, with a filter on the marker and segment text.
 /// Returns the segment and frame to show when a row is clicked.
-pub(crate) fn marker_list(ui: &mut egui::Ui, col: &Collection, filter: &mut String, at: Option<(&str, u64)>, scope: Option<&str>) -> Option<(String, u64)> {
+pub(crate) fn marker_list(ui: &mut egui::Ui, col: &Project, filter: &mut String, at: Option<(&str, u64)>, scope: Option<&str>) -> Option<(String, u64)> {
     let mut all: Vec<ListedMarker> = vec![];
     let inside: Option<HashSet<&str>> = scope.map(|h| col.subtree(h).into_iter().collect());
     for (id, r) in &col.segments {

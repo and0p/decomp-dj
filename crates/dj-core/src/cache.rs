@@ -1,6 +1,6 @@
 //! The local database (.agents/_archive/CACHE_PLAN.md): snapshots stored as deduplicated pages, stored
 //! frames inside segments, previews, coverage and first hits, all keyed by content key.
-//! Everything here is derived by playing the collection and can be deleted at any time.
+//! Everything here is derived by playing the project and can be deleted at any time.
 
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
-use crate::collection::{Collection, Status};
+use crate::project::{Project, Status};
 use crate::format::{Command, Segment};
 
 // ---- settings ------------------------------------------------------------------
@@ -92,10 +92,10 @@ fn preset(name: &str) -> Result<CacheConfig> {
 impl CacheSettings {
     /// config.toml's `[cache]`, then local.toml's `[cache]` on top. With neither,
     /// the `nes-sparse` preset.
-    pub fn resolve(collection: Option<&CacheConfig>, local: Option<&CacheConfig>) -> Result<CacheSettings> {
-        let name = local.and_then(|c| c.preset.clone()).or_else(|| collection.and_then(|c| c.preset.clone())).unwrap_or_else(|| "nes-sparse".into());
+    pub fn resolve(project: Option<&CacheConfig>, local: Option<&CacheConfig>) -> Result<CacheSettings> {
+        let name = local.and_then(|c| c.preset.clone()).or_else(|| project.and_then(|c| c.preset.clone())).unwrap_or_else(|| "nes-sparse".into());
         let mut eff = preset(&name)?;
-        for layer in [collection, local].into_iter().flatten() {
+        for layer in [project, local].into_iter().flatten() {
             if layer.page_kb.is_some() {
                 eff.page_kb = layer.page_kb;
             }
@@ -222,12 +222,12 @@ pub struct Recording {
     pub first_hits: Vec<(String, u64, u64)>,
 }
 
-pub fn cache_path(col: &Collection) -> PathBuf {
+pub fn cache_path(col: &Project) -> PathBuf {
     col.local_dir().join("cache.db")
 }
 
 impl Cache {
-    pub fn open(col: &Collection, setup: &str, setup_info: &[(&str, String)], settings: CacheSettings) -> Result<Cache> {
+    pub fn open(col: &Project, setup: &str, setup_info: &[(&str, String)], settings: CacheSettings) -> Result<Cache> {
         let path = cache_path(col);
         std::fs::create_dir_all(path.parent().unwrap())?;
         let conn = Connection::open(&path).with_context(|| format!("opening {}", path.display()))?;
@@ -267,7 +267,7 @@ impl Cache {
     /// Opens the database that is there, without a core (the queries, `sql`, `dj parity
     /// report` and `clear`). It brings the schema up to date, as every open does, and the
     /// connection can write: `dj parity clear` deletes through it.
-    pub fn open_existing(col: &Collection) -> Result<Connection> {
+    pub fn open_existing(col: &Project) -> Result<Connection> {
         let path = cache_path(col);
         if !path.exists() {
             bail!("no local database yet ({}); run `dj clean` first", path.display());
@@ -293,7 +293,7 @@ impl Cache {
     }
 
     /// Copies annotations.toml into the `annotation` table, for `dj sql`.
-    fn refresh_annotations(&self, col: &Collection) -> Result<()> {
+    fn refresh_annotations(&self, col: &Project) -> Result<()> {
         let ann = crate::annotations::Annotations::load(&col.root)?;
         self.conn.execute("DELETE FROM annotation", [])?;
         for (kind, region, start, end, name, why) in ann.rows() {
@@ -435,8 +435,8 @@ impl Cache {
         Ok(())
     }
 
-    /// Rebuilds `segments_now`: the content key of each segment as the collection is now.
-    pub fn refresh_now(&mut self, col: &Collection) -> Result<()> {
+    /// Rebuilds `segments_now`: the content key of each segment as the project is now.
+    pub fn refresh_now(&mut self, col: &Project) -> Result<()> {
         refresh_segments_now(&mut self.conn, col, &self.setup)
     }
 
@@ -444,7 +444,7 @@ impl Cache {
 
     /// Drops content no current segment uses, then snapshots no stored frame uses, then
     /// pages no snapshot uses. Returns (contents, snapshots, pages) removed.
-    pub fn gc(&mut self, col: &Collection) -> Result<(usize, usize, usize)> {
+    pub fn gc(&mut self, col: &Project) -> Result<(usize, usize, usize)> {
         self.refresh_now(col)?;
         let tx = self.write_tx()?;
         let dead: Vec<String> = {
@@ -545,7 +545,7 @@ pub fn gui_open(root: &std::path::Path) -> bool {
 /// A segment whose start hash isn't recorded falls back to the last content it played
 /// as, if its body hasn't changed since. Dirty segments get their status but still map,
 /// so reports can leave them out.
-pub fn current_keys(conn: &Connection, col: &Collection, setup: &str) -> Result<BTreeMap<String, (Option<String>, Status)>> {
+pub fn current_keys(conn: &Connection, col: &Project, setup: &str) -> Result<BTreeMap<String, (Option<String>, Status)>> {
     let mut out = BTreeMap::new();
     let mut last = conn.prepare_cached("SELECT c.key, c.body FROM segment_runs s JOIN contents c ON c.key = s.content WHERE s.segment_id = ?1 AND c.setup = ?2")?;
     for (id, _) in col.tree_order() {
@@ -565,7 +565,7 @@ pub fn current_keys(conn: &Connection, col: &Collection, setup: &str) -> Result<
 /// Rebuilds `segments_now` (and so the views built on it) for `setup`, from the segment
 /// files as they are now. `dj sql` calls it with the setup played last, so its queries see
 /// the current files without opening a core.
-pub fn refresh_segments_now(conn: &mut Connection, col: &Collection, setup: &str) -> Result<()> {
+pub fn refresh_segments_now(conn: &mut Connection, col: &Project, setup: &str) -> Result<()> {
     let keys = current_keys(conn, col, setup)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute("DELETE FROM segments_now", [])?;
@@ -669,7 +669,7 @@ pub fn encode_png(frame: &crate::libretro::Frame, previews: Previews) -> Result<
     Ok(buf)
 }
 
-pub fn exists(col: &Collection) -> bool {
+pub fn exists(col: &Project) -> bool {
     cache_path(col).exists()
 }
 
@@ -677,16 +677,16 @@ pub fn exists(col: &Collection) -> bool {
 mod tests {
     use super::*;
 
-    fn project(name: &str) -> (PathBuf, Collection) {
+    fn project(name: &str) -> (PathBuf, Project) {
         let dir = std::env::temp_dir().join(format!("dj-cache-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("segments")).unwrap();
         std::fs::write(dir.join("config.toml"), "format = 1\nname = \"t\"\n[rom]\nsha256 = \"\"\nfile = \"t.nes\"\n[core]\nname = \"c\"\nbuild = \"c\"\nsha256 = \"\"\n[[ports]]\nport = 1\ndevice = \"JOYPAD\"\n[hash]\nalgorithm = \"blake3\"\nregions = [\"RAM\"]\n").unwrap();
-        let col = Collection::open(&dir).unwrap();
+        let col = Project::open(&dir).unwrap();
         (dir, col)
     }
 
-    fn open(col: &Collection) -> Cache {
+    fn open(col: &Project) -> Cache {
         Cache::open(col, "setup", &[], CacheSettings::resolve(None, None).unwrap()).unwrap()
     }
 

@@ -3,7 +3,7 @@
 use crate::strings as t;
 use crate::{agent, App, ending_sig, Job, record, trim_snapshots};
 use anyhow::Result;
-use dj_core::collection::{Collection, LocalConfig};
+use dj_core::project::{Project, LocalConfig};
 use dj_core::player::{root_start_frame, Session};
 use std::path::{Path, PathBuf};
 
@@ -17,7 +17,7 @@ impl App {
     }
 
     pub(crate) fn open_collection(&mut self, dir: &Path) {
-        match Collection::open(dir) {
+        match Project::open(dir) {
             Ok(mut col) => {
                 self.agents.mcp_on = col.settings().ok().and_then(|l| l.mcp).and_then(|m| m.gui).unwrap_or(false);
                 self.agents.sessions.clear();

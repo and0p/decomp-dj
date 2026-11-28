@@ -15,7 +15,7 @@
 //!
 //! Usage: thwaite_bot <project> <rom> <core> <segment> <step> [<step>...]
 use anyhow::{anyhow, bail, Result};
-use dj_core::collection::Collection;
+use dj_core::project::Project;
 use dj_core::format::InputKey;
 use dj_core::libretro::MEMORY_SYSTEM_RAM;
 use dj_core::player::Session;
@@ -94,7 +94,7 @@ fn main() -> Result<()> {
     if a.len() < 6 {
         bail!("usage: thwaite_bot <project> <rom> <core> <segment> <step>...");
     }
-    let mut col = Collection::open(Path::new(&a[1]))?;
+    let mut col = Project::open(Path::new(&a[1]))?;
     let id = col.resolve(&a[4])?.to_string();
     let mut s = Session::open_with(&col, Path::new(&a[2]), Path::new(&a[3]), false)?;
     s.enter_segment(&col, &id)?;

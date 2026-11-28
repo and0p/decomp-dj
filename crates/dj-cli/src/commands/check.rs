@@ -4,7 +4,7 @@ use crate::*;
 
 /// What a play of a segment produced, compared with the hashes its file records: ok, new
 /// (none recorded yet), dirty (it started somewhere else) or changed.
-pub(crate) fn judge(col: &Collection, res: &SegmentResult) -> &'static str {
+pub(crate) fn judge(col: &Project, res: &SegmentResult) -> &'static str {
     dj_core::hydrate::judge_hashes(col, &res.id, &res.start_hash, &res.end_hash, Some(&res.checkpoints))
 }
 
@@ -31,7 +31,7 @@ pub(crate) struct Checked {
 /// writing no file. A chosen segment plays from the nearest stored state of a segment above
 /// it (unless `from_power_on`); every one plays from its parent's end, reached in this run.
 pub(crate) fn check_tree(dir: &Path, local: &Local, pick: &parity_cmd::Pick, from_power_on: bool, shots: Option<&Path>, extra_shots: Vec<u64>) -> Result<Checked> {
-    let col = Collection::open(dir)?;
+    let col = Project::open(dir)?;
     let chosen = if pick.segments.is_empty() && pick.tags.is_empty() && !pick.children { None } else { Some(pick.resolve(&col)?) };
     let started = std::time::Instant::now();
     let (mut total_frames, mut found) = (0u64, Checked::default());
@@ -122,7 +122,7 @@ pub(crate) fn check(dir: &Path, local: &Local, pick: parity_cmd::Pick, from_powe
 /// `dj cache fill`: fills the local database with what isn't stored yet. Unlike a
 /// clean it records no hashes, and so plays dirty segments too, from wherever they start now.
 pub(crate) fn fill(dir: &Path, local: &Local, segment: Option<String>, children: bool, force: bool) -> Result<()> {
-    let mut col = Collection::open(dir)?;
+    let mut col = Project::open(dir)?;
     let seg = match &segment {
         Some(s) => Some(col.resolve(s)?.to_string()),
         None => None,
@@ -151,7 +151,7 @@ pub(crate) fn fill(dir: &Path, local: &Local, segment: Option<String>, children:
 
 /// `dj clean`: what Clean all segments does in the GUI, saving each segment it records.
 pub(crate) fn clean(dir: &Path, local: &Local, segment: Option<String>, children: bool, accept: bool, force: bool) -> Result<i32> {
-    let mut col = Collection::open(dir)?;
+    let mut col = Project::open(dir)?;
     let seg = match &segment {
         Some(s) => Some(col.resolve(s)?.to_string()),
         None => None,

@@ -1,11 +1,11 @@
 //! Edits to a project's tree of segments: joining a segment into its parent, giving
 //! segments another parent, duplicating, and splitting one in two.
 //!
-//! These work on the segments in memory (`Collection::segments`). Writing the files is the
-//! caller's (`Collection::save_segment`, `delete_segment_file`), as is anything it keeps
+//! These work on the segments in memory (`Project::segments`). Writing the files is the
+//! caller's (`Project::save_segment`, `delete_segment_file`), as is anything it keeps
 //! about the segments it shows: dj-gui has its undo steps and its list of unsaved edits.
 
-use crate::collection::Collection;
+use crate::project::Project;
 use crate::format::{device_from_name, device_name, input_text, Command, InputKey, Segment};
 use anyhow::{anyhow, Result};
 use std::collections::{BTreeMap, HashMap};
@@ -20,7 +20,7 @@ pub fn new_id() -> String {
 /// doing to it: so a `[DEVICE]` line for each port whose device isn't the one config.toml
 /// plugs in (an ancestor's line, or one of `id`'s before `frame`), and an input line for
 /// each button held and each stick off centre on that frame.
-pub fn carried_lines(col: &Collection, id: &str, frame: u64) -> Result<Vec<String>> {
+pub fn carried_lines(col: &Project, id: &str, frame: u64) -> Result<Vec<String>> {
     let r = col.segments.get(id).ok_or_else(|| anyhow!("no segment {id}"))?;
     let mut plugged: BTreeMap<u32, u32> = BTreeMap::new();
     for p in &col.config.ports {
@@ -69,13 +69,13 @@ pub fn root_from_blobs(id: &str, title: &str, frames: u64, snapshot: Option<&str
 }
 
 /// `id`'s child, if it has exactly one.
-pub fn only_child<'a>(col: &'a Collection, id: &str) -> Option<&'a str> {
+pub fn only_child<'a>(col: &'a Project, id: &str) -> Option<&'a str> {
     let kids = col.children(Some(id));
     (kids.len() == 1).then(|| kids[0])
 }
 
 /// The only children below `top`, down to the first segment with none or several.
-pub fn only_child_run(col: &Collection, top: &str) -> Vec<String> {
+pub fn only_child_run(col: &Project, top: &str) -> Vec<String> {
     let mut out = vec![];
     let mut cur = top;
     while let Some(c) = only_child(col, cur) {
@@ -86,7 +86,7 @@ pub fn only_child_run(col: &Collection, top: &str) -> Vec<String> {
 }
 
 /// A segment can be joined into its parent when it is the parent's only child.
-pub fn can_join(col: &Collection, id: &str) -> bool {
+pub fn can_join(col: &Project, id: &str) -> bool {
     col.segments.get(id).and_then(|r| r.parent()).is_some_and(|p| col.children(Some(p)).len() == 1)
 }
 
@@ -107,7 +107,7 @@ pub struct Join {
 impl Join {
     /// Works out joining `id` into its parent, leaving the project as it is. `marker`: the
     /// text of an event to leave at the join.
-    pub fn plan(col: &Collection, id: &str, marker: Option<&str>) -> Result<Join> {
+    pub fn plan(col: &Project, id: &str, marker: Option<&str>) -> Result<Join> {
         if !can_join(col, id) {
             return Err(anyhow!("only a segment whose parent has no other children can be joined"));
         }
@@ -159,7 +159,7 @@ impl Join {
     }
 
     /// Does the join.
-    pub fn apply(self, col: &mut Collection) {
+    pub fn apply(self, col: &mut Project) {
         col.segments.insert(self.parent.clone(), self.merged);
         col.segments.remove(&self.id);
         for k in &self.children {
@@ -173,7 +173,7 @@ impl Join {
 /// Gives the segments `ids` another parent (`to`; None: they become root segments, starting
 /// from power-on). They start from somewhere else now, so their hashes go; under a parent,
 /// so do a save file and a snapshot, which only a root segment has. Returns the ones found.
-pub fn reparent(col: &mut Collection, ids: &[String], to: Option<&str>) -> Vec<String> {
+pub fn reparent(col: &mut Project, ids: &[String], to: Option<&str>) -> Vec<String> {
     let mut done = vec![];
     for id in ids {
         let Some(r) = col.segments.get_mut(id) else { continue };
@@ -196,7 +196,7 @@ pub fn reparent(col: &mut Collection, ids: &[String], to: Option<&str>) -> Vec<S
 /// Copies of `id` and, with `children`, of everything below it, under new ids and not yet
 /// in the project. The first is the copy of `id` itself: titled "<title> (copy)", with the
 /// same parent. The rest hang below it as the originals do.
-pub fn duplicate(col: &Collection, id: &str, children: bool) -> Vec<Segment> {
+pub fn duplicate(col: &Project, id: &str, children: bool) -> Vec<Segment> {
     if !col.segments.contains_key(id) {
         return vec![];
     }
@@ -220,7 +220,7 @@ pub fn duplicate(col: &Collection, id: &str, children: bool) -> Vec<Segment> {
 /// `up_id`, the parent of `id`, which keeps the rest, its children and its end hash. `hash`
 /// is the state at the cut: the new segment's end hash and `id`'s start hash. Returns
 /// whether `id` had a checkpoint at `frame` that says otherwise.
-pub fn split(col: &mut Collection, id: &str, frame: u64, hash: &str, up_id: &str) -> Result<bool> {
+pub fn split(col: &mut Project, id: &str, frame: u64, hash: &str, up_id: &str) -> Result<bool> {
     let whole = col.segments.get(id).ok_or_else(|| anyhow!("no segment {id}"))?;
     let (mut up, mut down) = whole.split_at(frame, up_id)?;
     let differs = whole.checkpoints()?.into_iter().any(|(f, h)| f == frame && h != hash);
@@ -251,12 +251,12 @@ mod tests {
     use super::*;
 
     /// a (10 frames) > b (5) > c (5), and d (5) beside nothing: a second root.
-    fn project(name: &str) -> Collection {
+    fn project(name: &str) -> Project {
         let dir = std::env::temp_dir().join(format!("dj-edit-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("segments")).unwrap();
         std::fs::write(dir.join("config.toml"), CONFIG).unwrap();
-        let mut col = Collection::open(&dir).unwrap();
+        let mut col = Project::open(&dir).unwrap();
         let mut a = Segment::new("a", None, "root", 10);
         a.set("end-hash", "A");
         let mut b = Segment::new("b", Some("a"), "middle", 5);
@@ -331,7 +331,7 @@ mod tests {
         col.save_segment("c").unwrap();
         col.save_segment("b").unwrap();
         col.save_segment("a").unwrap();
-        assert!(Collection::open(&col.root).is_ok());
+        assert!(Project::open(&col.root).is_ok());
         reparent(&mut col, &["b".to_string()], None);
         let b = &col.segments["b"];
         assert_eq!(b.parent(), None);

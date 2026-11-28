@@ -7,8 +7,7 @@ previews) is derived locally by playing it.
 
 ## Terms
 
-These are the working terms. The docs, the GUI, the CLI's help and most of the code use
-them. One older word is left in the code: a project is a `Collection` there.
+These are the working terms. The docs, the GUI, the CLI's help and the code use them.
 
 | Term | Meaning |
 |---|---|

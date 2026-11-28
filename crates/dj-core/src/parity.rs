@@ -14,7 +14,7 @@ use rusqlite::{params, Connection};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::collection::Collection;
+use crate::project::Project;
 use crate::compare::{Action, Answer, Comparison, Diff, Diffs, Event, JumpReason, Reply, SyncOutcome, Verdict};
 use crate::coverage::FLAG_OPCODE;
 use crate::libretro::{Core, Frame, Stop};
@@ -228,7 +228,7 @@ pub fn now() -> i64 {
 }
 
 /// The `[[compare]]` entry to use: the one named, or the only one.
-pub fn compare_name(col: &Collection, asked: Option<&str>) -> Result<String> {
+pub fn compare_name(col: &Project, asked: Option<&str>) -> Result<String> {
     let names: Vec<&str> = col.config.compare.iter().map(|c| c.name.as_str()).collect();
     let list = if names.is_empty() { "none".to_string() } else { names.join(", ") };
     match asked {
@@ -244,7 +244,7 @@ pub fn compare_name(col: &Collection, asked: Option<&str>) -> Result<String> {
 
 /// The build of comparison core `name` there is now: its library's sha256, without loading
 /// it. Remembered per file while its size and time don't change.
-pub fn current_build(col: &Collection, name: &str) -> Result<String> {
+pub fn current_build(col: &Project, name: &str) -> Result<String> {
     use std::collections::HashMap;
     use std::sync::Mutex;
     type Seen = HashMap<std::path::PathBuf, (std::time::SystemTime, u64, String)>;
@@ -263,7 +263,7 @@ pub fn current_build(col: &Collection, name: &str) -> Result<String> {
             return Ok(b.clone());
         }
     }
-    let b = crate::collection::sha256_file(&spec_lib)?;
+    let b = crate::project::sha256_file(&spec_lib)?;
     seen.insert(spec_lib, (stamp.0, stamp.1, b.clone()));
     Ok(b)
 }
@@ -733,7 +733,7 @@ impl Checker {
     ///
     /// A core that takes events is not synced by dj: it is owed a jump, sent before the frame
     /// runs, and copies the baseline when it can.
-    pub fn sync(&mut self, cmp: &mut Comparison, baseline: &mut Core, col: &Collection, id: &str, k: u64, power_on_frame: u64) -> std::result::Result<(), String> {
+    pub fn sync(&mut self, cmp: &mut Comparison, baseline: &mut Core, col: &Project, id: &str, k: u64, power_on_frame: u64) -> std::result::Result<(), String> {
         self.at = None;
         let boot = k == 0 && col.segments.get(id).is_some_and(|r| r.parent().is_none() && r.get("snapshot").is_none());
         if cmp.takes_events() {
@@ -774,7 +774,7 @@ impl Checker {
     /// picture it draws. `check`: parity is being checked. Call [`Checker::step`] after the
     /// baseline's frame.
     #[allow(clippy::too_many_arguments)]
-    pub fn begin(&mut self, cmp: &mut Comparison, baseline: &mut Core, col: &Collection, id: &str, k: u64, capture: bool, check: bool) {
+    pub fn begin(&mut self, cmp: &mut Comparison, baseline: &mut Core, col: &Project, id: &str, k: u64, capture: bool, check: bool) {
         crate::libretro::set_frame_hook(None);
         if !cmp.takes_events() || !self.in_step(id, k) {
             return;
@@ -838,7 +838,7 @@ impl Checker {
     /// the frame-end event. None when the comparison core isn't in step at this frame (it
     /// didn't run).
     #[allow(clippy::too_many_arguments)]
-    pub fn step(&mut self, cmp: &mut Comparison, baseline: &mut Core, col: &Collection, id: &str, k: u64, power_on_frame: u64, capture: bool, check: bool) -> Option<Stepped> {
+    pub fn step(&mut self, cmp: &mut Comparison, baseline: &mut Core, col: &Project, id: &str, k: u64, power_on_frame: u64, capture: bool, check: bool) -> Option<Stepped> {
         crate::libretro::set_frame_hook(None);
         self.fail_at.clear();
         self.fail_trace = None;
@@ -969,7 +969,7 @@ impl Checker {
     /// core goes with it if it was in step at that end. False when it wasn't, or couldn't.
     /// A core that takes events is told nothing: no state was replaced, and what it holds
     /// goes with it.
-    pub fn enter(&mut self, cmp: &mut Comparison, col: &Collection, parent: &str, child: &str) -> bool {
+    pub fn enter(&mut self, cmp: &mut Comparison, col: &Project, parent: &str, child: &str) -> bool {
         let end = col.segments.get(parent).and_then(|r| r.frames().ok());
         if end.is_none() || self.at != Some((parent.to_string(), end.unwrap())) {
             self.at = None;
@@ -1007,7 +1007,7 @@ impl Checker {
 /// The frames to pre-roll before frame `frame` of `id`: up to `n` of them, back through the
 /// segments above when there aren't that many in `id`, stopping at a root segment's start.
 /// In the order they play: (segment, from, to). Empty when there are none.
-pub fn preroll_route(col: &Collection, id: &str, frame: u64, n: u64) -> Result<Vec<(String, u64, u64)>> {
+pub fn preroll_route(col: &Project, id: &str, frame: u64, n: u64) -> Result<Vec<(String, u64, u64)>> {
     let mut out = vec![];
     let mut left = n;
     let chain = col.chain(id)?;
@@ -1054,7 +1054,7 @@ pub struct Span {
 /// For a core that takes events, frames it has not yet judged when the span ends stay held
 /// in `ck`: the next span carries on, or [`Checker::finish`] counts them.
 #[allow(clippy::too_many_arguments)]
-pub fn check_span(s: &mut Session, cmp: &mut Comparison, ck: &mut Checker, col: &Collection, id: &str, from: u64, to: u64, start_frame: u64) -> Result<Span> {
+pub fn check_span(s: &mut Session, cmp: &mut Comparison, ck: &mut Checker, col: &Project, id: &str, from: u64, to: u64, start_frame: u64) -> Result<Span> {
     let mut span = Span::default();
     // What ran before the first frame isn't any frame's.
     let _ = take_code_flags(&mut s.core);

@@ -78,4 +78,5 @@ connectors/mesen/build.sh --source DIR    # write the source it is built from, a
 A release's Linux and macOS ZIPs carry the built cores in `cores/`, each with its licence
 text, and the release carries each one's source tarball (`scripts/package.sh --cores`,
 `scripts/cores.py sources DIR`). A core with `bundle = false` in [cores.toml](cores.toml) is
-left out: Genesis Plus GX for now, whose licence allows only non-commercial redistribution.
+left out; none is today. Genesis Plus GX is included with its own licence text, which allows
+redistribution but not selling it or using it in a commercial product.

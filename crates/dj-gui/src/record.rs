@@ -3,7 +3,7 @@
 
 use crate::strings as t;
 use anyhow::Result;
-use dj_core::collection::{KeyboardLocal, RecordLocal};
+use dj_core::project::{KeyboardLocal, RecordLocal};
 use dj_core::controls::{control_from_name, control_name};
 use dj_core::format::{direction, direction_of, is_binary, Command, InputKey, Segment, DEVICE_ANALOG, DEVICE_JOYPAD};
 use egui::Key;

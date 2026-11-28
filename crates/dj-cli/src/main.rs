@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use dj_core::collection::{sha256_file, Collection, Status};
+use dj_core::project::{sha256_file, Project, Status};
 use dj_core::format::Segment;
 use dj_core::hydrate::Hydrator;
 use dj_core::player::{PlayOptions, SegmentResult, Session};
@@ -89,8 +89,8 @@ fn real_main() -> Result<()> {
     }
     // A project a newer dj wrote, or settings this dj doesn't know: said once, here (in the
     // batch child when supervised, so not twice).
-    if let Ok(t) = dj_core::collection::layered_table(&dir) {
-        for w in dj_core::collection::check_versions(&t).unwrap_or_default() {
+    if let Ok(t) = dj_core::project::layered_table(&dir) {
+        for w in dj_core::project::check_versions(&t).unwrap_or_default() {
             eprintln!("warning: {w}");
         }
     }
@@ -202,7 +202,7 @@ fn old_form(args: impl Iterator<Item = std::ffi::OsString>) -> Option<String> {
     None
 }
 
-fn resolve_local(col: &Collection, local: &Local) -> Result<(PathBuf, PathBuf)> {
+fn resolve_local(col: &Project, local: &Local) -> Result<(PathBuf, PathBuf)> {
     let saved = col.settings()?;
     let rom = local.rom.clone().or(saved.rom).ok_or_else(|| anyhow!("no ROM given; pass --rom (it is then remembered) or set DJ_ROM"))?;
     let core = local.core.clone().or(saved.core).ok_or_else(|| anyhow!("no core given; pass --core (it is then remembered) or set DJ_CORE"))?;
@@ -216,7 +216,7 @@ fn resolve_local(col: &Collection, local: &Local) -> Result<(PathBuf, PathBuf)> 
     Ok((rom, core))
 }
 
-fn open_session(col: &Collection, local: &Local) -> Result<Session> {
+fn open_session(col: &Project, local: &Local) -> Result<Session> {
     let (rom, core) = resolve_local(col, local)?;
     let use_db = !local.no_db && col.settings()?.database.unwrap_or(true);
     let s = Session::open_with(col, &rom, &core, use_db)?;

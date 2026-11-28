@@ -21,7 +21,7 @@ an obvious hook point. PicoDrive has the same kind of licence and is less accura
 has the better licence but runs its 68000 as generated x86 code, which leaves no single
 place to see each instruction, and no one CPU core on x86 and ARM machines alike.
 
-**The licence is the developer's call.** Genesis Plus GX's own licence
+**The licence, and the choice made.** Releases include the built core for now (decided 2026-11-27), with this licence text beside it and its source on the release. Genesis Plus GX's own licence
 ([LICENSE.txt](LICENSE.txt)) allows redistribution and derivative works only if they are
 not sold or used in a commercial product or activity, and a modified build must come with
 its complete source. It is not the GPL and not compatible with it. What that means here:

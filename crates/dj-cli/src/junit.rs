@@ -5,7 +5,7 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-use dj_core::collection::Collection;
+use dj_core::project::Project;
 
 /// The folder every command writes its report into when `--junit` isn't given.
 pub const DIR_ENV: &str = "DJ_JUNIT";
@@ -32,7 +32,7 @@ pub struct Case {
 
 impl Case {
     /// A case for segment `id`.
-    pub fn segment(col: &Collection, id: &str, seconds: f64, outcome: Outcome) -> Case {
+    pub fn segment(col: &Project, id: &str, seconds: f64, outcome: Outcome) -> Case {
         let title = col.segments.get(id).map(|r| r.title()).unwrap_or("");
         Case { classname: col.config.name.clone(), name: format!("{} {title}", &id[..8.min(id.len())]).trim_end().to_string(), file: segment_file(col, id), line: None, seconds, outcome }
     }
@@ -54,7 +54,7 @@ pub fn file_part(name: &str) -> String {
 
 /// The segment's file, relative to the working directory when it is inside it: what a CI
 /// reporter resolves against the checkout.
-pub fn segment_file(col: &Collection, id: &str) -> String {
+pub fn segment_file(col: &Project, id: &str) -> String {
     let Some(p) = col.paths.get(id) else { return String::new() };
     let abs = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
     let rel = std::env::current_dir().ok().and_then(|cwd| std::fs::canonicalize(cwd).ok()).and_then(|cwd| abs.strip_prefix(&cwd).ok().map(Path::to_path_buf));
@@ -63,7 +63,7 @@ pub fn segment_file(col: &Collection, id: &str) -> String {
 
 /// The segment file's line for `frame`: the last body line at or before it, or None when
 /// the segment has no line by then.
-pub fn segment_line(col: &Collection, id: &str, frame: u64) -> Option<usize> {
+pub fn segment_line(col: &Project, id: &str, frame: u64) -> Option<usize> {
     col.segments.get(id)?.lines.iter().take_while(|l| l.frame <= frame).last().map(|l| l.line_no)
 }
 

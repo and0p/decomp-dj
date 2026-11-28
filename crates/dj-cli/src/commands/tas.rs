@@ -4,7 +4,7 @@ use crate::*;
 
 /// The project's ROM, for a command that reads it but runs no core: `--rom`, else the one in
 /// the settings. None when neither is set.
-pub(crate) fn tas_rom(col: &Collection, local: &Local) -> Result<Option<Vec<u8>>> {
+pub(crate) fn tas_rom(col: &Project, local: &Local) -> Result<Option<Vec<u8>>> {
     match local.rom.clone().or(col.settings()?.rom) {
         Some(p) => Ok(Some(std::fs::read(&p).with_context(|| format!("reading the ROM {}", p.display()))?)),
         None => Ok(None),
@@ -12,7 +12,7 @@ pub(crate) fn tas_rom(col: &Collection, local: &Local) -> Result<Option<Vec<u8>>
 }
 
 pub(crate) fn import_tas(dir: &Path, file: &Path, title: Option<&str>, strict: bool, local: &Local) -> Result<()> {
-    let mut col = Collection::open(dir)?;
+    let mut col = Project::open(dir)?;
     let rom = tas_rom(&col, local)?;
     let ctx = dj_core::tas::Ctx { col: &col, rom: rom.as_deref() };
     let imp = dj_core::tas::import(&ctx, file, title, strict)?;
@@ -36,7 +36,7 @@ pub(crate) fn import_tas(dir: &Path, file: &Path, title: Option<&str>, strict: b
 }
 
 pub(crate) fn export_tas(dir: &Path, segment: &str, out: &Path, through: Option<u64>, author: Option<&str>, strict: bool, local: &Local) -> Result<()> {
-    let col = Collection::open(dir)?;
+    let col = Project::open(dir)?;
     dj_core::tas::check_ext(out)?;
     let id = col.resolve(segment)?.to_string();
     let rom = tas_rom(&col, local)?;

@@ -1,6 +1,6 @@
 //! TAS movies: exporting a chain and importing it back (no core needed: neither plays).
 
-use dj_core::collection::Collection;
+use dj_core::project::Project;
 use dj_core::format::{input_text, Command};
 use dj_core::tas::{self, ExportEnd};
 use std::path::{Path, PathBuf};
@@ -20,7 +20,7 @@ const CHILD: &str = "dj-segment 1\nid: bbbbbbbb-0000-0000-0000-000000000000\npar
 const POKED: &str = "dj-segment 1\nid: cccccccc-0000-0000-0000-000000000000\nparent: aaaaaaaa-0000-0000-0000-000000000000\ntitle: Poke\nframes: 4\n---\n\
     2 [WRITE] RAM 0x10 01\n";
 
-fn project(tmp: &Path) -> Collection {
+fn project(tmp: &Path) -> Project {
     let _ = std::fs::remove_dir_all(tmp);
     std::fs::create_dir_all(tmp.join("segments")).unwrap();
     std::fs::write(tmp.join("game.nes"), rom()).unwrap();
@@ -34,10 +34,10 @@ fn project(tmp: &Path) -> Collection {
         let id = text.lines().nth(1).unwrap().trim_start_matches("id: ");
         std::fs::write(tmp.join("segments").join(format!("{id}.segment")), text).unwrap();
     }
-    Collection::open(tmp).unwrap()
+    Project::open(tmp).unwrap()
 }
 
-fn import(col: &Collection, file: &Path, rom: &[u8], strict: bool) -> anyhow::Result<tas::Imported> {
+fn import(col: &Project, file: &Path, rom: &[u8], strict: bool) -> anyhow::Result<tas::Imported> {
     tas::import(&tas::Ctx { col, rom: Some(rom) }, file, None, strict)
 }
 

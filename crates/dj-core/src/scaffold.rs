@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::analysis::RegionFacts;
-use crate::collection::{sha256_file, Collection, Config, CoreConfig, HashConfig, LocalConfig, PortConfig, RomConfig, SymbolsConfig, DJ_VERSION, PROJECT_FORMAT};
+use crate::project::{sha256_file, Project, Config, CoreConfig, HashConfig, LocalConfig, PortConfig, RomConfig, SymbolsConfig, DJ_VERSION, PROJECT_FORMAT};
 use crate::libretro;
 use crate::platform::ConsoleProfile;
 
@@ -333,7 +333,7 @@ pub fn resolve_core(core: &Path) -> Result<PathBuf> {
 
 /// The core's file: the one asked for, or the one for the ROM's console.
 fn find_core(req: &InitRequest) -> Result<(PathBuf, Option<&'static str>)> {
-    let asked = req.core.clone().or_else(|| std::env::var_os(crate::collection::CORE_ENV).filter(|c| !c.is_empty()).map(PathBuf::from));
+    let asked = req.core.clone().or_else(|| std::env::var_os(crate::project::CORE_ENV).filter(|c| !c.is_empty()).map(PathBuf::from));
     if let Some(core) = asked {
         return Ok((resolve_core(&core)?, None));
     }
@@ -471,7 +471,7 @@ impl InitPlan {
         }
         let path = dir.join("config.toml");
         std::fs::write(&path, toml::to_string_pretty(&self.config)?)?;
-        let mut col = Collection::open(dir)?;
+        let mut col = Project::open(dir)?;
         let rom = std::fs::canonicalize(&self.rom)?;
         let mut ignore = vec![".local/".to_string()];
         if let Ok(rel) = rom.strip_prefix(std::fs::canonicalize(dir)?) {

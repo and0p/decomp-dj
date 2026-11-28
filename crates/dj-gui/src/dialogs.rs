@@ -144,7 +144,7 @@ impl App {
         let (mut create, mut cancel) = (false, false);
         egui::Window::new(t::NEW_ROOT_SEGMENT_FROM_HERE).open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)).show(ctx, |ui| {
             ui.set_max_width(420.0);
-            ui.label(format!("{} {}", t::THIS_SAVES_A_SNAPSHOT_OF, dj_core::collection::SNAPSHOT_WARNING));
+            ui.label(format!("{} {}", t::THIS_SAVES_A_SNAPSHOT_OF, dj_core::project::SNAPSHOT_WARNING));
             ui.add_space(6.0);
             ui.checkbox(&mut hide, t::DON_T_SHOW_THIS_AGAIN).on_hover_text(t::DON_T_SHOW_THIS_AGAIN_TIP);
             ui.add_space(6.0);
@@ -460,7 +460,7 @@ impl App {
                                             let (to, other) = if field == "sram" { (&mut *sram, &mut *snap) } else { (&mut *snap, &mut *sram) };
                                             other.clear();
                                             to.clear();
-                                            to.name = dj_core::collection::blob_name(&f.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+                                            to.name = dj_core::project::blob_name(&f.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
                                             to.pick = Some((f, data));
                                         }
                                         Err(e) => self.message = Some((format!("Reading {}: {e}", f.display()), true)),

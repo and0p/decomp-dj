@@ -15,7 +15,7 @@
 //! (this program, run as `ramdiff --dump <project> <rom> <core> <leaf>`), which writes the
 //! RAM after every frame of the chain to its standard output.
 use anyhow::{bail, Context, Result};
-use dj_core::collection::Collection;
+use dj_core::project::Project;
 use dj_core::libretro::region_memory_id;
 use dj_core::player::Session;
 use std::collections::{BTreeMap, HashSet};
@@ -92,7 +92,7 @@ fn name_of(names: &BTreeMap<usize, String>, a: usize) -> String {
 /// Child mode: plays `leaf`'s chain from power-on on one core and writes the RAM after
 /// every frame to stdout, as raw bytes.
 fn dump(project: &Path, rom: &Path, core: &Path, leaf: &str) -> Result<()> {
-    let col = Collection::open(project)?;
+    let col = Project::open(project)?;
     let mut session = Session::open_with(&col, rom, core, false).with_context(|| format!("opening {}", core.display()))?;
     let ram_id = region_memory_id("RAM").unwrap();
     let chain: Vec<String> = col.chain(leaf)?.into_iter().map(String::from).collect();
@@ -134,7 +134,7 @@ fn main() -> Result<()> {
         return dump(Path::new(&argv[2]), Path::new(&argv[3]), Path::new(&argv[4]), &argv[5]);
     }
     let args = parse()?;
-    let col = Collection::open(&args.project)?;
+    let col = Project::open(&args.project)?;
     let names = match &args.names {
         Some(p) => load_names(p)?,
         None => BTreeMap::new(),

@@ -418,7 +418,7 @@ fn plan_summary(ui: &mut egui::Ui, plan: &InitPlan) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dj_core::collection::Collection;
+    use dj_core::project::Project;
 
     /// A folder with an NES ROM and a cores folder holding the test core under the NES
     /// core's name. None when there is no C compiler.
@@ -485,7 +485,7 @@ mod tests {
         assert!(!tmp.join("port").exists(), "nothing is written before Create");
         let (dir, config) = d.make().unwrap();
         assert_eq!((dir.clone(), config), (tmp.join("port"), tmp.join("port").join("config.toml")));
-        let col = Collection::open(&dir).unwrap();
+        let col = Project::open(&dir).unwrap();
         assert_eq!(col.config.name, "A Port");
         assert_eq!(col.segments.len(), 1);
         assert_eq!(col.settings().unwrap().rom, Some(std::fs::canonicalize(&rom).unwrap()));

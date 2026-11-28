@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::collection::PortConfig;
+use crate::project::PortConfig;
 use crate::format::{direction, direction_of, InputKey, DEVICE_ANALOG, DEVICE_JOYPAD, JOYPAD};
 
 /// A control's name in `[[ports]]`: a joypad button as segment lines spell it (`B`, `L2`),

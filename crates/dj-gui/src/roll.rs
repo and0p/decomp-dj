@@ -8,7 +8,7 @@
 
 use crate::strings as t;
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind};
-use dj_core::collection::Collection;
+use dj_core::project::Project;
 use dj_core::controls::{self, Controls};
 use dj_core::tas::profile::StickUnits;
 use dj_core::format::{self, Command, InputKey, DEVICE_JOYPAD, DEVICE_KEYBOARD, DEVICE_MOUSE};
@@ -327,7 +327,7 @@ struct Side {
     union: Vec<Vec<(u64, u64)>>,
 }
 
-fn build_side(col: &Collection, id: &str, groups: &[Group]) -> Option<Side> {
+fn build_side(col: &Project, id: &str, groups: &[Group]) -> Option<Side> {
     let r = col.segments.get(id)?;
     let mut keys: BTreeSet<InputKey> = BTreeSet::new();
     for l in &r.lines {
@@ -459,14 +459,14 @@ pub fn merge(mut v: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
     out
 }
 
-fn build_model(col: &Collection, id: &str, gen: u64, all_buttons: bool, controls: &Controls) -> Model {
+fn build_model(col: &Project, id: &str, gen: u64, all_buttons: bool, controls: &Controls) -> Model {
     let r = &col.segments[id];
     let frames = r.frames().unwrap_or(0);
     let mut used: BTreeSet<InputKey> = BTreeSet::new();
     let mut other: BTreeMap<(u32, u32), Vec<u64>> = BTreeMap::new();
     let mut markers = vec![];
     let mut groups_wanted: BTreeSet<(u32, u32)> = BTreeSet::new();
-    // Joypads on the collection's ports, and always at least two of them.
+    // Joypads on the project's ports, and always at least two of them.
     for p in col.config.ports.iter().filter(|p| p.port > 0) {
         if let Ok(d) = format::device_from_name(&p.device) {
             if d & 0xff == DEVICE_JOYPAD {
@@ -671,7 +671,7 @@ impl RollState {
         self.jump_to = Some(frame);
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, col: &Collection, controls: &Controls, id: &str, playhead: Option<u64>, playing: bool, nb: &Neighbours) -> Option<Action> {
+    pub fn show(&mut self, ui: &mut egui::Ui, col: &Project, controls: &Controls, id: &str, playhead: Option<u64>, playing: bool, nb: &Neighbours) -> Option<Action> {
         let side_id = |s: &Option<Side>| s.as_ref().map(|s| s.id.clone());
         let stale = match &self.model {
             Some(m) => m.id != id || m.gen != self.gen || m.all_buttons != self.all_buttons || m.controls != *controls || side_id(&m.prev) != nb.prev || side_id(&m.next) != nb.next,

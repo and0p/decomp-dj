@@ -12,7 +12,7 @@
 //! compared pixel for pixel. THW_OPTIONS="key=value,..." sets its core options instead (for
 //! example thwaite_decomp_render=voxel).
 use anyhow::{anyhow, Result};
-use dj_core::collection::Collection;
+use dj_core::project::Project;
 use dj_core::compare::{Comparison, OpenSpec};
 use dj_core::libretro::{write_png, Frame};
 use dj_core::parity::{Checked, Checker};
@@ -37,7 +37,7 @@ fn main() -> Result<()> {
     if a.len() != 7 && a.len() != 8 {
         return Err(anyhow!("usage: thwaite_pictures <project> <rom> <baseline core> <segment> <frame,...> <out dir> [<copy at frame,...>]"));
     }
-    let col = Collection::open(Path::new(&a[1]))?;
+    let col = Project::open(Path::new(&a[1]))?;
     let id = col.resolve(&a[4])?.to_string();
     let shots: Vec<u64> = a[5].split(',').map(|s| s.parse()).collect::<std::result::Result<_, _>>()?;
     let copies: Vec<u64> = a.get(7).map(|c| c.split(',').map(|s| s.parse()).collect()).transpose()?.unwrap_or_default();

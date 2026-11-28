@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
 
-use crate::collection::{sha256_file, Collection};
+use crate::project::{sha256_file, Project};
 use crate::format::{Command, InputKey};
 use crate::libretro::{Core, Frame, COMPARISON, MEMORY_SYSTEM_RAM};
 use crate::player::{restore_inputs_on, write_memory};
@@ -419,7 +419,7 @@ impl Comparison {
     /// Loads comparison core `name` from the project's `[[compare]]` entries. `baseline_core`
     /// is the baseline's library (the same file is loaded from a private copy) and `rom` the
     /// project's ROM.
-    pub fn open(col: &Collection, name: &str, baseline_core: &Path, rom: Option<&Path>) -> Result<Comparison> {
+    pub fn open(col: &Project, name: &str, baseline_core: &Path, rom: Option<&Path>) -> Result<Comparison> {
         Comparison::open_spec(&OpenSpec::resolve(col, name, baseline_core, rom)?)
     }
 
@@ -499,7 +499,7 @@ impl Comparison {
     /// of segment `id`, by loading the baseline's save state. An error is a sync that went
     /// wrong (as opposed to a state that doesn't load). A core that takes events is not
     /// synced: it is sent a jump ([`crate::parity::Checker::sync`]).
-    pub fn sync(&mut self, baseline: &mut Core, col: &Collection, id: &str, frame: u64) -> Result<SyncOutcome> {
+    pub fn sync(&mut self, baseline: &mut Core, col: &Project, id: &str, frame: u64) -> Result<SyncOutcome> {
         self.sync_with(baseline, &InputState::at(col, id, frame)?)
     }
 
@@ -521,12 +521,12 @@ impl Comparison {
 
     /// Sets devices and releases inputs at frame 0 of `id`, as the baseline does when
     /// playback carries straight on into a child segment.
-    pub fn enter(&mut self, col: &Collection, id: &str) -> Result<()> {
+    pub fn enter(&mut self, col: &Project, id: &str) -> Result<()> {
         restore_inputs_on(&mut self.core, col, id, 0)
     }
 
     /// Applies frame `frame`'s lines of `id` and runs that frame, for a `sync = "state"` core.
-    pub fn step(&mut self, col: &Collection, id: &str, frame: u64, capture: bool) -> Result<Stepped> {
+    pub fn step(&mut self, col: &Project, id: &str, frame: u64, capture: bool) -> Result<Stepped> {
         self.step_with(&Action::of_frame(col, id, frame), capture)
     }
 
@@ -720,7 +720,7 @@ pub struct OpenSpec {
 
 impl OpenSpec {
     /// Resolves `[[compare]]` entry `name`, checking the library exists and matches its pin.
-    pub fn resolve(col: &Collection, name: &str, baseline_core: &Path, rom: Option<&Path>) -> Result<OpenSpec> {
+    pub fn resolve(col: &Project, name: &str, baseline_core: &Path, rom: Option<&Path>) -> Result<OpenSpec> {
         let cfg = col.config.compare.iter().find(|c| c.name == name).ok_or_else(|| anyhow!("no [[compare]] entry is named \"{name}\""))?;
         let path = cfg.path.as_ref().ok_or_else(|| anyhow!("[[compare]] \"{name}\" has no path: set `path` (in config.toml, or in .local/local.toml for this machine)"))?;
         let path = crate::libretro::library_path(&crate::platform::project_core(&col.root, path));
@@ -760,7 +760,7 @@ pub struct InputState {
 }
 
 impl InputState {
-    pub fn at(col: &Collection, id: &str, frame: u64) -> Result<InputState> {
+    pub fn at(col: &Project, id: &str, frame: u64) -> Result<InputState> {
         let mut devs = crate::player::devices_at_start(col, id)?;
         let mut held: BTreeMap<InputKey, i16> = BTreeMap::new();
         for l in col.segments[id].lines.iter().take_while(|l| l.frame < frame) {
@@ -801,7 +801,7 @@ pub enum Action {
 
 impl Action {
     /// The lines of frame `frame` of segment `id` a comparison core acts on.
-    pub fn of_frame(col: &Collection, id: &str, frame: u64) -> Vec<Action> {
+    pub fn of_frame(col: &Project, id: &str, frame: u64) -> Vec<Action> {
         let r = &col.segments[id];
         let first = r.lines.partition_point(|l| l.frame < frame);
         r.lines[first..]

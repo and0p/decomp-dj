@@ -9,7 +9,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command as Proc, Stdio};
 use std::time::{Duration, Instant};
 
 use dj_core::format::Segment;
-use dj_core::query::Project;
+use dj_core::query::ProjectQueries;
 
 use super::tools::{Args, Reply, Server};
 use super::worker::drafts_dir;
@@ -174,7 +174,7 @@ impl Server {
         let dd = drafts_dir(&self.root());
         std::fs::create_dir_all(&dd)?;
         let p = dd.join(format!("{}.segment", r.id()?));
-        dj_core::collection::write_atomic(&p, &r.to_text())?;
+        dj_core::project::write_atomic(&p, &r.to_text())?;
         Ok(p)
     }
 
@@ -224,7 +224,7 @@ impl Server {
         v
     }
 
-    fn project_ref(&mut self) -> Result<&mut Project> {
+    fn project_ref(&mut self) -> Result<&mut ProjectQueries> {
         self.project()
     }
 
@@ -287,7 +287,7 @@ impl Server {
                 } else {
                     let mut r = d.r;
                     r.remove_all("draft-scratch");
-                    dj_core::collection::write_atomic(&d.path, &r.to_text())?;
+                    dj_core::project::write_atomic(&d.path, &r.to_text())?;
                     true
                 };
                 // Play the kept draft once with recording on, so the local database knows its
@@ -524,7 +524,7 @@ impl Server {
                 self.project = None;
                 if let Some(o) = v.as_object_mut() {
                     if warn {
-                        o.insert("note".into(), json!(dj_core::collection::SNAPSHOT_WARNING));
+                        o.insert("note".into(), json!(dj_core::project::SNAPSHOT_WARNING));
                     }
                     o.insert("hint".into(), json!("a normal segment file and a file in blobs/ now: review with git status, undo by deleting both"));
                 }
@@ -612,7 +612,7 @@ impl Server {
         for k in ["draft-scratch", "draft-from", "draft-created", "draft-note", "draft-condition", "start-hash", "end-hash", "checkpoint"] {
             r.remove_all(k);
         }
-        dj_core::collection::write_atomic(&d.path, &r.to_text())?;
+        dj_core::project::write_atomic(&d.path, &r.to_text())?;
         let util = self.util()?;
         util.call("reload", json!({}))?;
         let v = util.call("verify", json!({"id": d.id}))?;
@@ -628,7 +628,7 @@ impl Server {
         if path.exists() {
             bail!("{} exists already", path.display());
         }
-        dj_core::collection::write_atomic(&path, &r.to_text())?;
+        dj_core::project::write_atomic(&path, &r.to_text())?;
         std::fs::remove_file(&d.path)?;
         self.project = None;
         Ok(Reply::Json(json!({"segment": d.id, "path": path, "start_hash": v["start_hash"], "end_hash": v["end_hash"], "note": note, "hint": "a normal segment file now: review it with git diff, undo with git restore/rm"})))

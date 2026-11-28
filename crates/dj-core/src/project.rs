@@ -58,8 +58,8 @@ pub struct RomConfig {
 }
 
 /// What tools say before they make a snapshot blob, after a first sentence of their own
-/// saying what is about to be written (`Collection::warns_about_snapshots`).
-pub const SNAPSHOT_WARNING: &str = "A snapshot is a copy of the console's memory, which can include the game's code and data. Don't publish it unless you have the right to share the game. To avoid this, start a root segment from a save file, set up the state with memory writes, or use an in-game password.";
+/// saying what is about to be written (`Project::warns_about_snapshots`).
+pub const SNAPSHOT_WARNING: &str = "A snapshot is a copy of the console's memory, which can include the game's code and data. Don't publish it unless you have the right to share the game. To avoid this, start a root segment from a save file, set up the state with memory writes, or use an in-game password. If the game may be shared (homebrew, open source, your own), `shareable = true` under [rom] in config.toml turns this warning off for the project.";
 
 /// `[gui]` in .local/local.toml: what the GUI remembers for this person and project.
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
@@ -194,7 +194,7 @@ pub struct SymbolsConfig {
 }
 
 /// The machine-side settings: where the ROM and core live, and preferences. Read with
-/// `Collection::settings` (config.toml and local.toml layered, docs/config.md#layering),
+/// `Project::settings` (config.toml and local.toml layered, docs/config.md#layering),
 /// or `load_local` and `save_local` to change local.toml alone.
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct LocalConfig {
@@ -380,11 +380,11 @@ pub struct RecordLocal {
 }
 
 /// The environment variables that give the ROM and the core in place of
-/// .local/local.toml (`Collection::settings`).
+/// .local/local.toml (`Project::settings`).
 pub const ROM_ENV: &str = "DJ_ROM";
 pub const CORE_ENV: &str = "DJ_CORE";
 
-pub struct Collection {
+pub struct Project {
     pub root: PathBuf,
     pub config: Config,
     /// What opening the project found to warn about: written by a newer dj, settings this
@@ -417,8 +417,8 @@ impl Status {
     }
 }
 
-impl Collection {
-    pub fn open(root: &Path) -> Result<Collection> {
+impl Project {
+    pub fn open(root: &Path) -> Result<Project> {
         // An absolute root, so every path made from it (settings, segments, the database) is
         // the same whatever the working directory, and joining one again can't double it.
         // (`absolute`, not `canonicalize`: no symlinks resolved, no `\\?\` prefix on Windows.)
@@ -427,7 +427,7 @@ impl Collection {
         let (old, new) = (root.join(".emucov"), root.join(".local"));
         if old.is_dir() && !new.exists() {
             std::fs::rename(&old, &new).with_context(|| format!("moving {} to {}", old.display(), new.display()))?;
-            // Keep it ignored: a collection's .gitignore that names .emucov/ gets .local/ instead.
+            // Keep it ignored: a project's .gitignore that names .emucov/ gets .local/ instead.
             let gi = root.join(".gitignore");
             if let Ok(text) = std::fs::read_to_string(&gi) {
                 if text.lines().any(|l| l.trim() == ".emucov/" || l.trim() == ".emucov") && !text.lines().any(|l| l.trim().trim_end_matches('/') == ".local") {
@@ -483,7 +483,7 @@ impl Collection {
                 segments.insert(id, r);
             }
         }
-        let mut c = Collection { root: root.to_path_buf(), config, warnings, segments, paths, drafts: Default::default(), decoders: crate::decode::Decoders::built_in() };
+        let mut c = Project { root: root.to_path_buf(), config, warnings, segments, paths, drafts: Default::default(), decoders: crate::decode::Decoders::built_in() };
         c.decoders = crate::decode::Decoders::load(&c)?;
         c.check_tree()?;
         c.upgrade_blob_names()?;
@@ -684,7 +684,7 @@ impl Collection {
     /// Depth-first order, roots first.
     pub fn tree_order(&self) -> Vec<(&str, usize)> {
         let mut out = vec![];
-        fn walk<'a>(c: &'a Collection, id: Option<&str>, depth: usize, out: &mut Vec<(&'a str, usize)>) {
+        fn walk<'a>(c: &'a Project, id: Option<&str>, depth: usize, out: &mut Vec<(&'a str, usize)>) {
             for ch in c.children(id) {
                 out.push((ch, depth));
                 walk(c, Some(ch), depth + 1, out);
@@ -877,7 +877,7 @@ impl Collection {
         self.note_writer()
     }
 
-    /// Deletes the file of a segment that is no longer in the collection (after an undo of
+    /// Deletes the file of a segment that is no longer in the project (after an undo of
     /// a split or of a new segment). Does nothing if the segment was never saved.
     pub fn delete_segment_file(&mut self, id: &str) -> Result<()> {
         if let Some(path) = self.paths.remove(id) {
@@ -1151,14 +1151,14 @@ mod layering_tests {
         assert_eq!(sym[0]["file"].as_str(), Some("b"));
     }
 
-    fn project(config: &str, local: Option<&str>) -> (PathBuf, Collection) {
+    fn project(config: &str, local: Option<&str>) -> (PathBuf, Project) {
         let dir = std::env::temp_dir().join(format!("dj-layer-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(dir.join(".local")).unwrap();
         std::fs::write(dir.join("config.toml"), config).unwrap();
         if let Some(l) = local {
             std::fs::write(dir.join(".local/local.toml"), l).unwrap();
         }
-        let col = Collection::open(&dir).unwrap();
+        let col = Project::open(&dir).unwrap();
         (dir, col)
     }
 
@@ -1174,7 +1174,7 @@ mod layering_tests {
         assert_eq!(col.config.symbols.len(), 1);
         let text = std::fs::read_to_string(dir.join("config.toml")).unwrap();
         assert!(text.starts_with("# keep me\n") && text.ends_with("[[symbols]]\nfile = \"game.dbg\"\nformat = \"ca65-dbg\"\n"), "{text}");
-        assert_eq!(Collection::open(&dir).unwrap().config.symbols.len(), 1);
+        assert_eq!(Project::open(&dir).unwrap().config.symbols.len(), 1);
         // Twice is refused, and so is a name that doesn't say the format.
         assert!(col.add_symbol_map(&dir.join("game.dbg")).is_err());
         std::fs::write(dir.join("notes.txt"), "").unwrap();
@@ -1217,7 +1217,7 @@ mod layering_tests {
         l.core = Some(PathBuf::from("/other.so"));
         l.database = Some(true);
         col.save_local(&l).unwrap();
-        let again = Collection::open(&dir).unwrap();
+        let again = Project::open(&dir).unwrap();
         assert_eq!(again.config.name, "mine");
         assert_eq!(again.config.core.options.get("x").map(String::as_str), Some("y"));
         let s = again.settings().unwrap();
@@ -1254,14 +1254,14 @@ mod version_tests {
         let config = "format = 1\nname = \"g\"   # a comment kept as written\n\n[rom]\nsha256 = \"\"\nfile = \"g.nes\"\n[core]\nname = \"mesen\"\nbuild = \"1\"\n[hash]\nalgorithm = \"blake3\"\nregions = [\"RAM\"]\n";
         std::fs::write(dir.join("config.toml"), config).unwrap();
         std::fs::write(dir.join("segments/a.segment"), "dj-replay 1\nid: a\nparent: none\nframes: 1\n---\n").unwrap();
-        let mut col = Collection::open(&dir).unwrap();
+        let mut col = Project::open(&dir).unwrap();
         col.save_segment("a").unwrap();
         let text = std::fs::read_to_string(dir.join("config.toml")).unwrap();
         assert_eq!(text, config.replacen("format = 1\n", &format!("format = 1\ndj = \"{DJ_VERSION}\"\n"), 1));
         assert!(std::fs::read_to_string(dir.join("segments/a.segment")).unwrap().starts_with("dj-segment 1\n"));
         // A newer dj's version isn't written over.
         std::fs::write(dir.join("config.toml"), config.replacen("format = 1\n", "format = 1\ndj = \"999.0.0\"\n", 1)).unwrap();
-        let mut col = Collection::open(&dir).unwrap();
+        let mut col = Project::open(&dir).unwrap();
         assert!(col.warnings.iter().any(|w| w.contains("999.0.0")));
         col.save_segment("a").unwrap();
         assert!(std::fs::read_to_string(dir.join("config.toml")).unwrap().contains("dj = \"999.0.0\""));

@@ -156,12 +156,12 @@ fn questions<R: BufRead, W: Write>(io: &mut Asker<R, W>, args: &InitArgs) -> Res
     let core = match &args.core {
         Some(c) => Some(c.clone()),
         None => {
-            let from_env = std::env::var_os(dj_core::collection::CORE_ENV).filter(|c| !c.is_empty()).map(PathBuf::from);
+            let from_env = std::env::var_os(dj_core::project::CORE_ENV).filter(|c| !c.is_empty()).map(PathBuf::from);
             let s = scaffold::suggest_core(&rom)?;
             let rom_file = rom.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let default = match (&from_env, s.choice, &s.found) {
                 (Some(env), _, _) => {
-                    io.say(&format!("  ${} names a core.", dj_core::collection::CORE_ENV))?;
+                    io.say(&format!("  ${} names a core.", dj_core::project::CORE_ENV))?;
                     Some(env.clone())
                 }
                 (None, Some(choice), Some(found)) => {
@@ -370,7 +370,7 @@ mod tests {
     fn the_questions() {
         let (tmp, rom, core) = setup("q");
         std::env::set_var(dj_core::platform::CORES_ENV, tmp.join("cores"));
-        std::env::remove_var(dj_core::collection::CORE_ENV);
+        std::env::remove_var(dj_core::project::CORE_ENV);
 
         // Enter at every question: the defaults, with the core suggested for the console.
         let (a, out) = run(&InitArgs { rom: Some(rom.clone()), ..Default::default() }, "\n\n\n\n\n");

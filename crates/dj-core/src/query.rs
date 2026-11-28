@@ -9,7 +9,7 @@ use std::path::Path;
 
 use crate::analysis::{self, AnalyzedFunction, FixedPrg, Function};
 use crate::cache;
-use crate::collection::{Collection, Status};
+use crate::project::{Project, Status};
 use crate::coverage::{self, Report};
 
 /// How to add a symbol map, for what `function`, `frontier` and `gaps` say without one: dj rolls coverage
@@ -17,8 +17,8 @@ use crate::coverage::{self, Report};
 pub const ADD_SYMBOLS: &str = "Add a [[symbols]] entry to config.toml (file = \"symbols/game.dbg\", format = \"ca65-dbg\"), or start a project with dj init --symbols FILE. Formats: ca65-dbg (cc65's .dbg), mesen-mlb (a Mesen label file), splat (symbol_addrs.txt), ld-map (a GNU ld map), elf, and csv (name,region,offset,size[,cpu_addr]). See docs/coverage.md#symbol-maps.";
 
 /// A project opened for queries: the files, the database (read-only) and the symbol maps.
-pub struct Project {
-    pub col: Collection,
+pub struct ProjectQueries {
+    pub col: Project,
     pub conn: Connection,
     pub setup: String,
     pub rom: Option<Vec<u8>>,
@@ -35,9 +35,9 @@ pub struct Project {
     report: Option<Report>,
 }
 
-impl Project {
-    pub fn open(dir: &Path, rom: Option<&Path>) -> Result<Project> {
-        let col = Collection::open(dir)?;
+impl ProjectQueries {
+    pub fn open(dir: &Path, rom: Option<&Path>) -> Result<ProjectQueries> {
+        let col = Project::open(dir)?;
         let conn = cache::Cache::open_existing(&col)?;
         let setup: String = conn
             .query_row("SELECT setup FROM contents ORDER BY played_at DESC LIMIT 1", [], |r| r.get(0))
@@ -72,7 +72,7 @@ impl Project {
         let fixed_prg = rom.as_deref().and_then(FixedPrg::of_rom);
         let code = analysis::code_region(&facts);
         let cpu = facts.iter().find(|f| f.name == code).map_or(Some("6502".to_string()), |f| f.cpu.clone());
-        Ok(Project { col, conn, setup, rom, funcs, prg, rom_problem, fixed_prg, cpu, report: None })
+        Ok(ProjectQueries { col, conn, setup, rom, funcs, prg, rom_problem, fixed_prg, cpu, report: None })
     }
 
     /// The coverage report, worked out once per opened project.
@@ -854,16 +854,16 @@ mod tests {
 
     /// A hydrated project with one segment and no symbol map, whose ROM is 32 KB of NROM:
     /// $8000 LDA #1; BNE $8007; INC $10; RTS; $8007 DEC $11; RTS. Only the LDA and BNE ran.
-    fn project(name: &str, write_rom: bool) -> (std::path::PathBuf, Project) {
+    fn project(name: &str, write_rom: bool) -> (std::path::PathBuf, ProjectQueries) {
         project_with(name, write_rom, 2)
     }
 
-    fn project_with(name: &str, write_rom: bool, prg_banks: u8) -> (std::path::PathBuf, Project) {
+    fn project_with(name: &str, write_rom: bool, prg_banks: u8) -> (std::path::PathBuf, ProjectQueries) {
         project_full(name, write_rom, prg_banks, None, None)
     }
 
     /// `project`, with an annotations.toml and a CSV symbol map.
-    fn project_full(name: &str, write_rom: bool, prg_banks: u8, annotations: Option<&str>, symbols: Option<&str>) -> (std::path::PathBuf, Project) {
+    fn project_full(name: &str, write_rom: bool, prg_banks: u8, annotations: Option<&str>, symbols: Option<&str>) -> (std::path::PathBuf, ProjectQueries) {
         let dir = std::env::temp_dir().join(format!("dj-query-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("segments")).unwrap();
@@ -889,7 +889,7 @@ mod tests {
             std::fs::write(&rom_path, rom).unwrap();
         }
         std::fs::write(dir.join(".local").join("local.toml"), format!("rom = {:?}\n", rom_path.display().to_string())).unwrap();
-        let col = Collection::open(&dir).unwrap();
+        let col = Project::open(&dir).unwrap();
         let body = cache::body_hash(&col.segments[id], &crate::player::devices_at_start(&col, id).unwrap()).unwrap();
         let key = cache::content_key("setup", "a", &body);
         let mut flags = vec![0u8; 0x8000];
@@ -900,7 +900,7 @@ mod tests {
         let rec = Recording { coverage: vec![("PRG".into(), flags)], first_hits: vec![("PRG".into(), 0, 0), ("PRG".into(), 2, 0)], ..Default::default() };
         c.record(&row, &rec).unwrap();
         drop(c);
-        let p = Project::open(&dir, None).unwrap();
+        let p = ProjectQueries::open(&dir, None).unwrap();
         (dir, p)
     }
 
@@ -1014,13 +1014,13 @@ mod tests {
         // PRG from byte 16 as Mesen reports it: the same as the iNES default.
         let (dir, _) = project_full("facts", true, 2, None, Some(csv));
         record_regions(&dir, r#"[{"name":"RAM","size":2048,"cpu":"6502","has_data":false,"file_offset":null},{"name":"PRG","size":32768,"cpu":"6502","has_data":true,"file_offset":16}]"#);
-        let mut p = Project::open(&dir, None).unwrap();
+        let mut p = ProjectQueries::open(&dir, None).unwrap();
         let r = p.report().unwrap();
         assert!(r.symbols && r.notes.is_empty());
         assert_eq!((r.detail.region.as_str(), r.totals.instructions), ("PRG", 2));
         // An instruction set with no decoder: no functions, and a note saying why.
         record_regions(&dir, r#"[{"name":"PRG","size":32768,"cpu":"z80","has_data":true,"file_offset":16}]"#);
-        let mut p = Project::open(&dir, None).unwrap();
+        let mut p = ProjectQueries::open(&dir, None).unwrap();
         let r = p.report().unwrap();
         assert!(!r.symbols);
         assert!(r.notes.iter().any(|n| n.contains("no decoder for the z80")), "{:?}", r.notes);
@@ -1194,7 +1194,7 @@ pub struct ParityReport {
     pub failures: Vec<FailureRow>,
 }
 
-impl Project {
+impl ProjectQueries {
     /// Comparison core `name`'s results, against its library as it is now.
     pub fn parity_results(&self, name: &str) -> Result<crate::parity::Results> {
         let build = crate::parity::current_build(&self.col, name)?;

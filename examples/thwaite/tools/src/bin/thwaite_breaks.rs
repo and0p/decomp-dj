@@ -13,7 +13,7 @@
 //!
 //! Usage: thwaite_breaks <project> <rom> <core> <breakpoints.tsv>
 use anyhow::{anyhow, Result};
-use dj_core::collection::Collection;
+use dj_core::project::Project;
 use dj_core::libretro::MEMORY_SYSTEM_RAM;
 use dj_core::player::Session;
 use std::collections::BTreeMap;
@@ -80,7 +80,7 @@ fn main() -> Result<()> {
     if a.len() != 5 {
         return Err(anyhow!("usage: thwaite_breaks <project> <rom> <core> <breakpoints.tsv>"));
     }
-    let col = Collection::open(Path::new(&a[1]))?;
+    let col = Project::open(Path::new(&a[1]))?;
     let bps = read_table(Path::new(&a[4]))?;
     let mut s = Session::open_with(&col, Path::new(&a[2]), Path::new(&a[3]), false)?;
     let set: SetBreaks = {

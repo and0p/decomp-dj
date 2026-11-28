@@ -46,7 +46,7 @@ impl CoreArgs {
     }
 }
 
-/// Where a command finds the ROM and the core (given as flags, else `Collection::settings`:
+/// Where a command finds the ROM and the core (given as flags, else `Project::settings`:
 /// `DJ_ROM` and `DJ_CORE`, then .local/local.toml), and whether it plays without the local
 /// database.
 #[derive(Clone, Default)]

@@ -2,7 +2,7 @@
 //! `edit::carried_lines`), end to end with the test core, whose RAM depends on the buttons
 //! held on every frame. Skipped when there is no C compiler.
 
-use dj_core::collection::Collection;
+use dj_core::project::Project;
 use dj_core::edit::carried_lines;
 use dj_core::player::{NewRoot, PlayOptions, Session};
 use std::path::{Path, PathBuf};
@@ -11,11 +11,11 @@ use std::process::Command;
 /// 40 frames: B held from frame 3 to 20 (across the cut at 10), Y from 25 to 30.
 const BODY: &str = "3 P1 JOYPAD B 1\n20 P1 JOYPAD B 0\n25 P1 JOYPAD Y 1\n30 P1 JOYPAD Y 0\n";
 
-fn project(what: &str) -> Option<(Collection, PathBuf)> {
+fn project(what: &str) -> Option<(Project, PathBuf)> {
     project_with(what, &[])
 }
 
-fn project_with(what: &str, flags: &[&str]) -> Option<(Collection, PathBuf)> {
+fn project_with(what: &str, flags: &[&str]) -> Option<(Project, PathBuf)> {
     let tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("snapshot-root-{what}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(tmp.join("segments")).unwrap();
@@ -29,10 +29,10 @@ fn project_with(what: &str, flags: &[&str]) -> Option<(Collection, PathBuf)> {
     std::fs::write(tmp.join("segments/seg.segment"), format!("dj-segment 1\nid: seg\nparent: none\nframes: 40\n---\n{BODY}")).unwrap();
     let path = lib.display().to_string().replace('\\', "/");
     std::fs::write(tmp.join("config.toml"), format!("format = 1\nname = \"t\"\n[rom]\nsha256 = \"\"\npath = \"rom.bin\"\n[core]\nname = \"testcore\"\nbuild = \"testcore 1\"\npath = \"{path}\"\n[hash]\nalgorithm = \"blake3\"\nregions = [\"RAM\"]\n")).unwrap();
-    Some((Collection::open(&tmp).unwrap(), lib))
+    Some((Project::open(&tmp).unwrap(), lib))
 }
 
-fn blobs(col: &Collection) -> usize {
+fn blobs(col: &Project) -> usize {
     std::fs::read_dir(col.root.join("blobs")).map_or(0, |d| d.count())
 }
 
@@ -57,12 +57,12 @@ fn a_root_cut_from_a_frame_ends_where_the_segment_does() {
     let id = s.add_root(&mut col, &NewRoot { title: "cut".into(), frames: 30, snapshot: Some(state.clone()), start_frame: at, lines, ..Default::default() }).unwrap();
 
     // Saved, with the blob in blobs/ and the state it starts in recorded.
-    let saved = Collection::open(&col.root).unwrap();
+    let saved = Project::open(&col.root).unwrap();
     let r = &saved.segments[&id];
     assert_eq!((r.parent(), r.get("start-frame")), (None, Some("10")));
     assert_eq!(saved.read_blob(r.get("snapshot").unwrap(), "snapshot").unwrap(), state);
     // Named after the title, with the start of the content's hash.
-    let hash = dj_core::collection::blob_id(&state);
+    let hash = dj_core::project::blob_id(&state);
     assert_eq!(r.get("snapshot"), Some(hash.as_str()), "the header names the content");
     assert!(saved.blob_path(&hash, "snapshot").unwrap().ends_with(format!("blobs/cut-{}.state", &hash[..8])));
     assert!(r.get("start-hash").is_some());
@@ -163,7 +163,7 @@ fn a_root_from_exported_save_ram() {
     let plain = s.add_root(&mut col, &NewRoot { title: "plain".into(), frames: 5, sram: Some(vec![0; 8]), ..Default::default() }).unwrap();
     let id = s.add_root(&mut col, &NewRoot { title: "with save".into(), frames: 5, sram: Some(late.clone()), blob_name: "after-level-1".into(), ..Default::default() }).unwrap();
     let blob = col.segments[&id].get("sram").unwrap().to_string();
-    assert_eq!(blob, dj_core::collection::blob_id(&late), "the header names the content");
+    assert_eq!(blob, dj_core::project::blob_id(&late), "the header names the content");
     let file = format!("after-level-1-{}.srm", &blob[..8]);
     assert!(col.blob_path(&blob, "sram").unwrap().ends_with(&file));
     assert_eq!(col.blob_name_of(&blob, "sram").as_deref(), Some("after-level-1"));
@@ -179,7 +179,7 @@ fn a_root_from_exported_save_ram() {
     assert!(!col.root.join("blobs").join(&file).exists());
     assert_eq!(std::fs::read(&col.paths[&id]).unwrap(), before);
     assert_eq!(s.content_key(&col, &id, &with.start_hash).unwrap(), key);
-    let same = |s: &mut Session, col: &Collection| s.play_chain(col, &id, &PlayOptions::default(), false).unwrap().pop().unwrap().end_hash == with.end_hash;
+    let same = |s: &mut Session, col: &Project| s.play_chain(col, &id, &PlayOptions::default(), false).unwrap().pop().unwrap().end_hash == with.end_hash;
     assert!(same(&mut s, &col));
 
     // Renamed by hand, to a name with no hash digits or to the bare hash older projects

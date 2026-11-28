@@ -16,7 +16,7 @@ pub(crate) fn human(bytes: i64) -> String {
 }
 
 pub(crate) fn cache_stats(dir: &Path) -> Result<()> {
-    let col = Collection::open(dir)?;
+    let col = Project::open(dir)?;
     let conn = cache::Cache::open_existing(&col)?;
     let size = std::fs::metadata(cache::cache_path(&col)).map(|m| m.len()).unwrap_or(0);
     println!("{} ({})", cache::cache_path(&col).display(), human(size as i64));
@@ -59,7 +59,7 @@ pub(crate) fn cache_stats(dir: &Path) -> Result<()> {
 }
 
 pub(crate) fn cache_gc(dir: &Path, local: &Local, force: bool) -> Result<()> {
-    let col = Collection::open(dir)?;
+    let col = Project::open(dir)?;
     if !force && dj_core::cache::gui_open(&col.root) {
         bail!("a dj-gui has this project open, and gc would drop the snapshots of its unsaved edits; close it first, or pass --force");
     }
@@ -73,7 +73,7 @@ pub(crate) fn cache_gc(dir: &Path, local: &Local, force: bool) -> Result<()> {
 
 /// `dj cache export`: the start states that checking the chosen segments needs.
 pub(crate) fn cache_export(dir: &Path, local: &Local, pick: parity_cmd::Pick, compare: Option<&str>, out: &Path) -> Result<()> {
-    let col = Collection::open(dir)?;
+    let col = Project::open(dir)?;
     let ids = pick.resolve(&col)?;
     let preroll = match compare {
         Some(name) => {
@@ -128,7 +128,7 @@ pub(crate) fn cache_export(dir: &Path, local: &Local, pick: parity_cmd::Pick, co
 
 /// `dj cache seed`: stores the states given that are a clean segment's recorded end.
 pub(crate) fn cache_seed(dir: &Path, local: &Local, paths: &[PathBuf]) -> Result<i32> {
-    let col = Collection::open(dir)?;
+    let col = Project::open(dir)?;
     let mut files = vec![];
     for p in paths {
         if p.is_dir() {

@@ -1,13 +1,13 @@
 //! Scratch tool: plays a node's chain from power-on and prints chosen RAM bytes per frame.
-//! Usage: ramtrace <collection> <id> <hexaddr,...> [every]
-use dj_core::collection::Collection;
+//! Usage: ramtrace <project> <id> <hexaddr,...> [every]
+use dj_core::project::Project;
 use dj_core::libretro::region_memory_id;
 use dj_core::player::Session;
 use std::path::Path;
 
 fn main() -> anyhow::Result<()> {
     let a: Vec<String> = std::env::args().collect();
-    let col = Collection::open(Path::new(&a[1]))?;
+    let col = Project::open(Path::new(&a[1]))?;
     let id = col.resolve(&a[2])?.to_string();
     let addrs: Vec<usize> = a[3].split(',').map(|s| usize::from_str_radix(s, 16).unwrap()).collect();
     let every: u64 = a.get(4).map_or(1, |s| s.parse().unwrap());

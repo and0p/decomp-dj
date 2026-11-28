@@ -162,32 +162,32 @@ fn projects_load_decoders_from_config_and_from_their_core() {
     };
     let path = lib.to_str().unwrap().replace('\\', "/");
     // [[decoders]], with the platform's suffix left out, and pinned.
-    let sha = dj_core::collection::sha256_file(&lib).unwrap();
+    let sha = dj_core::project::sha256_file(&lib).unwrap();
     let stem = path.trim_end_matches(&format!(".{}", std::env::consts::DLL_EXTENSION));
     let dir = project("plugin-config", &format!("[[decoders]]\npath = \"{stem}\"\nsha256 = \"{sha}\"\n"), "");
-    let col = dj_core::collection::Collection::open(&dir).unwrap();
+    let col = dj_core::project::Project::open(&dir).unwrap();
     assert_eq!(col.decoders.get("toy8").map(|d| d.cpu()), Some("toy8"));
     assert!(col.decoders.get("toy8").unwrap().id().contains(&sha[..12]));
     assert_eq!(col.decoders.get("6502").map(|d| d.id()), Some("built-in 6502".to_string()));
     // A wrong pin, or a missing file, stops the project from opening, naming the entry.
     let dir = project("plugin-bad-pin", &format!("[[decoders]]\npath = \"{path}\"\nsha256 = \"00\"\n"), "");
-    let err = format!("{:#}", dj_core::collection::Collection::open(&dir).err().unwrap());
+    let err = format!("{:#}", dj_core::project::Project::open(&dir).err().unwrap());
     assert!(err.contains("pinned to 00"), "{err}");
     let dir = project("plugin-missing", "[[decoders]]\npath = \"no_such_decoder\"\n", "");
-    let err = format!("{:#}", dj_core::collection::Collection::open(&dir).err().unwrap());
+    let err = format!("{:#}", dj_core::project::Project::open(&dir).err().unwrap());
     assert!(err.contains("doesn't exist"), "{err}");
     // A core that exports dj_decoders: its decoders are used for CPUs nothing else decodes.
     let dir = project("plugin-core", "", &format!("core = \"{path}\"\n"));
-    let col = dj_core::collection::Collection::open(&dir).unwrap();
+    let col = dj_core::project::Project::open(&dir).unwrap();
     assert_eq!(col.decoders.get("toy8").map(|d| d.cpu()), Some("toy8"));
     assert!(col.decoders.get("z80").is_none());
 }
 
 /// The toy plugin as a project's `[[decoders]]`, and a function `name` holding `code`.
-fn toy_project(name: &str, lib: &Path) -> dj_core::collection::Collection {
+fn toy_project(name: &str, lib: &Path) -> dj_core::project::Project {
     use_dj_workers();
     let dir = project(name, &format!("[[decoders]]\npath = \"{}\"\n", lib.to_str().unwrap().replace('\\', "/")), "");
-    dj_core::collection::Collection::open(&dir).unwrap()
+    dj_core::project::Project::open(&dir).unwrap()
 }
 
 fn toy_function(name: &str, size: u64) -> Vec<(Function, Option<u64>)> {
@@ -236,6 +236,6 @@ fn a_plugin_that_crashes_while_its_tables_are_read_names_the_entry() {
         return;
     };
     let dir = project("plugin-crash-tables", &format!("[[decoders]]\npath = \"{}\"\n", lib.to_str().unwrap().replace('\\', "/")), "");
-    let err = format!("{:#}", dj_core::collection::Collection::open(&dir).err().unwrap());
+    let err = format!("{:#}", dj_core::project::Project::open(&dir).err().unwrap());
     assert!(err.contains("[[decoders]]") && err.contains("crashed") && err.contains("while its decoders were read"), "{err}");
 }

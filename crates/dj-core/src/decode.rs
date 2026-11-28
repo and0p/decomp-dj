@@ -74,7 +74,7 @@ impl PluginDecoder {
     /// `what` names the library in messages ("decoder plugin", "core").
     pub fn load(path: &Path, what: &str) -> Result<Vec<PluginDecoder>> {
         use dj_decoder::ffi::{DjDecodersFn, DJ_DECODERS_SYMBOL, DJ_DECODER_API, DJ_DECODER_V1_SIZE};
-        let sha = crate::collection::sha256_file(path).with_context(|| format!("reading the {what} {}", path.display()))?;
+        let sha = crate::project::sha256_file(path).with_context(|| format!("reading the {what} {}", path.display()))?;
         // SAFETY: loading a library runs its initialisers; plugins are trusted like cores.
         let library = Arc::new(unsafe { libloading::Library::new(path) }.with_context(|| format!("loading the {what} {}", path.display()))?);
         let Ok(entry) = (unsafe { library.get::<DjDecodersFn>(DJ_DECODERS_SYMBOL) }) else { return Ok(vec![]) };
@@ -365,7 +365,7 @@ impl Decoders {
 
     /// The project's: its `[[decoders]]`, read now in a worker (an error names the entry),
     /// and its core.
-    pub fn load(col: &crate::collection::Collection) -> Result<Decoders> {
+    pub fn load(col: &crate::project::Project) -> Result<Decoders> {
         let mut plugins = vec![];
         for d in &col.config.decoders {
             let path = resolve_library(&col.root, &d.path, "decoders");
@@ -373,7 +373,7 @@ impl Decoders {
                 bail!("[[decoders]] {}: {} doesn't exist", d.path.display(), path.display());
             }
             if !d.sha256.is_empty() {
-                let sha = crate::collection::sha256_file(&path)?;
+                let sha = crate::project::sha256_file(&path)?;
                 if sha != d.sha256 {
                     bail!("[[decoders]] {}: {} has sha256 {sha}, but the entry is pinned to {}", d.path.display(), path.display(), d.sha256);
                 }

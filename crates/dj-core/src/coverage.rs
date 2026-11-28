@@ -8,9 +8,9 @@ use std::path::Path;
 
 use crate::analysis::{self, AnalyzedFunction};
 use crate::annotations::{Annotations, Kind};
-use crate::collection::Collection;
+use crate::project::Project;
 use crate::cache;
-use crate::collection::Status;
+use crate::project::Status;
 
 pub const FLAG_OPCODE: u8 = 0x01;
 /// Executed as an operand byte (docs/connectors.md). Cores that only see whole blocks may
@@ -92,7 +92,7 @@ pub struct AnnotationWarning {
 }
 
 impl AnnotationWarning {
-    pub fn text(&self, col: &Collection) -> String {
+    pub fn text(&self, col: &Project) -> String {
         let names: Vec<String> = self.segments.iter().take(3).map(|id| col.segments.get(id.as_str()).map(|r| format!("\"{}\"", r.title())).unwrap_or_else(|| id.clone())).collect();
         let more = if self.segments.len() > 3 { format!(" and {} more", self.segments.len() - 3) } else { String::new() };
         format!("annotations.toml {} ({}) ran as code at {} in {}{more}", self.entry, self.range, self.at, names.join(", "))
@@ -192,7 +192,7 @@ fn opcode_set(flags: &[u8]) -> Vec<bool> {
     flags.iter().map(|f| f & FLAG_OPCODE != 0).collect()
 }
 
-/// Coverage of the collection as it is now, from the local database: every segment that
+/// Coverage of the project as it is now, from the local database: every segment that
 /// isn't dirty and has been played with its current content counts (docs/coverage.md).
 /// `setup` picks the setup (ROM, core and options) to report on; by default, the one played last.
 /// The last decoding, by a hash of everything it depends on: the decoder, the functions and
@@ -220,14 +220,14 @@ fn decode_cached(dec: crate::decode::DecoderRef, funcs: &[(analysis::Function, u
     Ok((out, invalid))
 }
 
-pub fn build_report(col: &Collection, conn: &Connection, rom: Option<&[u8]>, setup: Option<&str>) -> Result<Report> {
+pub fn build_report(col: &Project, conn: &Connection, rom: Option<&[u8]>, setup: Option<&str>) -> Result<Report> {
     build_report_with(col, conn, rom, setup, &std::collections::HashSet::new())
 }
 
 /// `build_report` for an editor: `unsaved` names segments with changes not saved yet. Like
 /// drafts, they don't count; what they (or dirty segments, from their last recorded play)
 /// would add is reported apart (`Totals::unsaved_new`, `Totals::if_cleaned`).
-pub fn build_report_with(col: &Collection, conn: &Connection, rom: Option<&[u8]>, setup: Option<&str>, unsaved: &std::collections::HashSet<String>) -> Result<Report> {
+pub fn build_report_with(col: &Project, conn: &Connection, rom: Option<&[u8]>, setup: Option<&str>, unsaved: &std::collections::HashSet<String>) -> Result<Report> {
     let setup: String = match setup {
         Some(s) => s.to_string(),
         None => conn
@@ -603,7 +603,7 @@ pub struct FirstHit {
 /// First hits of `region` `start..=end` in the segments as they are now, for `setup`. Sorted so
 /// the most useful comes first: segments that count (not dirty) before dirty ones, then
 /// shallower segments, then earlier frames.
-pub fn first_hits_in(col: &Collection, conn: &Connection, setup: &str, region: &str, start: u64, end: u64) -> Result<Vec<FirstHit>> {
+pub fn first_hits_in(col: &Project, conn: &Connection, setup: &str, region: &str, start: u64, end: u64) -> Result<Vec<FirstHit>> {
     let keys = cache::current_keys(conn, col, setup)?;
     let by_key: HashMap<&str, (&str, Status)> = keys.iter().filter_map(|(id, (k, st))| k.as_deref().map(|k| (k, (id.as_str(), *st)))).collect();
     let mut st = conn.prepare_cached("SELECT content, rom_offset, frame FROM first_hits WHERE region = ?1 AND rom_offset BETWEEN ?2 AND ?3")?;

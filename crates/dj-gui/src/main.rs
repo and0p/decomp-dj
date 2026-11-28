@@ -11,7 +11,7 @@
 
 use anyhow::Result;
 use eframe::egui::{self, Color32};
-use dj_core::collection::Collection;
+use dj_core::project::Project;
 use dj_core::compare::Comparison;
 use dj_core::format::InputKey;
 use dj_core::hydrate::Hydrator;
@@ -132,7 +132,7 @@ fn ending_sig(r: &dj_core::format::Segment) -> Option<String> {
 }
 
 /// Starts recording a pass of `id` from the core's current state, its frame 0.
-fn start_pass(s: &mut Session, col: &Collection, id: &str, start_frame: u64) -> Result<Recorder> {
+fn start_pass(s: &mut Session, col: &Project, id: &str, start_frame: u64) -> Result<Recorder> {
     s.begin(col, id, start_frame, &PlayOptions { record: true, ..Default::default() })
 }
 
@@ -521,7 +521,7 @@ impl Default for CompareState {
 struct App {
     /// View > Stick pad.
     pad: stick::StickPad,
-    col: Option<Collection>,
+    col: Option<Project>,
     session: Option<Session>,
     core_error: Option<String>,
     fps: f64,
@@ -712,11 +712,11 @@ struct BlobChoice {
 }
 
 impl BlobChoice {
-    fn all(col: &Collection) -> Vec<BlobChoice> {
+    fn all(col: &Project) -> Vec<BlobChoice> {
         col.blobs()
             .into_iter()
             .map(|b| BlobChoice {
-                name: match dj_core::collection::blob_name_parts(&b.stem) {
+                name: match dj_core::project::blob_name_parts(&b.stem) {
                     Some((name, _)) => name.to_string(),
                     None if b.stem == b.hash => String::new(),
                     None => b.stem.clone(),
@@ -756,7 +756,7 @@ struct StartFile {
 }
 
 impl StartFile {
-    fn of(col: &Collection, r: &dj_core::format::Segment, field: &str) -> StartFile {
+    fn of(col: &Project, r: &dj_core::format::Segment, field: &str) -> StartFile {
         let blob = r.get(field).map(String::from);
         let name = blob.as_ref().and_then(|b| col.blob_name_of(b, field)).unwrap_or_default();
         StartFile { blob, pick: None, was: name.clone(), name, filter: String::new() }
@@ -770,7 +770,7 @@ impl StartFile {
     /// The blob id it names after Apply.
     fn blob_after(&self) -> Option<String> {
         match &self.pick {
-            Some((_, data)) => Some(dj_core::collection::blob_id(data)),
+            Some((_, data)) => Some(dj_core::project::blob_id(data)),
             None => self.blob.clone(),
         }
     }
@@ -849,7 +849,7 @@ fn trim_snapshots(snaps: &mut BTreeMap<u64, Vec<u8>>, at: u64, budget: u64) {
     }
 }
 
-fn subtree(col: &Collection, id: &str) -> Vec<String> {
+fn subtree(col: &Project, id: &str) -> Vec<String> {
     let mut out = vec![id.to_string()];
     let mut i = 0;
     while i < out.len() {

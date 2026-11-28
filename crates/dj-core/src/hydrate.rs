@@ -6,7 +6,7 @@ use anyhow::{anyhow, bail, Result};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::collection::{Collection, Status};
+use crate::project::{Project, Status};
 use crate::player::{root_start_frame, PlayOptions, Recorder, Session};
 
 /// What happened to one segment.
@@ -42,7 +42,7 @@ struct Current {
 
 impl Hydrator {
     /// `scope`: None for the whole tree, or a segment and whether to include its children.
-    pub fn new(col: &Collection, scope: Option<(&str, bool)>, force: bool) -> Result<Hydrator> {
+    pub fn new(col: &Project, scope: Option<(&str, bool)>, force: bool) -> Result<Hydrator> {
         let order: Vec<String> = col.tree_order().into_iter().filter(|(id, _)| !col.is_draft(id) || scope.is_some_and(|(s, _)| s == *id)).map(|(id, _)| id.to_string()).collect();
         let targets = match scope {
             None => order,
@@ -52,10 +52,10 @@ impl Hydrator {
     }
 
     /// Clean all (or a subtree): plays, top down, every segment that isn't clean or whose
-    /// current content isn't in the local database yet, and records hashes in the collection
+    /// current content isn't in the local database yet, and records hashes in the project
     /// in memory where `try_record` finds it safe. Segments below one that stays unclean are
     /// skipped, since their start can't be trusted. `force` replays everything, stored or not.
-    pub fn verify(col: &Collection, scope: Option<(&str, bool)>, drafts: bool, force: bool) -> Result<Hydrator> {
+    pub fn verify(col: &Project, scope: Option<(&str, bool)>, drafts: bool, force: bool) -> Result<Hydrator> {
         let mut h = Hydrator::new(col, scope, force)?;
         h.targets.retain(|id| drafts || !col.is_draft(id));
         h.verify = true;
@@ -63,7 +63,7 @@ impl Hydrator {
     }
 
     /// The targets that aren't clean (what a clean would record hashes for).
-    pub fn unclean(&self, col: &Collection) -> usize {
+    pub fn unclean(&self, col: &Project) -> usize {
         self.targets.iter().filter(|id| col.tree_status(id) != Status::Clean).count()
     }
 
@@ -84,7 +84,7 @@ impl Hydrator {
 
     /// Works until `budget` has passed or everything is done. Returns finished events.
     /// `show_every` > 0 captures every Nth frame's video for display.
-    pub fn step(&mut self, s: &mut Session, col: &mut Collection, budget: Duration, show_every: u64) -> Result<Vec<HydrateEvent>> {
+    pub fn step(&mut self, s: &mut Session, col: &mut Project, budget: Duration, show_every: u64) -> Result<Vec<HydrateEvent>> {
         if s.cache.is_none() {
             bail!("hydration needs the local database");
         }
@@ -184,7 +184,7 @@ impl Hydrator {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn conclude(&mut self, col: &mut Collection, id: &str, start: &str, start_frame: u64, end: &str, cps: Option<&[(u64, String)]>, action: &'static str, frames: u64) -> Result<HydrateEvent> {
+    fn conclude(&mut self, col: &mut Project, id: &str, start: &str, start_frame: u64, end: &str, cps: Option<&[(u64, String)]>, action: &'static str, frames: u64) -> Result<HydrateEvent> {
         self.end_now.insert(id.to_string(), end.to_string());
         let mut verdict = judge_hashes(col, id, start, end, cps);
         if self.verify {
@@ -202,7 +202,7 @@ impl Hydrator {
 }
 
 /// Hashes recorded in a segment's file compared with what playing produced.
-pub fn judge_hashes(col: &Collection, id: &str, start: &str, end: &str, checkpoints: Option<&[(u64, String)]>) -> &'static str {
+pub fn judge_hashes(col: &Project, id: &str, start: &str, end: &str, checkpoints: Option<&[(u64, String)]>) -> &'static str {
     let r = &col.segments[id];
     if let Some(s) = r.get("start-hash") {
         if s != start {
@@ -232,7 +232,7 @@ pub fn judge_hashes(col: &Collection, id: &str, start: &str, end: &str, checkpoi
 /// since the database doesn't keep the checkpoint hashes a changed ending needs. Segments
 /// in `skip` (drafts an agent has open) are left alone. Returns (id, verdict) for each
 /// segment it recorded.
-pub fn record_from_cache(col: &mut Collection, cache: &crate::cache::Cache, skip: &std::collections::HashSet<String>) -> Result<Vec<(String, &'static str)>> {
+pub fn record_from_cache(col: &mut Project, cache: &crate::cache::Cache, skip: &std::collections::HashSet<String>) -> Result<Vec<(String, &'static str)>> {
     let ids: Vec<String> = col.tree_order().into_iter().map(|(id, _)| id.to_string()).collect();
     let mut out = vec![];
     for id in ids {
@@ -282,7 +282,7 @@ pub fn record_from_cache(col: &mut Collection, cache: &crate::cache::Cache, skip
 /// `checkpoints` are the hashes this play saw at recorded checkpoint frames (None: unknown,
 /// as for a result read from the database). On "changed", seen checkpoints take their new
 /// value and unseen ones are dropped, since they can no longer be trusted.
-pub fn try_record(col: &mut Collection, id: &str, start: &str, start_frame: u64, end: &str, checkpoints: Option<&[(u64, String)]>) -> &'static str {
+pub fn try_record(col: &mut Project, id: &str, start: &str, start_frame: u64, end: &str, checkpoints: Option<&[(u64, String)]>) -> &'static str {
     let r = &col.segments[id];
     if let Some(p) = r.parent() {
         if col.tree_status(p) != Status::Clean || col.segments[p].get("end-hash") != Some(start) {
@@ -321,12 +321,12 @@ mod tests {
     use super::*;
     use crate::format::Segment;
 
-    fn project(name: &str) -> Collection {
+    fn project(name: &str) -> Project {
         let dir = std::env::temp_dir().join(format!("dj-hydrate-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("segments")).unwrap();
         std::fs::write(dir.join("config.toml"), "format = 1\nname = \"t\"\n[rom]\nsha256 = \"\"\nfile = \"t.nes\"\n[core]\nname = \"c\"\nbuild = \"c\"\nsha256 = \"\"\n[[ports]]\nport = 1\ndevice = \"JOYPAD\"\n[hash]\nalgorithm = \"blake3\"\nregions = [\"RAM\"]\n").unwrap();
-        let mut col = Collection::open(&dir).unwrap();
+        let mut col = Project::open(&dir).unwrap();
         let mut a = Segment::new("a", None, "root", 10);
         a.set("end-hash", "A1");
         col.segments.insert("a".into(), a);

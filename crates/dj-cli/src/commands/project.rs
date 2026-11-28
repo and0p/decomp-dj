@@ -3,7 +3,7 @@
 use crate::*;
 
 pub(crate) fn new_segment(dir: &Path, parent: Option<String>, title: &str, frames: u64) -> Result<()> {
-    let mut col = Collection::open(dir)?;
+    let mut col = Project::open(dir)?;
     let parent = match parent {
         Some(p) => Some(col.resolve(&p)?.to_string()),
         None => None,
@@ -20,12 +20,12 @@ pub(crate) fn new_segment(dir: &Path, parent: Option<String>, title: &str, frame
 /// state, a save file, or a frame of another segment.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn new_root(dir: &Path, title: &str, frames: u64, snapshot: Option<&Path>, sram: Option<&Path>, start_frame: u64, from: Option<(&str, u64)>, blob_name: Option<&str>, local: &Local) -> Result<()> {
-    let mut col = Collection::open(dir)?;
+    let mut col = Project::open(dir)?;
     let mut s = open_session(&col, local)?;
     let read = |p: Option<&Path>| p.map(|p| std::fs::read(p).with_context(|| format!("reading {}", p.display()))).transpose();
     let mut new = dj_core::player::NewRoot { title: title.to_string(), frames, snapshot: read(snapshot)?, sram: read(sram)?, start_frame, lines: vec![], blob_name: String::new() };
     // The blob's name: the one asked for, else the file's own, else (--from) where it was cut.
-    let stem = snapshot.or(sram).and_then(|p| p.file_stem()).map(|n| dj_core::collection::blob_name(&n.to_string_lossy()));
+    let stem = snapshot.or(sram).and_then(|p| p.file_stem()).map(|n| dj_core::project::blob_name(&n.to_string_lossy()));
     new.blob_name = blob_name.map(String::from).or(stem).unwrap_or_default();
     if let Some((segment, frame)) = from {
         let src = col.resolve(segment)?.to_string();
@@ -37,12 +37,12 @@ pub(crate) fn new_root(dir: &Path, title: &str, frames: u64, snapshot: Option<&P
             new.title = format!("{} from frame {frame}", col.segments[&src].title());
         }
         if blob_name.is_none() {
-            new.blob_name = dj_core::collection::blob_name(&format!("{} frame {frame}", col.segments[&src].title()));
+            new.blob_name = dj_core::project::blob_name(&format!("{} frame {frame}", col.segments[&src].title()));
         }
     }
     let id = s.add_root(&mut col, &new)?;
     if new.snapshot.is_some() && col.warns_about_snapshots() {
-        eprintln!("note: this copies a snapshot into the project's blobs folder. {}", dj_core::collection::SNAPSHOT_WARNING);
+        eprintln!("note: this copies a snapshot into the project's blobs folder. {}", dj_core::project::SNAPSHOT_WARNING);
     }
     let r = &col.segments[&id];
     if let Some(b) = r.get("snapshot") {
@@ -60,7 +60,7 @@ pub(crate) fn new_root(dir: &Path, title: &str, frames: u64, snapshot: Option<&P
 }
 
 pub(crate) fn status(dir: &Path) -> Result<()> {
-    let col = Collection::open(dir)?;
+    let col = Project::open(dir)?;
     let mut counts = BTreeMap::new();
     for (id, depth) in col.tree_order() {
         let r = &col.segments[id];
@@ -79,7 +79,7 @@ pub(crate) fn status(dir: &Path) -> Result<()> {
 
 pub(crate) fn annotations(dir: &Path, local: &Local) -> Result<i32> {
     use dj_core::annotations::{Annotations, Kind};
-    let col = Collection::open(dir)?;
+    let col = Project::open(dir)?;
     let ann = Annotations::load(&col.root)?;
     if ann.is_empty() {
         println!("no annotations ({} not found or empty)", col.root.join(dj_core::annotations::FILE).display());
@@ -150,7 +150,7 @@ pub(crate) fn repin(dir: &Path, local: &Local) -> Result<i32> {
             "not repinned: {bad} segment(s) don't reproduce their hashes with this core. If the new hashes are the right ones, record them with `dj clean --force --accept`, then run `dj repin` again"
         ));
     }
-    let mut col = Collection::open(dir)?;
+    let mut col = Project::open(dir)?;
     let (_, core) = resolve_local(&col, local)?;
     let build = open_session(&col, local)?.build.clone();
     let sha = sha256_file(&libretro::library_path(&core))?;
@@ -166,7 +166,7 @@ pub(crate) fn repin(dir: &Path, local: &Local) -> Result<i32> {
 
 /// `dj upgrade`: every segment file and config.toml in this dj's format.
 pub(crate) fn upgrade(dir: &Path) -> Result<()> {
-    let mut col = Collection::open(dir)?;
+    let mut col = Project::open(dir)?;
     let ids: Vec<String> = col.tree_order().into_iter().map(|(id, _)| id.to_string()).filter(|id| !col.is_draft(id)).collect();
     let mut rewritten = 0;
     for id in &ids {
@@ -182,14 +182,14 @@ pub(crate) fn upgrade(dir: &Path) -> Result<()> {
         "{rewritten} of {} segment files rewritten (segment format {}); config.toml: format {}, dj {}",
         ids.len(),
         dj_core::format::SEGMENT_FORMAT,
-        dj_core::collection::PROJECT_FORMAT,
+        dj_core::project::PROJECT_FORMAT,
         col.config.dj.as_deref().unwrap_or("?")
     );
     Ok(())
 }
 
 pub(crate) fn snapshot_cmd(dir: &Path, segment: &str, frame: u64, out: &Path, local: &Local) -> Result<()> {
-    let col = Collection::open(dir)?;
+    let col = Project::open(dir)?;
     let id = col.resolve(segment)?.to_string();
     let mut s = open_session(&col, local)?;
     let (state, at) = s.state_at(&col, &id, frame)?;
@@ -199,7 +199,7 @@ pub(crate) fn snapshot_cmd(dir: &Path, segment: &str, frame: u64, out: &Path, lo
 }
 
 pub(crate) fn sram_cmd(dir: &Path, segment: &str, frame: u64, out: &Path, local: &Local) -> Result<()> {
-    let col = Collection::open(dir)?;
+    let col = Project::open(dir)?;
     let id = col.resolve(segment)?.to_string();
     let mut s = open_session(&col, local)?;
     let data = s.sram_at(&col, &id, frame)?;
@@ -209,12 +209,12 @@ pub(crate) fn sram_cmd(dir: &Path, segment: &str, frame: u64, out: &Path, local:
 }
 
 /// A blob's file name in blobs/, for a message.
-fn blob_file(col: &Collection, blob: &str, field: &str) -> String {
+fn blob_file(col: &Project, blob: &str, field: &str) -> String {
     col.blob_path(blob, field).and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| blob.to_string())
 }
 
 pub(crate) fn blob_list(dir: &Path) -> Result<()> {
-    let col = Collection::open(dir)?;
+    let col = Project::open(dir)?;
     let blobs = col.blobs();
     if blobs.is_empty() {
         println!("no snapshots or save files in {}", col.root.join("blobs").display());
@@ -228,18 +228,18 @@ pub(crate) fn blob_list(dir: &Path) -> Result<()> {
 }
 
 pub(crate) fn blob_rename(dir: &Path, blob: &str, name: &str) -> Result<()> {
-    let col = Collection::open(dir)?;
+    let col = Project::open(dir)?;
     // The file's name (with or without its extension), or the start of exactly one name or hash.
     let all = col.blobs();
     let want = blob.strip_suffix(".srm").or(blob.strip_suffix(".state")).unwrap_or(blob);
-    let hits: Vec<&dj_core::collection::BlobFile> = match all.iter().filter(|b| b.stem == want || b.hash == want).collect::<Vec<_>>() {
+    let hits: Vec<&dj_core::project::BlobFile> = match all.iter().filter(|b| b.stem == want || b.hash == want).collect::<Vec<_>>() {
         exact if !exact.is_empty() => exact,
         _ => all.iter().filter(|b| b.stem.starts_with(want) || b.hash.starts_with(want)).collect(),
     };
     let b = match hits[..] {
         [one] => one,
         [] => anyhow::bail!("no blob called {blob} in blobs/ (`dj blob list` shows them)"),
-        _ => anyhow::bail!("{blob} could be more than one blob: {}", hits.iter().map(|b| format!("{}.{}", b.stem, dj_core::collection::blob_ext(b.field))).collect::<Vec<_>>().join(", ")),
+        _ => anyhow::bail!("{blob} could be more than one blob: {}", hits.iter().map(|b| format!("{}.{}", b.stem, dj_core::project::blob_ext(b.field))).collect::<Vec<_>>().join(", ")),
     };
     let new = col.rename_blob(&b.hash, b.field, name)?;
     println!("{} is now {new} ({} it; none needed changing)", b.stem, match b.users.len() {
@@ -250,7 +250,7 @@ pub(crate) fn blob_rename(dir: &Path, blob: &str, name: &str) -> Result<()> {
 }
 
 pub(crate) fn sql(dir: &Path, query: &str) -> Result<()> {
-    let col = Collection::open(dir)?;
+    let col = Project::open(dir)?;
     let mut conn = cache::Cache::open_existing(&col)?;
     // Bring segments_now (and the v_ views on it) up to date with the segment files, for the
     // setup played last. A database nothing has been played into yet has no setup to use.
@@ -286,7 +286,7 @@ pub(crate) fn sql(dir: &Path, query: &str) -> Result<()> {
 pub(crate) fn controls(dir: &Path, local: &Local) -> Result<()> {
     use dj_core::controls::{control_from_name, control_name, Controls};
     use dj_core::format::JOYPAD;
-    let col = Collection::open(dir)?;
+    let col = Project::open(dir)?;
     let s = open_session(&col, local)?;
     let names = s.core.input_names();
     let c = Controls::new(&names, &col.config.ports);

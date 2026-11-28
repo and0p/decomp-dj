@@ -4,7 +4,7 @@ use crate::strings as t;
 use crate::widgets::col_title;
 use crate::{CTX, agent, App, Discard, ending_sig, Recovery, SaveAsk, subtree, UNDO_LIMIT, UndoStep};
 use anyhow::Result;
-use dj_core::collection::Status;
+use dj_core::project::Status;
 use eframe::egui::{self, RichText};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;

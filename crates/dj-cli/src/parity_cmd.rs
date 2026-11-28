@@ -7,7 +7,7 @@ use anyhow::{anyhow, bail, Result};
 use serde_json::json;
 use std::path::Path;
 
-use dj_core::collection::{Collection, Status};
+use dj_core::project::{Project, Status};
 use dj_core::compare::Comparison;
 use dj_core::parity::{self as store, check_span, Checker, Failure, RunRow, Span};
 use dj_core::player::Session;
@@ -25,7 +25,7 @@ pub struct Pick {
 
 impl Pick {
     /// The segments chosen, in tree order (parents first), each once. Drafts are left out.
-    pub fn resolve(&self, col: &Collection) -> Result<Vec<String>> {
+    pub fn resolve(&self, col: &Project) -> Result<Vec<String>> {
         if self.children && self.segments.is_empty() && self.tags.is_empty() {
             bail!("--children adds the segments below the ones chosen: give a SEGMENT or a --tag");
         }
@@ -75,15 +75,15 @@ pub struct CheckArgs {
 }
 
 /// The project and the `[[compare]]` entry a parity command works on.
-fn open(dir: &Path, compare: Option<&str>) -> Result<(Collection, String)> {
-    let col = Collection::open(dir)?;
+fn open(dir: &Path, compare: Option<&str>) -> Result<(Project, String)> {
+    let col = Project::open(dir)?;
     let name = store::compare_name(&col, compare).map_err(|e| if compare.is_none() && col.config.compare.len() > 1 { anyhow!("{e:#}: pick it with --compare") } else { e })?;
     Ok((col, name))
 }
 
 /// As `open`, for a command that runs the comparison core. It runs in this process: if it
 /// dies, the supervisor reads which core it was from the note left here.
-fn open_to_play(dir: &Path, compare: Option<&str>) -> Result<(Collection, String)> {
+fn open_to_play(dir: &Path, compare: Option<&str>) -> Result<(Project, String)> {
     let found = open(dir, compare)?;
     dj_core::isolate::batch_note(dir);
     Ok(found)
@@ -116,7 +116,7 @@ fn jump_text(segment: &str, jump: (&str, u64), preroll: u64) -> String {
 
 /// Puts the baseline at frame `frame` of `id` (from the nearest stored snapshot); returns the
 /// segment's start frame counted from power-on.
-fn seek(s: &mut Session, col: &Collection, id: &str, frame: u64) -> Result<u64> {
+fn seek(s: &mut Session, col: &Project, id: &str, frame: u64) -> Result<u64> {
     let start_frame = s.enter_segment(col, id)?;
     let mut at = 0;
     if frame > 0 {
@@ -137,7 +137,7 @@ fn seek(s: &mut Session, col: &Collection, id: &str, frame: u64) -> Result<u64> 
 
 /// Loads the comparison core into dj's own process, beside the baseline
 /// (.agents/yield-parity/PLAN.md, section 11).
-fn open_compare(col: &Collection, local: &Local, name: &str) -> Result<Comparison> {
+fn open_compare(col: &Project, local: &Local, name: &str) -> Result<Comparison> {
     let (rom, core) = resolve_local(col, local)?;
     Comparison::open(col, name, &core, Some(&rom)).map_err(|e| anyhow!("loading the comparison core \"{name}\": {e:#}"))
 }
@@ -301,7 +301,7 @@ pub fn check(dir: &Path, local: &Local, a: CheckArgs) -> Result<i32> {
 }
 
 /// A row of `dj parity check`'s output as a JUnit test case.
-fn junit_case(col: &Collection, row: &serde_json::Value, failed_for: &std::collections::HashMap<String, Failure>) -> crate::junit::Case {
+fn junit_case(col: &Project, row: &serde_json::Value, failed_for: &std::collections::HashMap<String, Failure>) -> crate::junit::Case {
     use crate::junit::{Case, Outcome};
     let id = row["segment"].as_str().unwrap_or("");
     let verdict = row["verdict"].as_str().unwrap_or("");
@@ -328,7 +328,7 @@ fn junit_case(col: &Collection, row: &serde_json::Value, failed_for: &std::colle
     case
 }
 
-fn failure_json<'a>(col: &'a Collection, build: &'a str) -> impl Fn(&Failure) -> serde_json::Value + 'a {
+fn failure_json<'a>(col: &'a Project, build: &'a str) -> impl Fn(&Failure) -> serde_json::Value + 'a {
     move |f| {
         json!({
             "id": f.id, "segment": f.segment, "title": col.segments.get(&f.segment).map(|r| r.title()).unwrap_or(""),
@@ -340,7 +340,7 @@ fn failure_json<'a>(col: &'a Collection, build: &'a str) -> impl Fn(&Failure) ->
     }
 }
 
-fn print_failures(col: &Collection, build: &str, fs: &[Failure]) {
+fn print_failures(col: &Project, build: &str, fs: &[Failure]) {
     for f in fs {
         let title = col.segments.get(&f.segment).map(|r| r.title()).unwrap_or("(segment gone)");
         let from = jump_text(&f.segment, (&f.synced.0, f.synced.1), f.preroll);
@@ -447,7 +447,7 @@ pub fn rerun(dir: &Path, local: &Local, compare: Option<&str>, ids: &[i64], json
 
 /// Starts at `f`'s last jump and checks through its frame, along the segments from there to
 /// the failing one. None: those segments aren't there any more.
-fn rerun_one(s: &mut Session, cmp: &mut Comparison, col: &Collection, f: &Failure) -> Result<Option<Span>> {
+fn rerun_one(s: &mut Session, cmp: &mut Comparison, col: &Project, f: &Failure) -> Result<Option<Span>> {
     if !col.segments.contains_key(&f.synced.0) || !col.segments.contains_key(&f.segment) {
         return Ok(None);
     }
@@ -515,7 +515,7 @@ struct Replayed {
 
 /// Plays failure `f` again as `rerun_one` does, tracing the baseline from `frames_back`
 /// frames before the failing one (within its segment) through it.
-fn replay_traced(s: &mut Session, cmp: &mut Comparison, col: &Collection, f: &Failure, frames_back: u64) -> Result<Option<Replayed>> {
+fn replay_traced(s: &mut Session, cmp: &mut Comparison, col: &Project, f: &Failure, frames_back: u64) -> Result<Option<Replayed>> {
     if !col.segments.contains_key(&f.synced.0) || !col.segments.contains_key(&f.segment) {
         return Ok(None);
     }
@@ -645,7 +645,7 @@ pub fn explain(dir: &Path, local: &Local, compare: Option<&str>, id: i64, frames
         Some(nf) => (nf.segment.clone(), nf.frame),
         None => (f.segment.clone(), f.frame),
     };
-    let mut p = dj_core::query::Project::open(dir, local.rom.as_deref())?;
+    let mut p = dj_core::query::ProjectQueries::open(dir, local.rom.as_deref())?;
     let _ = p.report();
     let (regions, cpus): (Vec<String>, Vec<Option<String>>) = s.core.region_facts().into_iter().map(|r| (r.name, r.cpu)).unzip();
     // The search stops at the event the core answered: the baseline ran on to the frame's
@@ -771,7 +771,7 @@ pub fn explain(dir: &Path, local: &Local, compare: Option<&str>, id: i64, frames
 pub fn report(dir: &Path, local: &Local, compare: Option<&str>, limit: usize, json_out: bool) -> Result<i32> {
     let (_, name) = open(dir, compare)?;
     let name = name.as_str();
-    let mut p = dj_core::query::Project::open(dir, local.rom.as_deref())?;
+    let mut p = dj_core::query::ProjectQueries::open(dir, local.rom.as_deref())?;
     let r = p.parity_report(name, limit)?;
     if json_out {
         println!("{}", serde_json::to_string_pretty(&r)?);

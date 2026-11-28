@@ -71,9 +71,9 @@ example = "genesis-test"
 rom = "build/genesis-test.bin"
 build_rom = "bash build-rom.sh"
 experimental = true
-# Its licence allows non-commercial redistribution only (connectors/genesis-plus-gx/README.md).
-# Whether a release carries it is the developer's decision, not made yet: out until then.
-bundle = false
+# Bundled for now (the developer, 2026-11-27). Its licence isn't the GPL: redistribution is
+# allowed, but not for sale or in a commercial product (connectors/genesis-plus-gx/README.md),
+# and the ZIP carries that text beside the core.
 
 # No example yet that can be shared (the N64 project in use is a commercial game), so the
 # core is only built, and only on the weekly run.

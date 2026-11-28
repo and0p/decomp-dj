@@ -3,7 +3,7 @@
 use crate::strings as t;
 use crate::widgets::{KeepMenuOpen, col_title};
 use crate::{agent, Agents, App, DRAFT, ending_sig};
-use dj_core::collection::Collection;
+use dj_core::project::Project;
 use eframe::egui::{self, Color32, RichText};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -369,7 +369,7 @@ impl App {
 
 impl Agents {
     /// The MCP slot in the status bar.
-    pub(crate) fn status(&self, ui: &mut egui::Ui, col: Option<&Collection>) {
+    pub(crate) fn status(&self, ui: &mut egui::Ui, col: Option<&Project>) {
         if col.is_none() {
             return;
         }
@@ -402,7 +402,7 @@ impl Agents {
     }
 
     /// A draft an agent session has open: the agent's until the session closes.
-    pub(crate) fn owns(&self, col: Option<&Collection>, id: &str) -> bool {
+    pub(crate) fn owns(&self, col: Option<&Project>, id: &str) -> bool {
         !self.taken_over.contains(id) && self.sessions.iter().any(|s| s.draft == id) && col.is_some_and(|c| c.is_draft(id))
     }
 }

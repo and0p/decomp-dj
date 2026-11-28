@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use crate::cache::{self, Cache, CacheSettings, ContentRow, Recording};
-use crate::collection::{sha256_file, Collection, Status};
+use crate::project::{sha256_file, Project, Status};
 use crate::format::{device_from_name, Command, Segment};
 use crate::libretro::{region_memory_id, Core, CoverageRegion, Frame};
 
@@ -70,8 +70,8 @@ impl Recorder {
     }
 }
 
-/// Ports' devices in effect at the start of `id`: collection defaults plus ancestors' [DEVICE] lines.
-pub fn devices_at_start(col: &Collection, id: &str) -> Result<BTreeMap<u32, u32>> {
+/// Ports' devices in effect at the start of `id`: project defaults plus ancestors' [DEVICE] lines.
+pub fn devices_at_start(col: &Project, id: &str) -> Result<BTreeMap<u32, u32>> {
     let mut devs = BTreeMap::new();
     for p in &col.config.ports {
         if p.port == 0 {
@@ -103,14 +103,14 @@ pub struct NewRoot {
     pub start_frame: u64,
     /// Lines for frame 0 (`edit::carried_lines`).
     pub lines: Vec<String>,
-    /// What the blobs are called in blobs/ (`Collection::write_blob`). Empty: from the
+    /// What the blobs are called in blobs/ (`Project::write_blob`). Empty: from the
     /// title.
     pub blob_name: String,
 }
 
 /// A loaded core plus what it needs to play segments. It does not hold the
-/// collection, so a GUI can keep editing the collection while a session is open;
-/// every method takes the collection it should read.
+/// project, so a GUI can keep editing the project while a session is open;
+/// every method takes the project it should read.
 #[allow(dead_code)]
 pub struct Session {
     pub core: Core,
@@ -139,12 +139,12 @@ pub struct Session {
 
 impl Session {
     /// Opens a session with the local database unless the settings say `database = false`.
-    pub fn open(col: &Collection, rom: &Path, core_path: &Path) -> Result<Session> {
+    pub fn open(col: &Project, rom: &Path, core_path: &Path) -> Result<Session> {
         let use_db = col.settings()?.database.unwrap_or(true);
         Self::open_with(col, rom, core_path, use_db)
     }
 
-    pub fn open_with(col: &Collection, rom: &Path, core_path: &Path, use_db: bool) -> Result<Session> {
+    pub fn open_with(col: &Project, rom: &Path, core_path: &Path, use_db: bool) -> Result<Session> {
         crate::crash::set_core(&crate::libretro::library_path(core_path).display().to_string());
         let rom_sha = sha256_file(rom)?;
         if !col.config.rom.sha256.is_empty() && rom_sha != col.config.rom.sha256 {
@@ -227,10 +227,10 @@ impl Session {
         // the hash leaves those bytes out too.
         let cache_exclude = match &cache {
             Some(c) => {
-                let ranges = crate::collection::parse_exclude(&c.settings.exclude, "[cache] exclude")?;
+                let ranges = crate::project::parse_exclude(&c.settings.exclude, "[cache] exclude")?;
                 let hashed_out = col.config.hash.excluded()?;
                 for r in &ranges {
-                    if !crate::collection::exclude_covers(&hashed_out, r) {
+                    if !crate::project::exclude_covers(&hashed_out, r) {
                         bail!(
                             "[cache] exclude {}:{:#X}-{:#X} isn't covered by [hash] exclude: a snapshot stored without those bytes would give other state hashes when it's loaded. Add the range to [hash] exclude in config.toml too (docs/config.md#cache)",
                             r.0, r.1, r.2
@@ -244,19 +244,19 @@ impl Session {
         Ok(Session { core, boot_state, boot_sram, setup_id, rom_path: rom.to_path_buf(), cache, core_version, build: reported, build_note, cache_exclude, exclude_at: HashMap::new(), exclude_missed: BTreeSet::new() })
     }
 
-    pub fn devices_at_start(&self, col: &Collection, id: &str) -> Result<BTreeMap<u32, u32>> {
+    pub fn devices_at_start(&self, col: &Project, id: &str) -> Result<BTreeMap<u32, u32>> {
         devices_at_start(col, id)
     }
 
     /// The content key `id` has when it starts from a state with hash `start_hash`.
-    pub fn content_key(&self, col: &Collection, id: &str, start_hash: &str) -> Result<String> {
+    pub fn content_key(&self, col: &Project, id: &str, start_hash: &str) -> Result<String> {
         let body = cache::body_hash(&col.segments[id], &devices_at_start(col, id)?)?;
         Ok(cache::content_key(&self.setup_id, start_hash, &body))
     }
 
     /// The stored snapshot nearest at or before `frame` inside `id` (started from
     /// `start_hash`), as (frame, state). Frame 0 is the segment's start.
-    pub fn nearest_stored(&self, col: &Collection, id: &str, start_hash: &str, frame: u64) -> Result<Option<(u64, Vec<u8>)>> {
+    pub fn nearest_stored(&self, col: &Project, id: &str, start_hash: &str, frame: u64) -> Result<Option<(u64, Vec<u8>)>> {
         let Some(c) = &self.cache else { return Ok(None) };
         let key = self.content_key(col, id, start_hash)?;
         let frames = c.stored_frames(&key)?;
@@ -269,13 +269,13 @@ impl Session {
     }
 
     /// Frames inside `id` (started from `start_hash`) that have a stored snapshot.
-    pub fn stored_frames(&self, col: &Collection, id: &str, start_hash: &str) -> Result<Vec<u64>> {
+    pub fn stored_frames(&self, col: &Project, id: &str, start_hash: &str) -> Result<Vec<u64>> {
         let Some(c) = &self.cache else { return Ok(vec![]) };
         let key = self.content_key(col, id, start_hash)?;
         Ok(c.stored_frames(&key)?.into_iter().map(|(f, _)| f).collect())
     }
 
-    pub fn state_hash(&mut self, col: &Collection) -> Result<String> {
+    pub fn state_hash(&mut self, col: &Project) -> Result<String> {
         let mut h = blake3::Hasher::new();
         let excluded = col.config.hash.excluded()?;
         for region in col.config.hash.regions.clone() {
@@ -299,7 +299,7 @@ impl Session {
     }
 
     /// Puts the core at the start of root segment `r`.
-    pub fn start_root(&mut self, col: &Collection, r: &Segment) -> Result<()> {
+    pub fn start_root(&mut self, col: &Project, r: &Segment) -> Result<()> {
         let boot = self.boot_state.clone();
         self.core.unserialize(&boot)?;
         // (Only when the boot state didn't bring it back itself: a write makes the core's
@@ -349,7 +349,7 @@ impl Session {
     /// hash the core is then in is recorded as the root's `start-hash`, so a later play that
     /// starts somewhere else is noticed. When the core won't load them nothing is left
     /// behind: no segment, and no blob that wasn't there already. Returns the new id.
-    pub fn add_root(&mut self, col: &mut Collection, new: &NewRoot) -> Result<String> {
+    pub fn add_root(&mut self, col: &mut Project, new: &NewRoot) -> Result<String> {
         if new.snapshot.is_none() && new.sram.is_none() {
             bail!("a root from blobs needs a snapshot or a save file");
         }
@@ -363,7 +363,7 @@ impl Session {
                 }
                 let name = match (new.blob_name.is_empty(), new.title.trim().is_empty()) {
                     (false, _) => new.blob_name.clone(),
-                    (true, false) => crate::collection::blob_name(&new.title),
+                    (true, false) => crate::project::blob_name(&new.title),
                     (true, true) => if field == "sram" { "save" } else { "snapshot" }.to_string(),
                 };
                 let (b, made) = col.write_blob_new(data, field, &name)?;
@@ -392,14 +392,14 @@ impl Session {
     /// The core's state at the start of frame `frame` of `id`, and how many frames after
     /// power-on that is. Plays from the nearest stored state of the segment, else from its
     /// start.
-    pub fn state_at(&mut self, col: &Collection, id: &str, frame: u64) -> Result<(Vec<u8>, u64)> {
+    pub fn state_at(&mut self, col: &Project, id: &str, frame: u64) -> Result<(Vec<u8>, u64)> {
         let at = self.play_to(col, id, frame)?;
         Ok((self.snapshot()?, at))
     }
 
     /// The game's save RAM (its battery save) at the start of frame `frame` of `id`: what
     /// `sram` on a root segment loads.
-    pub fn sram_at(&mut self, col: &Collection, id: &str, frame: u64) -> Result<Vec<u8>> {
+    pub fn sram_at(&mut self, col: &Project, id: &str, frame: u64) -> Result<Vec<u8>> {
         self.play_to(col, id, frame)?;
         self.save_ram()
     }
@@ -415,7 +415,7 @@ impl Session {
 
     /// Puts the core at the start of frame `frame` of `id`; returns how many frames after
     /// power-on that is.
-    fn play_to(&mut self, col: &Collection, id: &str, frame: u64) -> Result<u64> {
+    fn play_to(&mut self, col: &Project, id: &str, frame: u64) -> Result<u64> {
         let frames = col.segments[id].frames()?;
         if frame > frames {
             bail!("{} has {frames} frames", &id[..8.min(id.len())]);
@@ -437,7 +437,7 @@ impl Session {
     }
 
     /// Plays one segment from the core's current state.
-    pub fn play(&mut self, col: &Collection, id: &str, start_frame: u64, opts: &PlayOptions) -> Result<SegmentResult> {
+    pub fn play(&mut self, col: &Project, id: &str, start_frame: u64, opts: &PlayOptions) -> Result<SegmentResult> {
         let mut rec = self.begin(col, id, start_frame, opts)?;
         while !self.advance(col, &mut rec, false)? {}
         self.finish(col, rec)
@@ -445,7 +445,7 @@ impl Session {
 
     /// Starts playing `id` from the core's current state. Call `advance` until it returns
     /// true, then `finish`.
-    pub fn begin(&mut self, col: &Collection, id: &str, start_frame: u64, opts: &PlayOptions) -> Result<Recorder> {
+    pub fn begin(&mut self, col: &Project, id: &str, start_frame: u64, opts: &PlayOptions) -> Result<Recorder> {
         let r = &col.segments[id];
         let frames = r.frames()?;
         let devices = devices_at_start(col, id)?;
@@ -514,7 +514,7 @@ impl Session {
 
     /// Runs the recorder's next frame. `show` captures its video into `last_frame`.
     /// Returns true when the segment has no frames left.
-    pub fn advance(&mut self, col: &Collection, rec: &mut Recorder, show: bool) -> Result<bool> {
+    pub fn advance(&mut self, col: &Project, rec: &mut Recorder, show: bool) -> Result<bool> {
         crate::isolate::batch_progress(&rec.id, rec.f);
         crate::crash::set_place(&rec.id, rec.f);
         if rec.f >= rec.frames {
@@ -583,7 +583,7 @@ impl Session {
     }
 
     /// Ends a played segment: end hash, coverage, and (when recording) the database rows.
-    pub fn finish(&mut self, col: &Collection, mut rec: Recorder) -> Result<SegmentResult> {
+    pub fn finish(&mut self, col: &Project, mut rec: Recorder) -> Result<SegmentResult> {
         let end_hash = self.state_hash(col)?;
         let ticks = if col.config.tick.is_some() { self.core.tick_count() } else { None };
         let coverage = if rec.record {
@@ -668,7 +668,7 @@ impl Session {
 
     /// Plays every segment in tree order. `from_scratch` replays each chain from its
     /// root instead of reusing parents' end states (a determinism check).
-    pub fn play_all(&mut self, col: &Collection, opts: &PlayOptions, from_scratch: bool, mut each: impl FnMut(&mut Self, &SegmentResult) -> Result<()>) -> Result<()> {
+    pub fn play_all(&mut self, col: &Project, opts: &PlayOptions, from_scratch: bool, mut each: impl FnMut(&mut Self, &SegmentResult) -> Result<()>) -> Result<()> {
         let order: Vec<String> = col.tree_order().into_iter().map(|(id, _)| id.to_string()).collect();
         let mut end_states: HashMap<String, (Vec<u8>, u64)> = HashMap::new();
         for id in &order {
@@ -709,7 +709,7 @@ impl Session {
     }
 
     /// Plays the chain down to `id`, starting from the deepest cached ancestor state when allowed.
-    pub fn play_chain(&mut self, col: &Collection, id: &str, opts: &PlayOptions, use_cache: bool) -> Result<Vec<SegmentResult>> {
+    pub fn play_chain(&mut self, col: &Project, id: &str, opts: &PlayOptions, use_cache: bool) -> Result<Vec<SegmentResult>> {
         let chain: Vec<String> = col.chain(id)?.into_iter().map(String::from).collect();
         let mut start_at = 0;
         let mut start_frame = root_start_frame(&col.segments[&chain[0]]);
@@ -743,7 +743,7 @@ impl Session {
     /// Puts the core at frame 0 of `id`: plays (or loads the cached end state of)
     /// its ancestors, then sets devices and releases inputs. Returns the segment's
     /// start frame counted from power-on.
-    pub fn enter_segment(&mut self, col: &Collection, id: &str) -> Result<u64> {
+    pub fn enter_segment(&mut self, col: &Project, id: &str) -> Result<u64> {
         let chain: Vec<String> = col.chain(id)?.into_iter().map(String::from).collect();
         let quiet = PlayOptions { record: true, ..Default::default() };
         let mut start_frame = root_start_frame(&col.segments[&chain[0]]);
@@ -770,12 +770,12 @@ impl Session {
     /// Sets port devices and held inputs to what they are at the start of
     /// frame `frame` of `id` (before that frame's lines apply). Needed after
     /// loading a mid-segment snapshot, because input state is not part of a save state.
-    pub fn restore_inputs(&mut self, col: &Collection, id: &str, frame: u64) -> Result<()> {
+    pub fn restore_inputs(&mut self, col: &Project, id: &str, frame: u64) -> Result<()> {
         restore_inputs_on(&mut self.core, col, id, frame)
     }
 
     /// Applies frame `frame`'s lines of `id` and runs that frame.
-    pub fn step(&mut self, col: &Collection, id: &str, frame: u64, capture: bool) -> Result<Option<Frame>> {
+    pub fn step(&mut self, col: &Project, id: &str, frame: u64, capture: bool) -> Result<Option<Frame>> {
         crate::crash::set_place(id, frame);
         let r = &col.segments[id];
         let mut impulses = vec![];
@@ -816,7 +816,7 @@ impl Session {
 
     /// The stored end state of `id`, used only while `id` is clean and the stored state
     /// has the hash its file records.
-    pub fn load_cached_state(&self, col: &Collection, id: &str) -> Result<Option<Vec<u8>>> {
+    pub fn load_cached_state(&self, col: &Project, id: &str) -> Result<Option<Vec<u8>>> {
         let Some(c) = &self.cache else { return Ok(None) };
         if col.tree_status(id) != Status::Clean {
             return Ok(None);
@@ -897,7 +897,7 @@ pub fn write_memory(core: &mut Core, region: &str, address: u64, bytes: &[u8]) -
 
 /// Sets a core's port devices and held inputs to what they are at the start of frame
 /// `frame` of `id` (input state is not part of a save state).
-pub fn restore_inputs_on(core: &mut Core, col: &Collection, id: &str, frame: u64) -> Result<()> {
+pub fn restore_inputs_on(core: &mut Core, col: &Project, id: &str, frame: u64) -> Result<()> {
     let mut devs = devices_at_start(col, id)?;
     core.clear_inputs();
     for l in col.segments[id].lines.iter().take_while(|l| l.frame < frame) {
@@ -938,7 +938,7 @@ pub fn parse_region_offset(s: &str) -> Result<(String, u64)> {
 #[cfg(test)]
 mod hash_exclude_tests {
     use super::mask_excluded;
-    use crate::collection::HashConfig;
+    use crate::project::HashConfig;
 
     fn cfg(regions: &[&str], exclude: &[&str]) -> HashConfig {
         HashConfig { algorithm: "blake3".into(), regions: regions.iter().map(|s| s.to_string()).collect(), exclude: exclude.iter().map(|s| s.to_string()).collect() }
@@ -982,7 +982,7 @@ mod hash_exclude_tests {
 
     #[test]
     fn a_cache_range_must_lie_inside_what_the_hash_leaves_out() {
-        use crate::collection::exclude_covers;
+        use crate::project::exclude_covers;
         let r = |a: u64, b: u64| ("RAM".to_string(), a, b);
         let hashed_out = vec![r(0x100, 0x1FF), r(0x200, 0x2FF), r(0x400, 0x4FF), ("SRAM".to_string(), 0, 0xFFFF)];
         assert!(exclude_covers(&hashed_out, &r(0x100, 0x1FF)));

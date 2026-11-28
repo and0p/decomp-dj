@@ -4,7 +4,7 @@ use crate::strings as t;
 use crate::widgets::col_title;
 use crate::{App, egui_ctx, EndMode, Job, Playback, PlayState, SNAP_EVERY, SPEEDS, start_pass, trim_snapshots};
 use anyhow::{anyhow, Result};
-use dj_core::collection::Collection;
+use dj_core::project::Project;
 use dj_core::parity::Checked;
 use eframe::egui;
 use std::collections::BTreeMap;
@@ -754,13 +754,13 @@ impl App {
 
 impl PlayState {
     /// The sticky tip, if it still exists.
-    pub(crate) fn tip(&self, col: Option<&Collection>) -> Option<&str> {
+    pub(crate) fn tip(&self, col: Option<&Project>) -> Option<&str> {
         let t = self.sticky_tip.as_deref()?;
         col?.segments.contains_key(t).then_some(t)
     }
 
     /// The tip's chain from the root segment, when sticky is on.
-    pub(crate) fn sticky_path(&self, col: Option<&Collection>) -> Vec<String> {
+    pub(crate) fn sticky_path(&self, col: Option<&Project>) -> Vec<String> {
         match (col, self.tip(col)) {
             (Some(col), Some(t)) => col.chain(t).map(|c| c.into_iter().map(String::from).collect()).unwrap_or_default(),
             _ => vec![],
@@ -768,14 +768,14 @@ impl PlayState {
     }
 
     /// The child of `id` on the way to the sticky tip (sticky on, `id` above the tip).
-    pub(crate) fn sticky_child(&self, col: Option<&Collection>, id: &str) -> Option<String> {
+    pub(crate) fn sticky_child(&self, col: Option<&Project>, id: &str) -> Option<String> {
         let path = self.sticky_path(col);
         let i = path.iter().position(|p| p == id)?;
         path.get(i + 1).cloned()
     }
 
     /// Keeps the tip while the selection stays on its chain; anything else starts a new one.
-    pub(crate) fn update_sticky_tip(&mut self, col: Option<&Collection>, selected: Option<&str>) {
+    pub(crate) fn update_sticky_tip(&mut self, col: Option<&Project>, selected: Option<&str>) {
         let Some(sel) = selected else { return };
         let Some(col) = col else { return };
         if !col.segments.contains_key(sel) {

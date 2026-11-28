@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use dj_core::query::{GapFilter, GapSort, Project};
+use dj_core::query::{GapFilter, GapSort, ProjectQueries};
 
 pub const INSTRUCTIONS: &str = "decomp-dj: input segments that drive a libretro core, and the ROM code coverage they reach. \
 Addresses can be PRG:0x1F3A (a ROM offset), 0x1F3A (a PRG offset), $C123 (a CPU address) or a symbol name (name+0x10). \
@@ -49,7 +49,7 @@ pub struct Options {
 pub struct Server {
     pub dir: PathBuf,
     pub allow: Allow,
-    pub(super) project: Option<(u128, Project)>,
+    pub(super) project: Option<(u128, ProjectQueries)>,
     pub(super) sessions: std::collections::BTreeMap<String, super::play::Sess>,
     pub(super) util: Option<super::play::WorkerProc>,
     pub(super) next_session: u32,
@@ -58,7 +58,7 @@ pub struct Server {
 
 impl Server {
     pub fn new(dir: PathBuf, opts: Options) -> Result<Server> {
-        let col = dj_core::collection::Collection::open(&dir)?;
+        let col = dj_core::project::Project::open(&dir)?;
         let allow = match opts.allow {
             Some(a) => a,
             None => local_allow(&col.root)?.unwrap_or(Allow::Draft),
@@ -92,7 +92,7 @@ impl Server {
                         if r.get("draft-note").is_none() {
                             r.set("draft-note", "kept: the agent disconnected with its session open");
                         }
-                        let _ = dj_core::collection::write_atomic(&f.path, &r.to_text());
+                        let _ = dj_core::project::write_atomic(&f.path, &r.to_text());
                     }
                 }
             }
@@ -144,7 +144,7 @@ impl Server {
                 if d.r.get("draft-scratch").is_some() {
                     let mut r = d.r;
                     r.remove_all("draft-scratch");
-                    let _ = dj_core::collection::write_atomic(&d.path, &r.to_text());
+                    let _ = dj_core::project::write_atomic(&d.path, &r.to_text());
                 }
             }
             let _ = std::fs::remove_file(e.path());
@@ -173,10 +173,10 @@ impl Server {
 
     /// The project for queries, opened again when a segment, symbol map, the config or
     /// the database changed on disk since the last call.
-    pub(super) fn project(&mut self) -> Result<&mut Project> {
+    pub(super) fn project(&mut self) -> Result<&mut ProjectQueries> {
         let fp = fingerprint(&self.dir);
         if self.project.as_ref().map(|(f, _)| *f) != Some(fp) {
-            self.project = Some((fp, Project::open(&self.dir, None)?));
+            self.project = Some((fp, ProjectQueries::open(&self.dir, None)?));
         }
         Ok(&mut self.project.as_mut().unwrap().1)
     }
@@ -279,7 +279,7 @@ impl Server {
                     .blobs()
                     .into_iter()
                     .map(|b| json!({
-                        "file": format!("{}.{}", b.stem, dj_core::collection::blob_ext(b.field)),
+                        "file": format!("{}.{}", b.stem, dj_core::project::blob_ext(b.field)),
                         "kind": if b.field == "sram" { "save file" } else { "snapshot" },
                         "hash": b.hash, "bytes": b.size,
                         "used_by": b.users.iter().map(|id| json!({"id": id, "title": col.segments[id].title()})).collect::<Vec<_>>(),
@@ -348,7 +348,7 @@ pub fn error_result(msg: &str) -> Value {
 
 /// The `[mcp] allow` setting (config.toml, or local.toml on top), read as plain TOML.
 fn local_allow(root: &Path) -> Result<Option<Allow>> {
-    let v = dj_core::collection::layered_table(root)?;
+    let v = dj_core::project::layered_table(root)?;
     match v.get("mcp").and_then(|m| m.get("allow")).and_then(|a| a.as_str()) {
         Some(a) => Ok(Some(a.parse()?)),
         None => Ok(None),
